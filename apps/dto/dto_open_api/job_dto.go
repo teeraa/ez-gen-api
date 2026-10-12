@@ -2,24 +2,26 @@ package dto_open_api
 
 // JobDTO is the API response for a single generation job.
 type JobDTO struct {
-	JobID              string      `json:"jobId"`
-	Status             string      `json:"status"`
-	Progress           int         `json:"progress"`
-	CurrentStep        *string     `json:"currentStep"`
-	Model              string      `json:"model"`
-	AspectRatio        string      `json:"aspectRatio"`
-	Duration           int         `json:"duration"`
-	Quality            string      `json:"quality"`
-	CreditsCharged     *int        `json:"creditsCharged"`
-	Result             *JobResult  `json:"result"`
-	Error              *JobError   `json:"error"`
-	SceneID            *string     `json:"sceneId"`
-	CharacterProfileID *string     `json:"characterProfileId"`
-	StyleProfileID     *string     `json:"styleProfileId"`
-	CompiledPrompt     *string     `json:"compiledPrompt"`
-	CreatedAt          string      `json:"createdAt"`
-	UpdatedAt          string      `json:"updatedAt"`
-	CompletedAt        *string     `json:"completedAt"`
+	JobID       string  `json:"jobId"`
+	Status      string  `json:"status"`
+	Progress    int     `json:"progress"`
+	CurrentStep *string `json:"currentStep"`
+	// EstimatedSecondsRemaining is null when the job is terminal or the remaining time is unknown.
+	EstimatedSecondsRemaining *int       `json:"estimatedSecondsRemaining"`
+	Model                     string     `json:"model"`
+	AspectRatio               string     `json:"aspectRatio"`
+	Duration                  int        `json:"duration"`
+	Quality                   string     `json:"quality"`
+	CreditsCharged            *int       `json:"creditsCharged"`
+	Result                    *JobResult `json:"result"`
+	Error                     *JobError  `json:"error"`
+	SceneID                   *string    `json:"sceneId"`
+	CharacterProfileID        *string    `json:"characterProfileId"`
+	StyleProfileID            *string    `json:"styleProfileId"`
+	CompiledPrompt            *string    `json:"compiledPrompt"`
+	CreatedAt                 string     `json:"createdAt"`
+	UpdatedAt                 string     `json:"updatedAt"`
+	CompletedAt               *string    `json:"completedAt"`
 }
 
 // JobResult carries output URLs once a job succeeds.

@@ -20,6 +20,8 @@ type JobRepository interface {
 	ListPendingPoll(ctx context.Context, limit int) ([]models.VideoGenerationJob, error)
 	ListUnpersistedOutputs(ctx context.Context, limit int) ([]models.VideoGenerationJob, error)
 	UpdateOutputKeys(ctx context.Context, id string, mediaKey string, thumbKey *string) error
+	UpdateCurrentStep(ctx context.Context, id string, step string) error
+	AverageGenerationSeconds(ctx context.Context, modelID string, durationSeconds int, quality string, sample int) (float64, int, error)
 }
 
 type jobRepository struct{ db *gorm.DB }
@@ -176,4 +178,49 @@ func (r *jobRepository) UpdateOutputKeys(ctx context.Context, id string, mediaKe
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (r *jobRepository) UpdateCurrentStep(ctx context.Context, id string, step string) error {
+	result := r.db.WithContext(ctx).
+		Model(&models.VideoGenerationJob{}).
+		Where("id = ? AND deleted_at IS NULL", id).
+		Update("current_step", step)
+	if result.Error != nil {
+		return wrapErr("update job current step", result.Error)
+	}
+	return nil
+}
+
+// AverageGenerationSeconds averages submit-to-complete time over the most recent
+// succeeded jobs with the same duration and quality, across all users, since only
+// the aggregate is returned. An empty modelID matches any model. Runs over 30
+// minutes are excluded so a stuck job does not skew the estimate.
+func (r *jobRepository) AverageGenerationSeconds(ctx context.Context, modelID string, durationSeconds int, quality string, sample int) (float64, int, error) {
+	recent := r.db.WithContext(ctx).
+		Model(&models.VideoGenerationJob{}).
+		Select("EXTRACT(EPOCH FROM (completed_at - submitted_at)) AS secs").
+		Where("status = ? AND deleted_at IS NULL", models.JobStatusSucceeded).
+		Where("submitted_at IS NOT NULL AND completed_at IS NOT NULL").
+		Where("completed_at - submitted_at BETWEEN interval '1 second' AND interval '30 minutes'").
+		Where("duration_seconds = ? AND quality = ?", durationSeconds, quality)
+	if modelID != "" {
+		recent = recent.Where("model_id = ?", modelID)
+	}
+	recent = recent.Order("completed_at DESC").Limit(sample)
+
+	var out struct {
+		Avg *float64
+		N   int
+	}
+	result := r.db.WithContext(ctx).
+		Table("(?) AS recent", recent).
+		Select("AVG(secs) AS avg, COUNT(*) AS n").
+		Scan(&out)
+	if result.Error != nil {
+		return 0, 0, wrapErr("average generation seconds", result.Error)
+	}
+	if out.Avg == nil {
+		return 0, 0, nil
+	}
+	return *out.Avg, out.N, nil
 }

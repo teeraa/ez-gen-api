@@ -145,9 +145,10 @@ Poll job progress. Poll every 2 seconds while in `queued` or `processing` state.
 {
   "data": {
     "jobId":           "uuid",
-    "status":          "queued | processing | succeeded | failed | cancelled",
-    "progress":        0,
-    "currentStep":     "Initializing...",
+    "status":          "queued | submitted | processing | succeeded | failed | cancelled",
+    "progress":        45,
+    "currentStep":     "queued | generating | saving | done | failed | cancelled",
+    "estimatedSecondsRemaining": 20,
     "model":           "violet-motion-2",
     "aspectRatio":     "16:9",
     "duration":        5,
@@ -169,6 +170,14 @@ Poll job progress. Poll every 2 seconds while in `queued` or `processing` state.
 ```
 
 - `result` is `null` until `status` is `succeeded`.
+- `progress` (0–100) is an estimate: BytePlus reports no percentage. While `generating` it
+  rises linearly to 85 at the expected finish time, then creeps toward 90; `saving` is 95
+  and only `succeeded` is 100. The expected time is the average of the last 20 succeeded
+  jobs with the same model, duration and quality (falling back to any model, then to
+  `30 + 6 × duration` seconds with fewer than 3 samples).
+- `estimatedSecondsRemaining` is `null` while `saving` and once the job is terminal; it is 0
+  when the job is running past its expected time.
+- Clients should never move a progress bar backwards (`max(shown, progress)`).
 - `error` is `null` unless `status` is `failed`.
 - `mediaUrl` and `thumbnailUrl` are signed URLs generated from object storage, not BytePlus URLs. They are valid for 1 hour; `result.expiresAt` gives the exact expiry, so re-fetch the job to get a fresh URL after that.
 - A job whose provider output could not be copied to storage within 24 hours ends as `failed` with `error.code = "OUTPUT_EXPIRED"`.

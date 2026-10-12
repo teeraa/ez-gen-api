@@ -27,6 +27,25 @@ type fakeJobRepo struct {
 	jobs          map[string]*models.VideoGenerationJob
 	statusUpdates []map[string]any
 	statuses      []models.JobStatus
+	steps         []string
+	// averages is keyed by model ID ("" = any model) and returns {seconds, samples}.
+	averages     map[string][2]float64
+	averageCalls int
+}
+
+func (r *fakeJobRepo) UpdateCurrentStep(_ context.Context, _ string, step string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.steps = append(r.steps, step)
+	return nil
+}
+
+func (r *fakeJobRepo) AverageGenerationSeconds(_ context.Context, modelID string, _ int, _ string, _ int) (float64, int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.averageCalls++
+	a := r.averages[modelID]
+	return a[0], int(a[1]), nil
 }
 
 func newFakeJobRepo(jobs ...*models.VideoGenerationJob) *fakeJobRepo {
@@ -134,6 +153,9 @@ func TestPollAndUpdate_PersistsOutputsToStorage(t *testing.T) {
 
 	if len(repo.statuses) != 1 || repo.statuses[0] != models.JobStatusSucceeded {
 		t.Fatalf("expected one succeeded transition, got %v", repo.statuses)
+	}
+	if len(repo.steps) != 1 || repo.steps[0] != facade_open_api.StepSaving {
+		t.Errorf("expected saving step before upload, got %v", repo.steps)
 	}
 	updates := repo.statusUpdates[0]
 	wantVideo := storage.KeyForOutput(job.UserID.String(), job.ID.String(), "mp4")

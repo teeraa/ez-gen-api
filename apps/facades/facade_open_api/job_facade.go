@@ -75,6 +75,7 @@ type jobFacade struct {
 	models     modelRegistry
 	storage    mediaStorage
 	fetcher    mediaFetcher
+	estimator  *generationEstimator
 	maxActive  int
 }
 
@@ -102,6 +103,7 @@ func NewJobFacade(
 		models:     modelRegistry,
 		storage:    storage,
 		fetcher:    fetcher,
+		estimator:  newGenerationEstimator(jobs),
 		maxActive:  maxConcurrentJobsPerUser,
 	}
 }
@@ -284,6 +286,7 @@ func (f *jobFacade) GetJob(ctx context.Context, id, userID string) (*dto_open_ap
 	}
 	dto := mapJobDTO(job)
 	f.attachResult(ctx, job, dto)
+	f.applyProgress(ctx, job, dto)
 	return dto, nil
 }
 
@@ -297,6 +300,7 @@ func (f *jobFacade) ListJobs(ctx context.Context, userID string, page, limit int
 		jCopy := j
 		dto := mapJobDTO(&jCopy)
 		f.attachResult(ctx, &jCopy, dto)
+		f.applyProgress(ctx, &jCopy, dto)
 		items[i] = *dto
 	}
 	return &dto_open_api.JobListDTO{
@@ -440,6 +444,9 @@ func (f *jobFacade) PollAndUpdate(ctx context.Context, job *models.VideoGenerati
 
 	switch appStatus {
 	case models.JobStatusSucceeded:
+		if err := f.jobs.UpdateCurrentStep(ctx, job.ID.String(), StepSaving); err != nil {
+			log.Printf("[progress] job=%s mark saving: %v", job.ID, err)
+		}
 		mediaKey, thumbKey, err := f.persistOutputs(ctx, job, result.VideoURL, result.LastFrameURL)
 		if err != nil {
 			if job.SubmittedAt != nil && time.Since(*job.SubmittedAt) > providerOutputLifetime {
@@ -455,6 +462,7 @@ func (f *jobFacade) PollAndUpdate(ctx context.Context, job *models.VideoGenerati
 		updates["output_media_key"] = mediaKey
 		updates["output_thumb_key"] = thumbKey
 		updates["output_media_type"] = "video"
+		updates["current_step"] = StepDone
 	case models.JobStatusFailed:
 		updates["failure_code"] = result.ErrorCode
 		updates["failure_message"] = result.ErrorMessage // sanitized provider message
