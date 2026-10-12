@@ -25,6 +25,8 @@ type JobFacade interface {
 	ContinueScene(ctx context.Context, sceneID, userID string, in ContinueSceneInput) (*dto_open_api.CreateJobResponseDTO, error)
 	// PollAndUpdate is called by the background poller to advance job state.
 	PollAndUpdate(ctx context.Context, job *models.VideoGenerationJob) error
+	// BackfillOutputs copies outputs of succeeded jobs that still hold provider URLs into storage.
+	BackfillOutputs(ctx context.Context, limit int) (int, error)
 }
 
 // CreateJobInput is the validated payload for job creation.
@@ -66,6 +68,8 @@ type jobFacade struct {
 	scenes     repository_open_api.SceneRepository
 	tags       repository_open_api.TagRepository
 	ark        modelark.Client
+	storage    mediaStorage
+	fetcher    mediaFetcher
 	maxActive  int
 }
 
@@ -77,6 +81,8 @@ func NewJobFacade(
 	scenes repository_open_api.SceneRepository,
 	tags repository_open_api.TagRepository,
 	ark modelark.Client,
+	storage mediaStorage,
+	fetcher mediaFetcher,
 	maxConcurrentJobsPerUser int,
 ) JobFacade {
 	return &jobFacade{
@@ -87,6 +93,8 @@ func NewJobFacade(
 		scenes:     scenes,
 		tags:       tags,
 		ark:        ark,
+		storage:    storage,
+		fetcher:    fetcher,
 		maxActive:  maxConcurrentJobsPerUser,
 	}
 }
@@ -254,7 +262,9 @@ func (f *jobFacade) GetJob(ctx context.Context, id, userID string) (*dto_open_ap
 		}
 		return nil, fmt.Errorf("get job: %w", err)
 	}
-	return mapJobDTO(job), nil
+	dto := mapJobDTO(job)
+	f.attachResult(ctx, job, dto)
+	return dto, nil
 }
 
 func (f *jobFacade) ListJobs(ctx context.Context, userID string, page, limit int) (*dto_open_api.JobListDTO, error) {
@@ -265,7 +275,9 @@ func (f *jobFacade) ListJobs(ctx context.Context, userID string, page, limit int
 	items := make([]dto_open_api.JobDTO, len(jobs))
 	for i, j := range jobs {
 		jCopy := j
-		items[i] = *mapJobDTO(&jCopy)
+		dto := mapJobDTO(&jCopy)
+		f.attachResult(ctx, &jCopy, dto)
+		items[i] = *dto
 	}
 	return &dto_open_api.JobListDTO{
 		Items: items,
@@ -410,8 +422,20 @@ func (f *jobFacade) PollAndUpdate(ctx context.Context, job *models.VideoGenerati
 
 	switch appStatus {
 	case models.JobStatusSucceeded:
-		updates["output_media_key"] = result.VideoURL // facade stores raw URL; download step is separate
-		updates["output_thumb_key"] = result.LastFrameURL
+		mediaKey, thumbKey, err := f.persistOutputs(ctx, job, result.VideoURL, result.LastFrameURL)
+		if err != nil {
+			if job.SubmittedAt != nil && time.Since(*job.SubmittedAt) > providerOutputLifetime {
+				log.Printf("[storage] job=%s output expired before it could be stored: %v", job.ID, err)
+				appStatus = models.JobStatusFailed
+				updates["failure_code"] = "OUTPUT_EXPIRED"
+				updates["failure_message"] = "Generated video could not be saved"
+				break
+			}
+			// Leaving the job in processing makes the poller retry on its next tick.
+			return fmt.Errorf("persist outputs for job %s: %w", job.ID, err)
+		}
+		updates["output_media_key"] = mediaKey
+		updates["output_thumb_key"] = thumbKey
 		updates["output_media_type"] = "video"
 	case models.JobStatusFailed:
 		updates["failure_code"] = result.ErrorCode
@@ -543,17 +567,6 @@ func mapJobDTO(job *models.VideoGenerationJob) *dto_open_api.JobDTO {
 	if job.CompletedAt != nil {
 		s := job.CompletedAt.UTC().Format(time.RFC3339)
 		dto.CompletedAt = &s
-	}
-	if job.Status == models.JobStatusSucceeded && job.OutputMediaKey != nil {
-		// In production, generate signed URLs here from the storage service.
-		// For now, return the storage key directly (signed URL generation is out of scope).
-		dto.Result = &dto_open_api.JobResult{
-			MediaURL:  *job.OutputMediaKey,
-			MediaType: strValOrDefault(job.OutputMediaType, "video"),
-		}
-		if job.OutputThumbKey != nil {
-			dto.Result.ThumbnailURL = *job.OutputThumbKey
-		}
 	}
 	if job.Status == models.JobStatusFailed {
 		dto.Error = &dto_open_api.JobError{

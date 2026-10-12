@@ -14,6 +14,7 @@ import (
 	"github.com/ez-gen/ez-gen-api/apps/handlers/handler_open_api"
 	"github.com/ez-gen/ez-gen-api/apps/repositories/repository_open_api"
 	"github.com/ez-gen/ez-gen-api/apps/services/modelark"
+	"github.com/ez-gen/ez-gen-api/apps/services/storage"
 	"github.com/ez-gen/ez-gen-api/middlewares"
 	"github.com/ez-gen/ez-gen-api/pkgs/configs"
 	"github.com/gofiber/fiber/v2"
@@ -21,6 +22,11 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/joho/godotenv"
+)
+
+const (
+	maxOutputBytes = 512 << 20
+	backfillBatch  = 500
 )
 
 func main() {
@@ -47,11 +53,20 @@ func main() {
 	// ── External services ─────────────────────────────────────────────────────
 	arkClient := modelark.NewClient(cfg.ArkAPIKey, cfg.ArkBaseURL)
 
+	if cfg.StorageProvider != "supabase" {
+		log.Fatalf("storage: STORAGE_PROVIDER=%q is not supported (use supabase)", cfg.StorageProvider)
+	}
+	storageClient, err := storage.NewSupabaseClient(cfg.SupabaseURL, cfg.SupabaseServiceRoleKey, cfg.StorageBucket, nil)
+	if err != nil {
+		log.Fatalf("storage: %v", err)
+	}
+	mediaFetcher := storage.NewHTTPFetcher(nil, storage.ProviderHostSuffixes, maxOutputBytes)
+
 	// ── Facades ───────────────────────────────────────────────────────────────
 	dnaFacade := facade_open_api.NewDNAFacade(tagRepo, characterRepo, styleRepo, sceneRepo)
 	jobFacade := facade_open_api.NewJobFacade(
 		jobRepo, uploadRepo, characterRepo, styleRepo, sceneRepo, tagRepo,
-		arkClient, cfg.MaxConcurrentJobsPerUser,
+		arkClient, storageClient, mediaFetcher, cfg.MaxConcurrentJobsPerUser,
 	)
 
 	// ── HTTP application ──────────────────────────────────────────────────────
@@ -109,6 +124,15 @@ func main() {
 	pollInterval := time.Duration(cfg.ArkPollIntervalSeconds) * time.Second
 	poller := crons.NewJobPoller(jobRepo, jobFacade, pollInterval, 20)
 	go poller.Start(ctx)
+
+	go func() {
+		n, err := jobFacade.BackfillOutputs(ctx, backfillBatch)
+		if err != nil {
+			log.Printf("[storage] backfill: %v", err)
+			return
+		}
+		log.Printf("[storage] backfill stored %d job output(s)", n)
+	}()
 
 	// ── Graceful shutdown ─────────────────────────────────────────────────────
 	quit := make(chan os.Signal, 1)

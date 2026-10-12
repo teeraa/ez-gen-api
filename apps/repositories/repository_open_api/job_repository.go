@@ -18,6 +18,8 @@ type JobRepository interface {
 	UpdateStatus(ctx context.Context, id string, status models.JobStatus, updates map[string]any) error
 	UpdatePolled(ctx context.Context, id string, now time.Time) error
 	ListPendingPoll(ctx context.Context, limit int) ([]models.VideoGenerationJob, error)
+	ListUnpersistedOutputs(ctx context.Context, limit int) ([]models.VideoGenerationJob, error)
+	UpdateOutputKeys(ctx context.Context, id string, mediaKey string, thumbKey *string) error
 }
 
 type jobRepository struct{ db *gorm.DB }
@@ -145,4 +147,33 @@ func (r *jobRepository) ListPendingPoll(ctx context.Context, limit int) ([]model
 		return nil, wrapErr("list pending poll jobs", result.Error)
 	}
 	return jobs, nil
+}
+
+// ListUnpersistedOutputs finds succeeded jobs that still hold a provider URL
+// instead of an object storage key.
+func (r *jobRepository) ListUnpersistedOutputs(ctx context.Context, limit int) ([]models.VideoGenerationJob, error) {
+	var jobs []models.VideoGenerationJob
+	result := r.db.WithContext(ctx).
+		Where("status = ? AND deleted_at IS NULL AND output_media_key LIKE ?", models.JobStatusSucceeded, "http%").
+		Order("completed_at DESC").
+		Limit(limit).
+		Find(&jobs)
+	if result.Error != nil {
+		return nil, wrapErr("list unpersisted outputs", result.Error)
+	}
+	return jobs, nil
+}
+
+func (r *jobRepository) UpdateOutputKeys(ctx context.Context, id string, mediaKey string, thumbKey *string) error {
+	result := r.db.WithContext(ctx).
+		Model(&models.VideoGenerationJob{}).
+		Where("id = ? AND deleted_at IS NULL", id).
+		Updates(map[string]any{"output_media_key": mediaKey, "output_thumb_key": thumbKey})
+	if result.Error != nil {
+		return wrapErr("update output keys", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }

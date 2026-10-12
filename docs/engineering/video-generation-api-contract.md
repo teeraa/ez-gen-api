@@ -170,7 +170,8 @@ Poll job progress. Poll every 2 seconds while in `queued` or `processing` state.
 
 - `result` is `null` until `status` is `succeeded`.
 - `error` is `null` unless `status` is `failed`.
-- `mediaUrl` and `thumbnailUrl` are signed URLs generated from object storage, not BytePlus URLs.
+- `mediaUrl` and `thumbnailUrl` are signed URLs generated from object storage, not BytePlus URLs. They are valid for 1 hour; `result.expiresAt` gives the exact expiry, so re-fetch the job to get a fresh URL after that.
+- A job whose provider output could not be copied to storage within 24 hours ends as `failed` with `error.code = "OUTPUT_EXPIRED"`.
 - `expiresAt` indicates when the signed URL expires. Client should re-fetch before expiry.
 
 **Error codes:**
