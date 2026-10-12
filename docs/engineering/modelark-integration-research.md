@@ -308,6 +308,11 @@ Failure to follow this workflow will result in broken media links within 24 hour
 | `violet-realism` | `dreamina-seedance-2-5-260628` | 1080p | 4–30 s | Yes | Yes |
 | `violet-classic` | `seedance-1-0-pro-250528` | 1080p | 2–12 s (API min 4) | No | Yes (first frame only; no reference images) |
 
+> **Current routing (2026-10-12):** only `seedance-1-0-pro-250528` is activated on the
+> ModelArk account, so every internal ID above currently routes to it with Seedance 1.0 Pro
+> capabilities (1080p, 2–12 s, no audio, first-frame only). Restore the 2.x mapping in
+> `apps/services/modelark/mapper.go` once those models are activated.
+
 > **[IMPORTANT — verify this mapping]** The table above is a **proposed mapping** 
 > from VIOLET STUDIO's UI model names to BytePlus model IDs, based on the available 
 > models. The actual mapping must be confirmed by the team before implementation.

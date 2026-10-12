@@ -48,61 +48,15 @@ func (m ModelConfig) SupportsOutput(ratio string, durationSeconds int) bool {
 	return false
 }
 
-// KnownModels is the authoritative in-process model registry.
-// When a database model_configs table is added, this becomes the fallback.
-var KnownModels = map[string]ModelConfig{
-	"violet-motion-2": {
-		InternalID:       "violet-motion-2",
-		ProviderModelID:  "dreamina-seedance-2-0-fast-260128",
-		DisplayName:      "Violet Motion 2.0",
-		MaxResolution:    "720p",
-		SupportedRatios:  []string{"16:9", "9:16", "1:1", "4:3", "3:4"},
-		MinDuration:      4,
-		MaxDuration:      15,
-		SupportsAudio:    false,
-		SupportsImgVideo: true,
-		SupportsRefImage: true,
-	},
-	"violet-cinema": {
-		InternalID:       "violet-cinema",
-		ProviderModelID:  "dreamina-seedance-2-0-260128",
-		DisplayName:      "Violet Cinema",
-		MaxResolution:    "4k",
-		SupportedRatios:  []string{"16:9", "9:16", "1:1", "4:3", "21:9"},
-		MinDuration:      4,
-		MaxDuration:      15,
-		SupportsAudio:    false,
-		SupportsImgVideo: true,
-		SupportsRefImage: true,
-	},
-	"violet-fast": {
-		InternalID:       "violet-fast",
-		ProviderModelID:  "dreamina-seedance-2-0-fast-260128",
-		DisplayName:      "Violet Fast",
-		MaxResolution:    "720p",
-		SupportedRatios:  []string{"16:9", "9:16", "1:1"},
-		MinDuration:      4,
-		MaxDuration:      15,
-		SupportsAudio:    false,
-		SupportsImgVideo: true,
-		SupportsRefImage: true,
-	},
-	"violet-realism": {
-		InternalID:       "violet-realism",
-		ProviderModelID:  "dreamina-seedance-2-5-260628",
-		DisplayName:      "Violet Realism",
-		MaxResolution:    "1080p",
-		SupportedRatios:  []string{"16:9", "9:16", "1:1", "4:3", "21:9"},
-		MinDuration:      4,
-		MaxDuration:      30,
-		SupportsAudio:    true,
-		SupportsImgVideo: true,
-		SupportsRefImage: true,
-	},
-	"violet-classic": {
-		InternalID:       "violet-classic",
-		ProviderModelID:  "seedance-1-0-pro-250528",
-		DisplayName:      "Violet Classic",
+// seedanceOneProModelID is the only model activated on the ModelArk account, so every
+// internal ID routes to it until the Seedance 2.x models are activated.
+const seedanceOneProModelID = "seedance-1-0-pro-250528"
+
+func seedanceOnePro(internalID, displayName string) ModelConfig {
+	return ModelConfig{
+		InternalID:       internalID,
+		ProviderModelID:  seedanceOneProModelID,
+		DisplayName:      displayName,
 		MaxResolution:    "1080p",
 		SupportedRatios:  []string{"16:9", "9:16", "1:1", "4:3", "3:4", "21:9"},
 		MinDuration:      2,
@@ -110,7 +64,17 @@ var KnownModels = map[string]ModelConfig{
 		SupportsAudio:    false,
 		SupportsImgVideo: true,
 		SupportsRefImage: false,
-	},
+	}
+}
+
+// KnownModels is the authoritative in-process model registry.
+// When a database model_configs table is added, this becomes the fallback.
+var KnownModels = map[string]ModelConfig{
+	"violet-motion-2": seedanceOnePro("violet-motion-2", "Violet Motion 2.0"),
+	"violet-cinema":   seedanceOnePro("violet-cinema", "Violet Cinema"),
+	"violet-fast":     seedanceOnePro("violet-fast", "Violet Fast"),
+	"violet-realism":  seedanceOnePro("violet-realism", "Violet Realism"),
+	"violet-classic":  seedanceOnePro("violet-classic", "Violet Classic"),
 }
 
 // QualityToResolution maps the application quality string to a provider resolution string.

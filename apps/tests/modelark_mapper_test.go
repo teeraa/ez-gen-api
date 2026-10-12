@@ -126,8 +126,8 @@ func TestModelConfig_SupportsOutput(t *testing.T) {
 		{"classic max duration", "violet-classic", "21:9", 12, true},
 		{"classic too long", "violet-classic", "16:9", 15, false},
 		{"classic unknown ratio", "violet-classic", "2:1", 5, false},
-		{"realism long duration", "violet-realism", "16:9", 30, true},
-		{"motion over max", "violet-motion-2", "16:9", 20, false},
+		{"realism over max", "violet-realism", "16:9", 30, false},
+		{"motion within range", "violet-motion-2", "21:9", 8, true},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -155,5 +155,17 @@ func TestKnownModels_ClassicCapabilities(t *testing.T) {
 	}
 	if !cfg.SupportsImgVideo {
 		t.Error("violet-classic should support first-frame image-to-video")
+	}
+}
+
+func TestKnownModels_AllRouteToSeedanceOnePro(t *testing.T) {
+	t.Parallel()
+	for id, cfg := range modelark.KnownModels {
+		if cfg.ProviderModelID != "seedance-1-0-pro-250528" {
+			t.Errorf("%s routes to %q, want seedance-1-0-pro-250528", id, cfg.ProviderModelID)
+		}
+		if cfg.SupportsAudio {
+			t.Errorf("%s must not request audio on seedance 1.0 pro", id)
+		}
 	}
 }

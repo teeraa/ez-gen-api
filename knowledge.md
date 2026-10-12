@@ -77,6 +77,8 @@ Internal → BytePlus mapping (proposed — verify with team before implementing
 | `violet-realism` | Violet Realism | `dreamina-seedance-2-5-260628` |
 | `violet-classic` | Violet Classic | `seedance-1-0-pro-250528` (Seedance 1.0 Pro) |
 
+All internal IDs currently route to `seedance-1-0-pro-250528` (the only activated model); the table above is the target mapping once Seedance 2.x is activated.
+
 Official Go SDK: `github.com/volcengine/ark-runtime-go` v0.11.0
 
 ---

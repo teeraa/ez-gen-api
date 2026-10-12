@@ -27,7 +27,7 @@ func TestCompile_TextOnly(t *testing.T) {
 	if !strings.Contains(result.CompiledPrompt, "warrior") {
 		t.Errorf("expected scene description in prompt, got: %q", result.CompiledPrompt)
 	}
-	if result.ProviderModelID != "dreamina-seedance-2-0-fast-260128" {
+	if result.ProviderModelID != "seedance-1-0-pro-250528" {
 		t.Errorf("unexpected provider model ID: %q", result.ProviderModelID)
 	}
 	if result.Resolution != "720p" {
@@ -75,8 +75,8 @@ func TestCompile_WithCharacterAndStyle(t *testing.T) {
 	if result.Resolution != "1080p" {
 		t.Errorf("expected 1080p for high quality, got: %q", result.Resolution)
 	}
-	if result.GenerateAudio != true {
-		t.Error("expected violet-realism to generate audio")
+	if result.GenerateAudio {
+		t.Error("violet-realism routes to seedance 1.0 pro, which has no audio")
 	}
 
 	// Snapshot must record character profile ID and version
