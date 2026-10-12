@@ -106,6 +106,7 @@ Response ของ job มี field ใหม่:
   - `violet-classic`
   - `characterProfileIds` (request) และ `characters` (scene response)
   - endpoint แชร์ 4 ตัว และ error `JOB_NOT_SHAREABLE` (409)
+  - `preview` ใน SceneDTO
 
 ## 9. แชร์วิดีโอ (ระดับ 1: share link + share sheet)
 
@@ -153,3 +154,28 @@ Endpoint ใหม่ (รายละเอียดใน `video-generation-ap
 
 ### ตั้งค่า
 - [ ] แจ้ง backend ให้ตั้ง `PUBLIC_WEB_BASE_URL` เป็น origin จริงของเว็บ (เช่น `https://violetstudio.app`) เพื่อให้ `url` ถูกต้อง
+
+## 10. Storyboard preview ต่อซีน
+
+`GET /open/v1/dna/scenes` และ `GET /open/v1/dna/scenes/:id` ส่ง `preview` มาให้แต่ละซีน:
+
+```json
+"preview": {
+  "jobId": "uuid",
+  "isSelected": true,
+  "thumbnailUrl": "https://…supabase.co/…",
+  "mediaUrl": "https://…supabase.co/…",
+  "mediaType": "video",
+  "expiresAt": "2026-10-12T10:00:00Z"
+}
+```
+
+- [ ] การ์ดซีนแสดง `preview.thumbnailUrl` เป็นภาพปก (`<img loading="lazy">`)
+- [ ] `thumbnailUrl === null` แต่มี `preview` → ใช้ `<video src={mediaUrl} preload="metadata" muted>` แสดงเฟรมแรกแทน
+- [ ] `preview === null` → placeholder "ยังไม่มีวิดีโอ" + ปุ่ม Generate
+- [ ] Hover (desktop) / แตะ (mobile) เพื่อเล่น preview: สร้าง `<video muted loop playsInline>` เฉพาะตอน hover — **อย่า** mount `<video>` ทุกการ์ดพร้อมกัน (โหลดหนัก)
+- [ ] `isSelected === false` → แสดง badge เล็ก ๆ ว่า "ล่าสุด (ยังไม่ได้เลือก)" และปุ่ม "ใช้คลิปนี้" → `PUT /dna/scenes/:id/select-output/:jobId`
+- [ ] หลัง `select-output` หรือ job ใหม่ของซีน `succeeded` → refetch รายการซีนเพื่ออัปเดต preview
+- [ ] URL หมดอายุใน 1 ชม. (`expiresAt`): refetch storyboard เมื่อกลับมาที่หน้า (focus/visibility) หลังเลย `expiresAt` หรือเมื่อ `<img>/<video> onError`
+- [ ] ไม่ต้องเรียก `GET /jobs/:id` ทีละซีนเพื่อเอา thumbnail อีกต่อไป
+- [ ] `select-output` กับ job ที่ไม่ใช่ของผู้ใช้จะได้ `404` (ไม่ควรเกิดถ้า UI ส่ง jobId ของซีนเอง)

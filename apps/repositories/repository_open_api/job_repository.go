@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/ez-gen/ez-gen-api/apps/models"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -21,6 +22,8 @@ type JobRepository interface {
 	ListUnpersistedOutputs(ctx context.Context, limit int) ([]models.VideoGenerationJob, error)
 	UpdateOutputKeys(ctx context.Context, id string, mediaKey string, thumbKey *string) error
 	UpdateCurrentStep(ctx context.Context, id string, step string) error
+	ListByIDs(ctx context.Context, ids []uuid.UUID, userID string) ([]models.VideoGenerationJob, error)
+	LatestSucceededByScenes(ctx context.Context, sceneIDs []uuid.UUID, userID string) ([]models.VideoGenerationJob, error)
 	AverageGenerationSeconds(ctx context.Context, modelID string, durationSeconds int, quality string, sample int) (float64, int, error)
 }
 
@@ -223,4 +226,37 @@ func (r *jobRepository) AverageGenerationSeconds(ctx context.Context, modelID st
 		return 0, 0, nil
 	}
 	return *out.Avg, out.N, nil
+}
+
+func (r *jobRepository) ListByIDs(ctx context.Context, ids []uuid.UUID, userID string) ([]models.VideoGenerationJob, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var jobs []models.VideoGenerationJob
+	result := r.db.WithContext(ctx).
+		Where("id IN ? AND user_id = ? AND deleted_at IS NULL", ids, userID).
+		Find(&jobs)
+	if result.Error != nil {
+		return nil, wrapErr("list jobs by ids", result.Error)
+	}
+	return jobs, nil
+}
+
+// LatestSucceededByScenes returns, per scene, the most recently completed succeeded job
+// that has a stored output. Scenes with none are absent from the result.
+func (r *jobRepository) LatestSucceededByScenes(ctx context.Context, sceneIDs []uuid.UUID, userID string) ([]models.VideoGenerationJob, error) {
+	if len(sceneIDs) == 0 {
+		return nil, nil
+	}
+	var jobs []models.VideoGenerationJob
+	result := r.db.WithContext(ctx).
+		Raw(`SELECT DISTINCT ON (scene_id) *
+FROM video_generation_jobs
+WHERE scene_id IN ? AND user_id = ? AND status = ? AND output_media_key IS NOT NULL AND deleted_at IS NULL
+ORDER BY scene_id, completed_at DESC NULLS LAST`, sceneIDs, userID, models.JobStatusSucceeded).
+		Scan(&jobs)
+	if result.Error != nil {
+		return nil, wrapErr("latest succeeded jobs by scene", result.Error)
+	}
+	return jobs, nil
 }

@@ -68,7 +68,7 @@ func newCharacter(userID uuid.UUID, name, appearance string) models.CharacterPro
 }
 
 func newDNAFacade(chars *fakeCharacterRepo, scenes *fakeSceneRepo) facade_open_api.DNAFacade {
-	return facade_open_api.NewDNAFacade(nil, chars, nil, scenes)
+	return facade_open_api.NewDNAFacade(nil, chars, nil, scenes, newFakeJobRepo(), storage.NewMemoryClient())
 }
 
 func sceneCharacterOrder(s *models.Scene) []uuid.UUID {

@@ -123,10 +123,14 @@ func (f *jobFacade) attachResult(ctx context.Context, job *models.VideoGeneratio
 // resolveMediaURL passes through provider URLs on rows written before outputs were
 // persisted, so those jobs stay playable until the backfill moves them.
 func (f *jobFacade) resolveMediaURL(ctx context.Context, key string) (string, time.Time, error) {
+	return resolveMediaURL(ctx, f.storage, key)
+}
+
+func resolveMediaURL(ctx context.Context, store mediaStorage, key string) (string, time.Time, error) {
 	if isProviderURL(key) {
 		return key, time.Time{}, nil
 	}
-	return f.storage.SignedURL(ctx, key, signedURLTTL)
+	return store.SignedURL(ctx, key, signedURLTTL)
 }
 
 func isProviderURL(key string) bool {

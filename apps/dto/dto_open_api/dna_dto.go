@@ -75,6 +75,19 @@ type SceneDTO struct {
 	Tags               []TagDTO            `json:"tags"`
 	CreatedAt          string              `json:"createdAt"`
 	UpdatedAt          string              `json:"updatedAt"`
+	// Preview is null when the scene has no succeeded output yet.
+	Preview *ScenePreviewDTO `json:"preview"`
+}
+
+// ScenePreviewDTO shows a scene's output in the storyboard: the selected job, or the
+// latest succeeded job when none is selected. URLs are signed and expire at ExpiresAt.
+type ScenePreviewDTO struct {
+	JobID        string  `json:"jobId"`
+	IsSelected   bool    `json:"isSelected"`
+	ThumbnailURL *string `json:"thumbnailUrl"`
+	MediaURL     string  `json:"mediaUrl"`
+	MediaType    string  `json:"mediaType"`
+	ExpiresAt    *string `json:"expiresAt"`
 }
 
 type SceneCharacterDTO struct {

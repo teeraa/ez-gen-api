@@ -72,7 +72,7 @@ func main() {
 	mediaFetcher := storage.NewHTTPFetcher(nil, storage.ProviderHostSuffixes, maxOutputBytes)
 
 	// ── Facades ───────────────────────────────────────────────────────────────
-	dnaFacade := facade_open_api.NewDNAFacade(tagRepo, characterRepo, styleRepo, sceneRepo)
+	dnaFacade := facade_open_api.NewDNAFacade(tagRepo, characterRepo, styleRepo, sceneRepo, jobRepo, storageClient)
 	jobFacade := facade_open_api.NewJobFacade(
 		jobRepo, uploadRepo, characterRepo, styleRepo, sceneRepo, tagRepo,
 		arkClient, modelRegistry, storageClient, mediaFetcher, cfg.MaxConcurrentJobsPerUser,

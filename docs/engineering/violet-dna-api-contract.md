@@ -333,12 +333,29 @@ Create a scene that references character and style profiles.
   "styleProfileId":     "uuid",
   "previousSceneId":    "uuid",
   "selectedJobId":      null,
+  "preview": {
+    "jobId":        "uuid",
+    "isSelected":   true,
+    "thumbnailUrl": "https://<ref>.supabase.co/storage/v1/object/sign/...",
+    "mediaUrl":     "https://<ref>.supabase.co/storage/v1/object/sign/...",
+    "mediaType":    "video",
+    "expiresAt":    "2026-10-12T10:00:00Z"
+  },
   "sceneOrder":         2,
   "tags":               [ ...TagDTO... ],
   "createdAt":          "2026-10-12T09:00:00Z",
   "updatedAt":          "2026-10-12T09:00:00Z"
 }
 ```
+
+`preview` (storyboard thumbnail/video) is returned by both `GET /dna/scenes` and
+`GET /dna/scenes/:id`:
+- the selected job (`isSelected: true`) when it succeeded and has a stored video,
+- otherwise the scene's most recently completed succeeded job (`isSelected: false`),
+- otherwise `null` (nothing generated yet, or still generating).
+
+`thumbnailUrl` may be `null`. URLs are signed for 1 hour (`expiresAt`); re-fetch the scene(s)
+to refresh them. `expiresAt` is `null` only for legacy rows still holding a provider URL.
 
 `characters` is always an array (`[]` when the scene has none) and is sorted by `sortOrder`.
 `characterProfileId` equals `characters[0].id` (or `null`) and is kept for older clients.
@@ -352,7 +369,8 @@ Create a scene that references character and style profiles.
 
 ### PUT /open/v1/dna/scenes/:id/select-output/:jobId
 
-Mark a generation job as the selected output for this scene.
+Mark a generation job as the selected output for this scene. The job must belong to the
+caller, otherwise **404 NOT_FOUND**.
 
 **Response — 200:**
 ```json

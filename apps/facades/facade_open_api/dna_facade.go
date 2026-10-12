@@ -126,6 +126,8 @@ type dnaFacade struct {
 	characters repository_open_api.CharacterProfileRepository
 	styles     repository_open_api.StyleProfileRepository
 	scenes     repository_open_api.SceneRepository
+	jobs       repository_open_api.JobRepository
+	storage    mediaStorage
 }
 
 func NewDNAFacade(
@@ -133,12 +135,16 @@ func NewDNAFacade(
 	characters repository_open_api.CharacterProfileRepository,
 	styles repository_open_api.StyleProfileRepository,
 	scenes repository_open_api.SceneRepository,
+	jobs repository_open_api.JobRepository,
+	storage mediaStorage,
 ) DNAFacade {
 	return &dnaFacade{
 		tags:       tags,
 		characters: characters,
 		styles:     styles,
 		scenes:     scenes,
+		jobs:       jobs,
+		storage:    storage,
 	}
 }
 
@@ -447,8 +453,9 @@ func (f *dnaFacade) GetScene(ctx context.Context, id, userID string) (*dto_open_
 	if err != nil {
 		return nil, mapRepoErr(err)
 	}
-	dto := mapSceneToDTO(*s)
-	return &dto, nil
+	dtos := []dto_open_api.SceneDTO{mapSceneToDTO(*s)}
+	f.attachScenePreviews(ctx, userID, []models.Scene{*s}, dtos)
+	return &dtos[0], nil
 }
 
 func (f *dnaFacade) ListScenes(ctx context.Context, userID string, page, limit int) (*dto_open_api.SceneListDTO, error) {
@@ -460,6 +467,7 @@ func (f *dnaFacade) ListScenes(ctx context.Context, userID string, page, limit i
 	for i, s := range scenes {
 		items[i] = mapSceneToDTO(s)
 	}
+	f.attachScenePreviews(ctx, userID, scenes, items)
 	return &dto_open_api.SceneListDTO{
 		Items: items,
 		Total: int(total),
@@ -544,6 +552,10 @@ func (f *dnaFacade) SelectSceneOutput(ctx context.Context, sceneID, jobID, userI
 	jobUUID, err := uuid.Parse(jobID)
 	if err != nil {
 		return ErrValidation
+	}
+	// Without this, a scene could point at another user's job ID.
+	if _, err := f.jobs.FindByID(ctx, jobID, userID); err != nil {
+		return mapRepoErr(err)
 	}
 	if err := f.scenes.SetSelectedJob(ctx, sceneUUID, jobUUID, userID); err != nil {
 		return mapRepoErr(err)
