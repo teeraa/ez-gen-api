@@ -112,7 +112,8 @@ func newOutputJob(status models.JobStatus, submittedAgo time.Duration) *models.V
 }
 
 func newOutputFacade(repo *fakeJobRepo, ark *modelark.MockClient, store *storage.MemoryClient, fetcher *fakeFetcher) facade_open_api.JobFacade {
-	return facade_open_api.NewJobFacade(repo, nil, nil, nil, nil, nil, ark, store, fetcher, 3)
+	registry, _ := modelark.NewRegistry("")
+	return facade_open_api.NewJobFacade(repo, nil, nil, nil, nil, nil, ark, registry, store, fetcher, 3)
 }
 
 func TestPollAndUpdate_PersistsOutputsToStorage(t *testing.T) {
@@ -223,5 +224,117 @@ func TestBackfillOutputs_MovesProviderURLsToStorage(t *testing.T) {
 	}
 	if got.OutputThumbKey == nil || strings.HasPrefix(*got.OutputThumbKey, "http") {
 		t.Errorf("thumb key not replaced: %v", got.OutputThumbKey)
+	}
+}
+
+func (r *fakeJobRepo) Create(_ context.Context, job *models.VideoGenerationJob) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if job.ID == uuid.Nil {
+		job.ID = uuid.New()
+	}
+	c := *job
+	r.jobs[job.ID.String()] = &c
+	return nil
+}
+
+func (r *fakeJobRepo) CountActiveByUser(context.Context, string) (int64, error) { return 0, nil }
+
+type fakeSceneRepo struct {
+	repository_open_api.SceneRepository
+	mu     sync.Mutex
+	scenes map[string]*models.Scene
+}
+
+func (r *fakeSceneRepo) FindByID(_ context.Context, id, userID string) (*models.Scene, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s, ok := r.scenes[id]
+	if !ok || s.UserID.String() != userID {
+		return nil, repository_open_api.ErrNotFound
+	}
+	c := *s
+	return &c, nil
+}
+
+func (r *fakeSceneRepo) Create(_ context.Context, scene *models.Scene) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	scene.ID = uuid.New()
+	c := *scene
+	r.scenes[scene.ID.String()] = &c
+	return nil
+}
+
+func TestContinueScene_UsesPreviousLastFrameAsFirstFrame(t *testing.T) {
+	t.Parallel()
+	prevJob := newOutputJob(models.JobStatusSucceeded, time.Hour)
+	thumbKey := storage.KeyForThumbnail(prevJob.UserID.String(), prevJob.ID.String(), "png")
+	prevJob.OutputThumbKey = &thumbKey
+	jobs := newFakeJobRepo(prevJob)
+
+	prevScene := &models.Scene{UserID: prevJob.UserID, SelectedJobID: &prevJob.ID}
+	prevScene.ID = uuid.New()
+	scenes := &fakeSceneRepo{scenes: map[string]*models.Scene{prevScene.ID.String(): prevScene}}
+
+	ark := modelark.NewMockClient()
+	registry, _ := modelark.NewRegistry("seedance-1-0-pro-250528")
+	f := facade_open_api.NewJobFacade(jobs, nil, nil, nil, scenes, nil, ark, registry,
+		storage.NewMemoryClient(), &fakeFetcher{}, 3)
+
+	_, err := f.ContinueScene(t.Context(), prevScene.ID.String(), prevJob.UserID.String(), facade_open_api.ContinueSceneInput{
+		ActionOverride:  "she walks to the river",
+		ModelID:         "violet-motion-2",
+		AspectRatio:     "16:9",
+		DurationSeconds: 5,
+		Quality:         "standard",
+		UseLastFrame:    true,
+	})
+	if err != nil {
+		t.Fatalf("continue scene: %v", err)
+	}
+	if len(ark.CreatedRequests) != 1 {
+		t.Fatalf("expected one provider task, got %d", len(ark.CreatedRequests))
+	}
+	req := ark.CreatedRequests[0]
+	if req.Model != "seedance-1-0-pro-250528" {
+		t.Errorf("model = %q, want ARK_DEFAULT_MODEL override", req.Model)
+	}
+	var frame *modelark.ContentItem
+	for i := range req.Content {
+		if req.Content[i].Role == modelark.RoleFirstFrame {
+			frame = &req.Content[i]
+		}
+	}
+	if frame == nil {
+		t.Fatalf("no first_frame content item in %+v", req.Content)
+	}
+	if frame.URL != "https://storage.test/signed/"+thumbKey {
+		t.Errorf("first frame url = %q, want signed storage url", frame.URL)
+	}
+}
+
+func TestContinueScene_WithoutLastFrameIsTextOnly(t *testing.T) {
+	t.Parallel()
+	userID := uuid.New()
+	prevScene := &models.Scene{UserID: userID}
+	prevScene.ID = uuid.New()
+	scenes := &fakeSceneRepo{scenes: map[string]*models.Scene{prevScene.ID.String(): prevScene}}
+	ark := modelark.NewMockClient()
+	registry, _ := modelark.NewRegistry("")
+	f := facade_open_api.NewJobFacade(newFakeJobRepo(), nil, nil, nil, scenes, nil, ark, registry,
+		storage.NewMemoryClient(), &fakeFetcher{}, 3)
+
+	_, err := f.ContinueScene(t.Context(), prevScene.ID.String(), userID.String(), facade_open_api.ContinueSceneInput{
+		ActionOverride: "next shot", ModelID: "violet-classic", AspectRatio: "16:9",
+		DurationSeconds: 5, Quality: "standard", UseLastFrame: true,
+	})
+	if err != nil {
+		t.Fatalf("continue scene: %v", err)
+	}
+	for _, item := range ark.CreatedRequests[0].Content {
+		if item.Role == modelark.RoleFirstFrame {
+			t.Error("unexpected first_frame when previous scene has no selected output")
+		}
 	}
 }

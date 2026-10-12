@@ -9,6 +9,7 @@ import (
 
 	"github.com/ez-gen/ez-gen-api/apps/dto/dto_open_api"
 	"github.com/ez-gen/ez-gen-api/apps/models"
+	"github.com/ez-gen/ez-gen-api/apps/services/modelark"
 	"github.com/ez-gen/ez-gen-api/apps/services/storage"
 )
 
@@ -20,6 +21,10 @@ const signedURLTTL = time.Hour
 type mediaStorage interface {
 	Upload(ctx context.Context, key string, data []byte, contentType string) error
 	SignedURL(ctx context.Context, key string, ttl time.Duration) (string, time.Time, error)
+}
+
+type modelRegistry interface {
+	Lookup(internalID string) (modelark.ModelConfig, bool)
 }
 
 type mediaFetcher interface {
@@ -126,4 +131,19 @@ func (f *jobFacade) resolveMediaURL(ctx context.Context, key string) (string, ti
 
 func isProviderURL(key string) bool {
 	return strings.HasPrefix(key, "http://") || strings.HasPrefix(key, "https://")
+}
+
+func frameMimeType(key string) string {
+	path := key
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		path = path[:i]
+	}
+	switch {
+	case strings.HasSuffix(path, ".jpg"), strings.HasSuffix(path, ".jpeg"):
+		return "image/jpeg"
+	case strings.HasSuffix(path, ".webp"):
+		return "image/webp"
+	default:
+		return "image/png"
+	}
 }

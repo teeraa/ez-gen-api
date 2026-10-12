@@ -52,6 +52,13 @@ func main() {
 
 	// ── External services ─────────────────────────────────────────────────────
 	arkClient := modelark.NewClient(cfg.ArkAPIKey, cfg.ArkBaseURL)
+	modelRegistry, err := modelark.NewRegistry(cfg.ArkDefaultModel)
+	if err != nil {
+		log.Fatalf("ARK_DEFAULT_MODEL: %v", err)
+	}
+	for id, provider := range modelRegistry.Routes() {
+		log.Printf("[ark] model %s -> %s", id, provider)
+	}
 
 	if cfg.StorageProvider != "supabase" {
 		log.Fatalf("storage: STORAGE_PROVIDER=%q is not supported (use supabase)", cfg.StorageProvider)
@@ -66,7 +73,7 @@ func main() {
 	dnaFacade := facade_open_api.NewDNAFacade(tagRepo, characterRepo, styleRepo, sceneRepo)
 	jobFacade := facade_open_api.NewJobFacade(
 		jobRepo, uploadRepo, characterRepo, styleRepo, sceneRepo, tagRepo,
-		arkClient, storageClient, mediaFetcher, cfg.MaxConcurrentJobsPerUser,
+		arkClient, modelRegistry, storageClient, mediaFetcher, cfg.MaxConcurrentJobsPerUser,
 	)
 
 	// ── HTTP application ──────────────────────────────────────────────────────

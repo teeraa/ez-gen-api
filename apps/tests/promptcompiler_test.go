@@ -1,10 +1,12 @@
 package tests
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/ez-gen/ez-gen-api/apps/models"
+	"github.com/ez-gen/ez-gen-api/apps/services/modelark"
 	"github.com/ez-gen/ez-gen-api/apps/services/promptcompiler"
 )
 
@@ -17,7 +19,7 @@ func TestCompile_TextOnly(t *testing.T) {
 			Description: "A warrior stands on a hill at dusk",
 		},
 	}
-	result, err := promptcompiler.Compile(in)
+	result, err := compileForTest(in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -27,7 +29,7 @@ func TestCompile_TextOnly(t *testing.T) {
 	if !strings.Contains(result.CompiledPrompt, "warrior") {
 		t.Errorf("expected scene description in prompt, got: %q", result.CompiledPrompt)
 	}
-	if result.ProviderModelID != "seedance-1-0-pro-250528" {
+	if result.ProviderModelID != "dreamina-seedance-2-0-fast-260128" {
 		t.Errorf("unexpected provider model ID: %q", result.ProviderModelID)
 	}
 	if result.Resolution != "720p" {
@@ -58,7 +60,7 @@ func TestCompile_WithCharacterAndStyle(t *testing.T) {
 			Description: "Elena charges toward the gate",
 		},
 	}
-	result, err := promptcompiler.Compile(in)
+	result, err := compileForTest(in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -75,8 +77,8 @@ func TestCompile_WithCharacterAndStyle(t *testing.T) {
 	if result.Resolution != "1080p" {
 		t.Errorf("expected 1080p for high quality, got: %q", result.Resolution)
 	}
-	if result.GenerateAudio {
-		t.Error("violet-realism routes to seedance 1.0 pro, which has no audio")
+	if !result.GenerateAudio {
+		t.Error("expected violet-realism to generate audio")
 	}
 
 	// Snapshot must record character profile ID and version
@@ -98,7 +100,7 @@ func TestCompile_CameraOverrideFromScene(t *testing.T) {
 			CameraOverride: "extreme close-up",
 		},
 	}
-	result, err := promptcompiler.Compile(in)
+	result, err := compileForTest(in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -121,7 +123,7 @@ func TestCompile_NegativeTagsIsolated(t *testing.T) {
 			{Slug: "cinematic", Name: "Cinematic", Category: models.TagCategoryVisualStyle},
 		},
 	}
-	result, err := promptcompiler.Compile(in)
+	result, err := compileForTest(in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -143,7 +145,7 @@ func TestCompile_UnknownModelError(t *testing.T) {
 		Quality: "standard",
 		Scene:   &promptcompiler.SceneInputs{Description: "test"},
 	}
-	_, err := promptcompiler.Compile(in)
+	_, err := compileForTest(in)
 	if err == nil {
 		t.Error("expected error for unknown model, got nil")
 	}
@@ -157,7 +159,7 @@ func TestCompile_PromptTruncatedAt2000(t *testing.T) {
 		Quality: "standard",
 		Scene:   &promptcompiler.SceneInputs{Description: longText},
 	}
-	result, err := promptcompiler.Compile(in)
+	result, err := compileForTest(in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -176,7 +178,7 @@ func TestCompile_ImageToVideoRequiresFirstFrameAsset(t *testing.T) {
 			{UploadID: "upload-1", StorageKey: "s3://bucket/img.jpg", Role: "first_frame", MimeType: "image/jpeg"},
 		},
 	}
-	result, err := promptcompiler.Compile(in)
+	result, err := compileForTest(in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -205,7 +207,7 @@ func TestCompile_SnapshotCaptures_ProfileVersions(t *testing.T) {
 			VisualStyle: "anime",
 		},
 	}
-	result, err := promptcompiler.Compile(in)
+	result, err := compileForTest(in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -224,7 +226,7 @@ func TestCompile_SeedanceOnePro(t *testing.T) {
 		Quality: "high",
 		Scene:   &promptcompiler.SceneInputs{Description: "A lantern drifts over a river"},
 	}
-	result, err := promptcompiler.Compile(in)
+	result, err := compileForTest(in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -237,4 +239,16 @@ func TestCompile_SeedanceOnePro(t *testing.T) {
 	if result.Resolution != "1080p" {
 		t.Errorf("expected 1080p for high quality, got: %q", result.Resolution)
 	}
+}
+
+func compileForTest(in promptcompiler.Inputs) (*promptcompiler.Result, error) {
+	registry, err := modelark.NewRegistry("")
+	if err != nil {
+		return nil, err
+	}
+	model, ok := registry.Lookup(in.ModelID)
+	if !ok {
+		return nil, fmt.Errorf("unknown model %q", in.ModelID)
+	}
+	return promptcompiler.Compile(in, model)
 }

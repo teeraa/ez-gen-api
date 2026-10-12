@@ -44,6 +44,10 @@ type CreateJobInput struct {
 	StyleProfileID     *string
 	TagIDs             []string
 	IdempotencyKey     *string
+
+	// firstFrameKey is a storage key (or legacy provider URL) of a frame produced by an
+	// earlier job. Unexported so only ContinueScene can set it, never request input.
+	firstFrameKey string
 }
 
 // ContinueSceneInput carries per-scene overrides for a Continue Scene operation.
@@ -68,6 +72,7 @@ type jobFacade struct {
 	scenes     repository_open_api.SceneRepository
 	tags       repository_open_api.TagRepository
 	ark        modelark.Client
+	models     modelRegistry
 	storage    mediaStorage
 	fetcher    mediaFetcher
 	maxActive  int
@@ -81,6 +86,7 @@ func NewJobFacade(
 	scenes repository_open_api.SceneRepository,
 	tags repository_open_api.TagRepository,
 	ark modelark.Client,
+	modelRegistry modelRegistry,
 	storage mediaStorage,
 	fetcher mediaFetcher,
 	maxConcurrentJobsPerUser int,
@@ -93,6 +99,7 @@ func NewJobFacade(
 		scenes:     scenes,
 		tags:       tags,
 		ark:        ark,
+		models:     modelRegistry,
 		storage:    storage,
 		fetcher:    fetcher,
 		maxActive:  maxConcurrentJobsPerUser,
@@ -122,7 +129,7 @@ func (f *jobFacade) CreateJob(ctx context.Context, userID string, in CreateJobIn
 
 	// Validate upload when required by mode
 	var upload *models.Upload
-	if in.Mode == "image_video" || in.Mode == "image_image" {
+	if (in.Mode == "image_video" || in.Mode == "image_image") && in.firstFrameKey == "" {
 		if in.UploadID == nil || *in.UploadID == "" {
 			return nil, ErrImageRequired
 		}
@@ -139,7 +146,7 @@ func (f *jobFacade) CreateJob(ctx context.Context, userID string, in CreateJobIn
 	}
 
 	// Validate model
-	modelCfg, ok := modelark.KnownModels[in.ModelID]
+	modelCfg, ok := f.models.Lookup(in.ModelID)
 	if !ok {
 		return nil, ErrModelInvalid
 	}
@@ -158,9 +165,22 @@ func (f *jobFacade) CreateJob(ctx context.Context, userID string, in CreateJobIn
 	if err != nil {
 		return nil, err
 	}
-	compiled, err := promptcompiler.Compile(compilerIn)
+	compiled, err := promptcompiler.Compile(compilerIn, modelCfg)
 	if err != nil {
 		return nil, fmt.Errorf("compile prompt: %w", err)
+	}
+	// BytePlus downloads reference media itself, so it needs a URL it can reach,
+	// not our private storage key.
+	for i := range compiled.ContentItems {
+		item := &compiled.ContentItems[i]
+		if item.URL == "" {
+			continue
+		}
+		signed, _, err := f.resolveMediaURL(ctx, item.URL)
+		if err != nil {
+			return nil, fmt.Errorf("sign reference media: %w", err)
+		}
+		item.URL = signed
 	}
 
 	// Snapshot
@@ -356,15 +376,12 @@ func (f *jobFacade) ContinueScene(ctx context.Context, sceneID, userID string, i
 		_ = f.scenes.SetTags(ctx, newScene.ID, tagIDs)
 	}
 
-	// Build a keyframe asset from the previous scene's last frame if available
-	var uploadID *string
+	var firstFrameKey string
 	mode := "text"
 	if in.UseLastFrame && prev.SelectedJobID != nil {
-		// Locate the last-frame output from the selected job
 		prevJob, err := f.jobs.FindByID(ctx, prev.SelectedJobID.String(), userID)
-		if err == nil && prevJob.OutputThumbKey != nil {
-			k := *prevJob.OutputThumbKey
-			uploadID = &k
+		if err == nil && prevJob.Status == models.JobStatusSucceeded && prevJob.OutputThumbKey != nil {
+			firstFrameKey = *prevJob.OutputThumbKey
 			mode = "image_video"
 		}
 	}
@@ -377,7 +394,6 @@ func (f *jobFacade) ContinueScene(ctx context.Context, sceneID, userID string, i
 		AspectRatio:     in.AspectRatio,
 		DurationSeconds: in.DurationSeconds,
 		Quality:         in.Quality,
-		UploadID:        uploadID,
 		SceneID:         &sceneIDStr,
 		IdempotencyKey:  in.IdempotencyKey,
 	}
@@ -389,6 +405,8 @@ func (f *jobFacade) ContinueScene(ctx context.Context, sceneID, userID string, i
 		v := newScene.StyleProfileID.String()
 		jobIn.StyleProfileID = &v
 	}
+
+	jobIn.firstFrameKey = firstFrameKey
 
 	return f.CreateJob(ctx, userID, jobIn)
 }
@@ -515,6 +533,14 @@ func (f *jobFacade) buildCompilerInputs(ctx context.Context, userID string, in C
 			StorageKey: upload.StorageKey,
 			Role:       role,
 			MimeType:   upload.MimeType,
+		})
+	}
+
+	if upload == nil && in.firstFrameKey != "" {
+		inputs.Assets = append(inputs.Assets, promptcompiler.AssetRef{
+			StorageKey: in.firstFrameKey,
+			Role:       "first_frame",
+			MimeType:   frameMimeType(in.firstFrameKey),
 		})
 	}
 

@@ -113,8 +113,18 @@ func TestJobStatus_IsTerminal(t *testing.T) {
 	}
 }
 
+func mustRegistry(t *testing.T, override string) *modelark.Registry {
+	t.Helper()
+	r, err := modelark.NewRegistry(override)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	return r
+}
+
 func TestModelConfig_SupportsOutput(t *testing.T) {
 	t.Parallel()
+	registry := mustRegistry(t, "")
 	cases := []struct {
 		name     string
 		model    string
@@ -126,14 +136,13 @@ func TestModelConfig_SupportsOutput(t *testing.T) {
 		{"classic max duration", "violet-classic", "21:9", 12, true},
 		{"classic too long", "violet-classic", "16:9", 15, false},
 		{"classic unknown ratio", "violet-classic", "2:1", 5, false},
-		{"realism over max", "violet-realism", "16:9", 30, false},
-		{"motion within range", "violet-motion-2", "21:9", 8, true},
+		{"realism long duration", "violet-realism", "16:9", 30, true},
+		{"motion over max", "violet-motion-2", "16:9", 20, false},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			cfg, ok := modelark.KnownModels[tc.model]
+			cfg, ok := registry.Lookup(tc.model)
 			if !ok {
 				t.Fatalf("model %q not registered", tc.model)
 			}
@@ -144,28 +153,42 @@ func TestModelConfig_SupportsOutput(t *testing.T) {
 	}
 }
 
-func TestKnownModels_ClassicCapabilities(t *testing.T) {
+func TestRegistry_ClassicCapabilities(t *testing.T) {
 	t.Parallel()
-	cfg := modelark.KnownModels["violet-classic"]
-	if cfg.SupportsAudio {
-		t.Error("violet-classic must not request audio")
-	}
-	if cfg.SupportsRefImage {
-		t.Error("violet-classic must not accept reference images")
-	}
-	if !cfg.SupportsImgVideo {
-		t.Error("violet-classic should support first-frame image-to-video")
+	cfg, _ := mustRegistry(t, "").Lookup("violet-classic")
+	if cfg.ProviderModelID != "seedance-1-0-pro-250528" || cfg.SupportsAudio || cfg.SupportsRefImage || !cfg.SupportsImgVideo {
+		t.Errorf("unexpected violet-classic config: %+v", cfg)
 	}
 }
 
-func TestKnownModels_AllRouteToSeedanceOnePro(t *testing.T) {
+func TestRegistry_OverrideRoutesAllModels(t *testing.T) {
 	t.Parallel()
-	for id, cfg := range modelark.KnownModels {
-		if cfg.ProviderModelID != "seedance-1-0-pro-250528" {
-			t.Errorf("%s routes to %q, want seedance-1-0-pro-250528", id, cfg.ProviderModelID)
+	registry := mustRegistry(t, "seedance-1-0-pro-250528")
+	for id, provider := range registry.Routes() {
+		if provider != "seedance-1-0-pro-250528" {
+			t.Errorf("%s routes to %q", id, provider)
 		}
-		if cfg.SupportsAudio {
-			t.Errorf("%s must not request audio on seedance 1.0 pro", id)
-		}
+	}
+	cfg, _ := registry.Lookup("violet-realism")
+	if cfg.SupportsAudio || cfg.MaxDuration != 12 || cfg.DisplayName != "Violet Realism" {
+		t.Errorf("override must use the provider's capabilities and keep the display name: %+v", cfg)
+	}
+}
+
+func TestRegistry_DefaultMapping(t *testing.T) {
+	t.Parallel()
+	cfg, _ := mustRegistry(t, "").Lookup("violet-realism")
+	if cfg.ProviderModelID != "dreamina-seedance-2-5-260628" || !cfg.SupportsAudio {
+		t.Errorf("unexpected default mapping: %+v", cfg)
+	}
+}
+
+func TestRegistry_RejectsUnknownProviderModel(t *testing.T) {
+	t.Parallel()
+	if _, err := modelark.NewRegistry("seedance-9-9"); err == nil {
+		t.Error("expected error for unknown provider model")
+	}
+	if _, ok := mustRegistry(t, "").Lookup("nonexistent-model"); ok {
+		t.Error("unknown internal model must not resolve")
 	}
 }

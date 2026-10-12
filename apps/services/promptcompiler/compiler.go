@@ -5,7 +5,6 @@ package promptcompiler
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 
 	"github.com/ez-gen/ez-gen-api/apps/models"
@@ -61,11 +60,7 @@ type SnapshotAsset struct {
 
 // Compile is deterministic: same inputs always produce the same output.
 // It does not make network calls or read from the database.
-func Compile(in Inputs) (*Result, error) {
-	model, ok := modelark.KnownModels[in.ModelID]
-	if !ok {
-		return nil, fmt.Errorf("unknown model %q", in.ModelID)
-	}
+func Compile(in Inputs, model modelark.ModelConfig) (*Result, error) {
 
 	// ── 1. Validate asset support ──────────────────────────────────────────────
 	mode, err := resolveMode(in.Assets)
@@ -142,7 +137,7 @@ func Compile(in Inputs) (*Result, error) {
 		}
 		items = append(items, modelark.ContentItem{
 			Type: ct,
-			URL:  asset.StorageKey, // facade replaces with signed URL before submission
+			URL:  asset.StorageKey, // facade replaces with a signed URL before submission
 			Role: role,
 		})
 	}

@@ -63,7 +63,7 @@ func Load() *Config {
 
 		ArkAPIKey:              os.Getenv("ARK_API_KEY"),
 		ArkBaseURL:             getEnv("ARK_BASE_URL", "https://ark.ap-southeast.bytepluses.com"),
-		ArkDefaultModel:        getEnv("ARK_DEFAULT_MODEL", "dreamina-seedance-2-0-fast-260128"),
+		ArkDefaultModel:        os.Getenv("ARK_DEFAULT_MODEL"),
 		ArkRequestTimeout:      time.Duration(getEnvInt("ARK_REQUEST_TIMEOUT_SECONDS", 300)) * time.Second,
 		ArkPollIntervalSeconds: getEnvInt("ARK_POLL_INTERVAL_SECONDS", 5),
 
