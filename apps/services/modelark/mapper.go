@@ -31,6 +31,21 @@ type ModelConfig struct {
 	MaxDuration      int
 	SupportsAudio    bool
 	SupportsImgVideo bool
+	SupportsRefImage bool
+}
+
+// SupportsOutput reports whether the model accepts the given aspect ratio and duration.
+// Checking here turns a provider-side 4xx into a MODEL_NOT_SUPPORTED response.
+func (m ModelConfig) SupportsOutput(ratio string, durationSeconds int) bool {
+	if durationSeconds < m.MinDuration || durationSeconds > m.MaxDuration {
+		return false
+	}
+	for _, r := range m.SupportedRatios {
+		if r == ratio {
+			return true
+		}
+	}
+	return false
 }
 
 // KnownModels is the authoritative in-process model registry.
@@ -46,6 +61,7 @@ var KnownModels = map[string]ModelConfig{
 		MaxDuration:      15,
 		SupportsAudio:    false,
 		SupportsImgVideo: true,
+		SupportsRefImage: true,
 	},
 	"violet-cinema": {
 		InternalID:       "violet-cinema",
@@ -57,6 +73,7 @@ var KnownModels = map[string]ModelConfig{
 		MaxDuration:      15,
 		SupportsAudio:    false,
 		SupportsImgVideo: true,
+		SupportsRefImage: true,
 	},
 	"violet-fast": {
 		InternalID:       "violet-fast",
@@ -68,6 +85,7 @@ var KnownModels = map[string]ModelConfig{
 		MaxDuration:      15,
 		SupportsAudio:    false,
 		SupportsImgVideo: true,
+		SupportsRefImage: true,
 	},
 	"violet-realism": {
 		InternalID:       "violet-realism",
@@ -79,6 +97,19 @@ var KnownModels = map[string]ModelConfig{
 		MaxDuration:      30,
 		SupportsAudio:    true,
 		SupportsImgVideo: true,
+		SupportsRefImage: true,
+	},
+	"violet-classic": {
+		InternalID:       "violet-classic",
+		ProviderModelID:  "seedance-1-0-pro-250528",
+		DisplayName:      "Violet Classic",
+		MaxResolution:    "1080p",
+		SupportedRatios:  []string{"16:9", "9:16", "1:1", "4:3", "3:4", "21:9"},
+		MinDuration:      2,
+		MaxDuration:      12,
+		SupportsAudio:    false,
+		SupportsImgVideo: true,
+		SupportsRefImage: false,
 	},
 }
 

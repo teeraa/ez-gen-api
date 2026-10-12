@@ -306,6 +306,7 @@ Failure to follow this workflow will result in broken media links within 24 hour
 | `violet-cinema` | `dreamina-seedance-2-0-260128` | 4K | 4–15 s | No | Yes |
 | `violet-fast` | (same as violet-motion-2) | 720p | 4–15 s | No | Yes |
 | `violet-realism` | `dreamina-seedance-2-5-260628` | 1080p | 4–30 s | Yes | Yes |
+| `violet-classic` | `seedance-1-0-pro-250528` | 1080p | 2–12 s (API min 4) | No | Yes (first frame only; no reference images) |
 
 > **[IMPORTANT — verify this mapping]** The table above is a **proposed mapping** 
 > from VIOLET STUDIO's UI model names to BytePlus model IDs, based on the available 

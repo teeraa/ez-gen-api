@@ -138,6 +138,12 @@ func (f *jobFacade) CreateJob(ctx context.Context, userID string, in CreateJobIn
 	if in.Mode == "image_video" && !modelCfg.SupportsImgVideo {
 		return nil, ErrModelInvalid
 	}
+	if in.Mode == "image_image" && !modelCfg.SupportsRefImage {
+		return nil, ErrModelInvalid
+	}
+	if !modelCfg.SupportsOutput(in.AspectRatio, in.DurationSeconds) {
+		return nil, ErrModelInvalid
+	}
 
 	// Compile prompt
 	compilerIn, err := f.buildCompilerInputs(ctx, userID, in, upload)

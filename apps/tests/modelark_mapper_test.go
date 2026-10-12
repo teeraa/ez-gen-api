@@ -112,3 +112,48 @@ func TestJobStatus_IsTerminal(t *testing.T) {
 		}
 	}
 }
+
+func TestModelConfig_SupportsOutput(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		model    string
+		ratio    string
+		duration int
+		want     bool
+	}{
+		{"classic within range", "violet-classic", "16:9", 10, true},
+		{"classic max duration", "violet-classic", "21:9", 12, true},
+		{"classic too long", "violet-classic", "16:9", 15, false},
+		{"classic unknown ratio", "violet-classic", "2:1", 5, false},
+		{"realism long duration", "violet-realism", "16:9", 30, true},
+		{"motion over max", "violet-motion-2", "16:9", 20, false},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg, ok := modelark.KnownModels[tc.model]
+			if !ok {
+				t.Fatalf("model %q not registered", tc.model)
+			}
+			if got := cfg.SupportsOutput(tc.ratio, tc.duration); got != tc.want {
+				t.Errorf("SupportsOutput(%q, %d) = %v, want %v", tc.ratio, tc.duration, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestKnownModels_ClassicCapabilities(t *testing.T) {
+	t.Parallel()
+	cfg := modelark.KnownModels["violet-classic"]
+	if cfg.SupportsAudio {
+		t.Error("violet-classic must not request audio")
+	}
+	if cfg.SupportsRefImage {
+		t.Error("violet-classic must not accept reference images")
+	}
+	if !cfg.SupportsImgVideo {
+		t.Error("violet-classic should support first-frame image-to-video")
+	}
+}

@@ -216,3 +216,25 @@ func TestCompile_SnapshotCaptures_ProfileVersions(t *testing.T) {
 		t.Errorf("expected snapshot style profile ID, got %q", result.Snapshot.StyleProfileID)
 	}
 }
+
+func TestCompile_SeedanceOnePro(t *testing.T) {
+	t.Parallel()
+	in := promptcompiler.Inputs{
+		ModelID: "violet-classic",
+		Quality: "high",
+		Scene:   &promptcompiler.SceneInputs{Description: "A lantern drifts over a river"},
+	}
+	result, err := promptcompiler.Compile(in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.ProviderModelID != "seedance-1-0-pro-250528" {
+		t.Errorf("unexpected provider model ID: %q", result.ProviderModelID)
+	}
+	if result.GenerateAudio {
+		t.Error("seedance 1.0 pro does not support audio; GenerateAudio must be false")
+	}
+	if result.Resolution != "1080p" {
+		t.Errorf("expected 1080p for high quality, got: %q", result.Resolution)
+	}
+}

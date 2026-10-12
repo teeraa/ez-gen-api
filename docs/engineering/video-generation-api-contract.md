@@ -96,7 +96,7 @@ Submit a new AI video generation request.
 {
   "prompt":           "string (1–2000 chars, required)",
   "mode":             "text | image_video | image_image",
-  "model":            "violet-motion-2 | violet-cinema | violet-fast | violet-realism",
+  "model":            "violet-motion-2 | violet-cinema | violet-fast | violet-realism | violet-classic",
   "aspectRatio":      "16:9 | 9:16 | 1:1",
   "duration":         5 | 10,
   "quality":          "standard | high",
@@ -353,6 +353,9 @@ Media in object storage is deleted asynchronously.
 | Violet Cinema | `violet-cinema` | [see modelark-integration-research.md] |
 | Violet Fast | `violet-fast` | [see modelark-integration-research.md] |
 | Violet Realism | `violet-realism` | [see modelark-integration-research.md] |
+| Violet Classic | `violet-classic` | [see modelark-integration-research.md] |
+
+Each model's aspect-ratio list and duration range are enforced server-side; a request outside them, or `image_image` mode on a model without reference-image support (`violet-classic`), returns `422 MODEL_NOT_SUPPORTED`.
 
 The mapping from `model` → BytePlus model ID lives in `model_configs` table
 (or a Go constant map until the database table is populated).

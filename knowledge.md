@@ -75,6 +75,7 @@ Internal → BytePlus mapping (proposed — verify with team before implementing
 | `violet-cinema` | Violet Cinema | `dreamina-seedance-2-0-260128` |
 | `violet-fast` | Violet Fast | `dreamina-seedance-2-0-fast-260128` (same as motion-2; confirm) |
 | `violet-realism` | Violet Realism | `dreamina-seedance-2-5-260628` |
+| `violet-classic` | Violet Classic | `seedance-1-0-pro-250528` (Seedance 1.0 Pro) |
 
 Official Go SDK: `github.com/volcengine/ark-runtime-go` v0.11.0
 
