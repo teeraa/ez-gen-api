@@ -284,6 +284,7 @@ Create a scene that references character and style profiles.
 {
   "title":              "The Gate Assault",
   "description":        "Elena charges toward the castle gate at dawn",
+  "characterProfileIds": ["uuid-elena", "uuid-somchai"],
   "characterProfileId": "uuid",
   "styleProfileId":     "uuid",
   "previousSceneId":    "uuid",
@@ -294,6 +295,17 @@ Create a scene that references character and style profiles.
   "tagIds":             ["uuid"]
 }
 ```
+
+**Characters (max 3 per scene):**
+- `characterProfileIds` is the ordered list of characters (max 3, no duplicates). Order is
+  kept and used in the prompt; put the lead character first.
+- `characterProfileId` (single) is still accepted for older clients and means a one-item list.
+  When both are sent, `characterProfileIds` wins.
+- Every ID must be the caller's own character profile, otherwise **404 NOT_FOUND** (the
+  response does not say which ID). More than 3 or duplicates → **400 VALIDATION_ERROR**.
+- `PUT`: sending `characterProfileIds` replaces the whole list (`[]` clears it); sending only
+  `characterProfileId` replaces the list with that one character (`""` clears it); sending
+  neither leaves the characters unchanged.
 
 **Precedence rules for the Prompt Compiler:**
 
@@ -314,6 +326,10 @@ Create a scene that references character and style profiles.
   "title":              "The Gate Assault",
   "description":        "...",
   "characterProfileId": "uuid",
+  "characters": [
+    { "id": "uuid-elena",   "name": "Elena",   "sortOrder": 0 },
+    { "id": "uuid-somchai", "name": "Somchai", "sortOrder": 1 }
+  ],
   "styleProfileId":     "uuid",
   "previousSceneId":    "uuid",
   "selectedJobId":      null,
@@ -323,6 +339,9 @@ Create a scene that references character and style profiles.
   "updatedAt":          "2026-10-12T09:00:00Z"
 }
 ```
+
+`characters` is always an array (`[]` when the scene has none) and is sorted by `sortOrder`.
+`characterProfileId` equals `characters[0].id` (or `null`) and is kept for older clients.
 
 ### GET /open/v1/dna/scenes         — list ordered by sceneOrder ASC
 ### GET /open/v1/dna/scenes/:id     — get with preloaded profiles + tags
@@ -353,7 +372,7 @@ Create a new scene as a sequel to the specified scene, then immediately
 submit a generation job for it.
 
 The new scene **inherits** from the previous scene:
-- `characterProfileId` (from previous scene)
+- all characters, in the same order (from previous scene)
 - `styleProfileId` (from previous scene)
 - all tags (copied)
 
@@ -410,8 +429,10 @@ image for the new generation, creating visual continuity between scenes.
 ### POST /open/v1/dna/scenes/:id/generate
 
 Submit a generation job for an existing scene without creating a new scene.
-The scene's current character profile, style profile, and tags are read at
-submission time and snapshotted into the job's `effectiveInputs`.
+The scene's current characters (all of them, in order), style profile, and tags are read at
+submission time and snapshotted into the job's `effectiveInputs`. Sending
+`characterProfileIds`/`characterProfileId` in the body overrides the scene's characters for
+this job only.
 
 **Request body:** same as `POST /open/v1/jobs`
 
@@ -436,6 +457,7 @@ Create a generation job. Extended to accept VIOLET DNA references.
   "referenceImageId":   null,
   "sceneId":            "uuid",
   "characterProfileId": "uuid",
+  "characterProfileIds": ["uuid"],
   "styleProfileId":     "uuid",
   "tagIds":             ["uuid"],
   "idempotencyKey":     "uuid"
@@ -445,6 +467,10 @@ Create a generation job. Extended to accept VIOLET DNA references.
 When `sceneId`, `characterProfileId`, or `styleProfileId` are provided,
 the Prompt Compiler assembles the effective prompt from those profiles plus
 the raw `prompt` field. The compiled prompt is stored in `compiledPrompt`.
+
+Characters for a job are taken from `characterProfileIds`, else `characterProfileId`, else
+the scene's characters. Explicitly requested characters must all belong to the caller
+(404 otherwise); a scene character whose profile was deleted is skipped.
 
 **Response — 201:**
 ```json
@@ -525,11 +551,16 @@ The prompt compiler assembles inputs in this order:
 
 ```
 1. Scene actionOverride   (or scene description when no override)
-2. Character appearance   (appearance, hairstyle, clothing, accessories, definingFeatures)
+2. Characters, in order, each as "<name>: <appearance, hairstyle, clothing, accessories, definingFeatures>"
+   (each capped at 750 characters for one character, 375 for two, 250 for three)
 3. Style description      (visualStyle, colorPalette, cameraLanguage¹, lighting, mood, qualityNotes)
 4. Positive tags          (all non-negative_constraint tags, comma-separated)
-5. Character consistency notes
+5. Character consistency notes, each as "<name>: <notes>"
 ```
+
+The whole prompt is capped at 2000 characters (Unicode characters, not bytes, so Thai text is
+never cut mid-character). Write the scene action using the characters' names, e.g.
+"Elena hands sticky rice to Somchai", so the model can match descriptions to people.
 
 `¹` Camera: scene `cameraOverride` replaces `styleProfile.cameraLanguage` when present.
 
@@ -550,7 +581,9 @@ after submission does NOT change historical job records.
 | `violet-fast` | `dreamina-seedance-2-0-fast-260128` | 15 s | No | Yes |
 | `violet-realism` | `dreamina-seedance-2-5-260628` | 30 s | Yes | Yes |
 
-> **Verify** model IDs against live BytePlus console before production deployment.
+> This is the mapping used when `ARK_DEFAULT_MODEL` is empty. When it is set (currently
+> `seedance-1-0-pro-250528`), every internal ID is sent to that model with its limits:
+> 4–12 s via the API, no audio, no reference images. See `modelark-integration-research.md`.
 
 ---
 

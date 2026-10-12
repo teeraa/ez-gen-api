@@ -47,6 +47,8 @@ func humanizeTag(fe validator.FieldError) string {
 		return fmt.Sprintf("must be one of: %s", fe.Param())
 	case "uuid4":
 		return "must be a valid UUID"
+	case "unique":
+		return "must not contain duplicates"
 	default:
 		return fmt.Sprintf("failed %s validation", fe.Tag())
 	}

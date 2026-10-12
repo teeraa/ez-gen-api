@@ -62,17 +62,25 @@ type StyleProfileListDTO struct {
 
 // SceneDTO is the API response shape for a scene.
 type SceneDTO struct {
-	ID                 string   `json:"id"`
-	Title              string   `json:"title"`
-	Description        string   `json:"description"`
-	CharacterProfileID *string  `json:"characterProfileId"`
-	StyleProfileID     *string  `json:"styleProfileId"`
-	PreviousSceneID    *string  `json:"previousSceneId"`
-	SelectedJobID      *string  `json:"selectedJobId"`
-	SceneOrder         int      `json:"sceneOrder"`
-	Tags               []TagDTO `json:"tags"`
-	CreatedAt          string   `json:"createdAt"`
-	UpdatedAt          string   `json:"updatedAt"`
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	// CharacterProfileID is the first entry of Characters, kept for older clients.
+	CharacterProfileID *string             `json:"characterProfileId"`
+	Characters         []SceneCharacterDTO `json:"characters"`
+	StyleProfileID     *string             `json:"styleProfileId"`
+	PreviousSceneID    *string             `json:"previousSceneId"`
+	SelectedJobID      *string             `json:"selectedJobId"`
+	SceneOrder         int                 `json:"sceneOrder"`
+	Tags               []TagDTO            `json:"tags"`
+	CreatedAt          string              `json:"createdAt"`
+	UpdatedAt          string              `json:"updatedAt"`
+}
+
+type SceneCharacterDTO struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	SortOrder int    `json:"sortOrder"`
 }
 
 // SceneListDTO wraps a paginated scene list.

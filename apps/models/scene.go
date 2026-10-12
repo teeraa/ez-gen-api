@@ -1,6 +1,12 @@
 package models
 
-import "github.com/google/uuid"
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
+
+const MaxSceneCharacters = 3
 
 type Scene struct {
 	Base
@@ -26,8 +32,9 @@ type Scene struct {
 	// The generation job currently selected as the output for this scene
 	SelectedJobID *uuid.UUID `gorm:"type:uuid"`
 
-	Tags   []DNATag `gorm:"many2many:scene_tags;"`
-	Assets []SceneAsset
+	Tags       []DNATag `gorm:"many2many:scene_tags;"`
+	Assets     []SceneAsset
+	Characters []SceneCharacter
 
 	CharacterProfile *CharacterProfile
 	StyleProfile     *StyleProfile
@@ -42,6 +49,19 @@ type SceneTag struct {
 }
 
 func (SceneTag) TableName() string { return "scene_tags" }
+
+// SceneCharacter orders the characters featured in a scene. CharacterProfileID on
+// Scene mirrors the first entry for clients that predate multi-character scenes.
+type SceneCharacter struct {
+	SceneID            uuid.UUID `gorm:"type:uuid;primaryKey"`
+	CharacterProfileID uuid.UUID `gorm:"type:uuid;primaryKey"`
+	SortOrder          int       `gorm:"not null;default:0"`
+	CreatedAt          time.Time
+
+	CharacterProfile *CharacterProfile
+}
+
+func (SceneCharacter) TableName() string { return "scene_characters" }
 
 type SceneAsset struct {
 	Base

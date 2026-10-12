@@ -15,6 +15,7 @@ type CharacterProfileRepository interface {
 	Update(ctx context.Context, profile *models.CharacterProfile) error
 	Delete(ctx context.Context, id, userID string) error
 	SetTags(ctx context.Context, profileID uuid.UUID, tagIDs []uuid.UUID) error
+	FindByIDs(ctx context.Context, ids []uuid.UUID, userID string) ([]models.CharacterProfile, error)
 }
 
 type characterProfileRepository struct{ db *gorm.DB }
@@ -109,4 +110,30 @@ func (r *characterProfileRepository) SetTags(ctx context.Context, profileID uuid
 		}
 		return nil
 	})
+}
+
+// FindByIDs returns the caller's profiles among ids, in the order of ids. Profiles that
+// do not exist or belong to another user are omitted, so callers compare lengths.
+func (r *characterProfileRepository) FindByIDs(ctx context.Context, ids []uuid.UUID, userID string) ([]models.CharacterProfile, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var found []models.CharacterProfile
+	result := r.db.WithContext(ctx).
+		Where("id IN ? AND user_id = ? AND deleted_at IS NULL", ids, userID).
+		Find(&found)
+	if result.Error != nil {
+		return nil, wrapErr("find character profiles", result.Error)
+	}
+	byID := make(map[uuid.UUID]models.CharacterProfile, len(found))
+	for _, p := range found {
+		byID[p.ID] = p
+	}
+	ordered := make([]models.CharacterProfile, 0, len(found))
+	for _, id := range ids {
+		if p, ok := byID[id]; ok {
+			ordered = append(ordered, p)
+		}
+	}
+	return ordered, nil
 }

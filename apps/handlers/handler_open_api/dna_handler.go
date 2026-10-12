@@ -245,16 +245,17 @@ func (h *DNAHandler) CreateScene(c *fiber.Ctx) error {
 		return utils.Error(c, fiber.StatusBadRequest, "VALIDATION_ERROR", "validation failed", errs)
 	}
 	in := facade_open_api.CreateSceneInput{
-		Title:              req.Title,
-		Description:        req.Description,
-		CharacterProfileID: req.CharacterProfileID,
-		StyleProfileID:     req.StyleProfileID,
-		PreviousSceneID:    req.PreviousSceneID,
-		SceneOrder:         req.SceneOrder,
-		ActionOverride:     req.ActionOverride,
-		CameraOverride:     req.CameraOverride,
-		SettingOverride:    req.SettingOverride,
-		TagIDs:             req.TagIDs,
+		Title:               req.Title,
+		Description:         req.Description,
+		CharacterProfileID:  req.CharacterProfileID,
+		CharacterProfileIDs: req.CharacterProfileIDs,
+		StyleProfileID:      req.StyleProfileID,
+		PreviousSceneID:     req.PreviousSceneID,
+		SceneOrder:          req.SceneOrder,
+		ActionOverride:      req.ActionOverride,
+		CameraOverride:      req.CameraOverride,
+		SettingOverride:     req.SettingOverride,
+		TagIDs:              req.TagIDs,
 	}
 	dto, err := h.facade.CreateScene(c.Context(), userID, in)
 	if err != nil {
@@ -292,15 +293,16 @@ func (h *DNAHandler) UpdateScene(c *fiber.Ctx) error {
 		return utils.Error(c, fiber.StatusBadRequest, "VALIDATION_ERROR", "validation failed", errs)
 	}
 	in := facade_open_api.UpdateSceneInput{
-		Title:              req.Title,
-		Description:        req.Description,
-		CharacterProfileID: req.CharacterProfileID,
-		StyleProfileID:     req.StyleProfileID,
-		SceneOrder:         req.SceneOrder,
-		ActionOverride:     req.ActionOverride,
-		CameraOverride:     req.CameraOverride,
-		SettingOverride:    req.SettingOverride,
-		TagIDs:             req.TagIDs,
+		Title:               req.Title,
+		Description:         req.Description,
+		CharacterProfileID:  req.CharacterProfileID,
+		CharacterProfileIDs: req.CharacterProfileIDs,
+		StyleProfileID:      req.StyleProfileID,
+		SceneOrder:          req.SceneOrder,
+		ActionOverride:      req.ActionOverride,
+		CameraOverride:      req.CameraOverride,
+		SettingOverride:     req.SettingOverride,
+		TagIDs:              req.TagIDs,
 	}
 	dto, err := h.facade.UpdateScene(c.Context(), c.Params("id"), userID, in)
 	if err != nil {

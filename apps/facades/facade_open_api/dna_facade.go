@@ -94,6 +94,7 @@ type CreateSceneInput struct {
 	Title               string
 	Description         string
 	CharacterProfileID  string
+	CharacterProfileIDs []string
 	StyleProfileID      string
 	PreviousSceneID     string
 	SceneOrder          int
@@ -104,8 +105,11 @@ type CreateSceneInput struct {
 }
 
 type UpdateSceneInput struct {
-	Title               *string
-	Description         *string
+	Title       *string
+	Description *string
+	// CharacterProfileIDs replaces the whole list when non-nil; an empty slice clears it.
+	// The legacy CharacterProfileID also replaces the whole list, with a single entry.
+	CharacterProfileIDs []string
 	CharacterProfileID  *string
 	StyleProfileID      *string
 	SceneOrder          *int
@@ -391,12 +395,15 @@ func (f *dnaFacade) CreateScene(ctx context.Context, userID string, in CreateSce
 		SettingOverride: strPtr(in.SettingOverride),
 	}
 
-	if in.CharacterProfileID != "" {
-		cpID, err := uuid.Parse(in.CharacterProfileID)
-		if err != nil {
-			return nil, ErrValidation
-		}
-		scene.CharacterProfileID = &cpID
+	characterIDs, err := parseCharacterIDs(requestedCharacterIDs(in.CharacterProfileIDs, &in.CharacterProfileID))
+	if err != nil {
+		return nil, err
+	}
+	if _, err := loadOwnedCharacters(ctx, f.characters, characterIDs, userID); err != nil {
+		return nil, err
+	}
+	if len(characterIDs) > 0 {
+		scene.CharacterProfileID = &characterIDs[0]
 	}
 	if in.StyleProfileID != "" {
 		spID, err := uuid.Parse(in.StyleProfileID)
@@ -415,6 +422,11 @@ func (f *dnaFacade) CreateScene(ctx context.Context, userID string, in CreateSce
 
 	if err := f.scenes.Create(ctx, scene); err != nil {
 		return nil, fmt.Errorf("create scene: %w", err)
+	}
+	if len(characterIDs) > 0 {
+		if err := f.scenes.SetCharacters(ctx, scene.ID, characterIDs); err != nil {
+			return nil, fmt.Errorf("set scene characters: %w", err)
+		}
 	}
 
 	if len(in.TagIDs) > 0 {
@@ -471,15 +483,15 @@ func (f *dnaFacade) UpdateScene(ctx context.Context, id, userID string, in Updat
 	if in.SceneOrder != nil {
 		s.SceneOrder = *in.SceneOrder
 	}
-	if in.CharacterProfileID != nil {
-		if *in.CharacterProfileID == "" {
-			s.CharacterProfileID = nil
-		} else {
-			cpID, err := uuid.Parse(*in.CharacterProfileID)
-			if err != nil {
-				return nil, ErrValidation
-			}
-			s.CharacterProfileID = &cpID
+	var characterIDs []uuid.UUID
+	replaceCharacters := in.CharacterProfileIDs != nil || in.CharacterProfileID != nil
+	if replaceCharacters {
+		characterIDs, err = parseCharacterIDs(requestedCharacterIDs(in.CharacterProfileIDs, in.CharacterProfileID))
+		if err != nil {
+			return nil, err
+		}
+		if _, err := loadOwnedCharacters(ctx, f.characters, characterIDs, userID); err != nil {
+			return nil, err
 		}
 	}
 	if in.StyleProfileID != nil {
@@ -496,6 +508,12 @@ func (f *dnaFacade) UpdateScene(ctx context.Context, id, userID string, in Updat
 
 	if err := f.scenes.Update(ctx, s); err != nil {
 		return nil, fmt.Errorf("update scene: %w", err)
+	}
+	// After Update, which writes back the old character_profile_id, so the sync wins.
+	if replaceCharacters {
+		if err := f.scenes.SetCharacters(ctx, s.ID, characterIDs); err != nil {
+			return nil, fmt.Errorf("set scene characters: %w", err)
+		}
 	}
 
 	if in.TagIDs != nil {
@@ -595,7 +613,19 @@ func mapSceneToDTO(s models.Scene) dto_open_api.SceneDTO {
 	for i, t := range s.Tags {
 		tags[i] = mapTagToDTO(t)
 	}
+	characters := make([]dto_open_api.SceneCharacterDTO, 0, len(s.Characters))
+	for _, c := range s.Characters {
+		if c.CharacterProfile == nil {
+			continue
+		}
+		characters = append(characters, dto_open_api.SceneCharacterDTO{
+			ID:        c.CharacterProfileID.String(),
+			Name:      c.CharacterProfile.Name,
+			SortOrder: c.SortOrder,
+		})
+	}
 	dto := dto_open_api.SceneDTO{
+		Characters:  characters,
 		ID:          s.ID.String(),
 		Title:       strVal(s.Title),
 		Description: strVal(s.Description),

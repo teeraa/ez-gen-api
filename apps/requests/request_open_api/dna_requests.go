@@ -61,26 +61,30 @@ type UpdateStyleProfileRequest struct {
 // ── Scenes ─────────────────────────────────────────────────────────────────────
 
 type CreateSceneRequest struct {
-	Title              string   `json:"title"              validate:"max=200"`
-	Description        string   `json:"description"        validate:"max=2000"`
-	CharacterProfileID string   `json:"characterProfileId" validate:"omitempty,uuid4"`
-	StyleProfileID     string   `json:"styleProfileId"     validate:"omitempty,uuid4"`
-	PreviousSceneID    string   `json:"previousSceneId"    validate:"omitempty,uuid4"`
-	SceneOrder         int      `json:"sceneOrder"`
-	ActionOverride     string   `json:"actionOverride"     validate:"max=2000"`
-	CameraOverride     string   `json:"cameraOverride"     validate:"max=200"`
-	SettingOverride    string   `json:"settingOverride"    validate:"max=300"`
-	TagIDs             []string `json:"tagIds"             validate:"dive,uuid4"`
+	Title              string `json:"title"              validate:"max=200"`
+	Description        string `json:"description"        validate:"max=2000"`
+	CharacterProfileID string `json:"characterProfileId" validate:"omitempty,uuid4"`
+	// CharacterProfileIDs (max 3, in display order) takes precedence over CharacterProfileID.
+	CharacterProfileIDs []string `json:"characterProfileIds" validate:"omitempty,max=3,unique,dive,uuid4"`
+	StyleProfileID      string   `json:"styleProfileId"     validate:"omitempty,uuid4"`
+	PreviousSceneID     string   `json:"previousSceneId"    validate:"omitempty,uuid4"`
+	SceneOrder          int      `json:"sceneOrder"`
+	ActionOverride      string   `json:"actionOverride"     validate:"max=2000"`
+	CameraOverride      string   `json:"cameraOverride"     validate:"max=200"`
+	SettingOverride     string   `json:"settingOverride"    validate:"max=300"`
+	TagIDs              []string `json:"tagIds"             validate:"dive,uuid4"`
 }
 
 type UpdateSceneRequest struct {
-	Title              *string  `json:"title"              validate:"omitempty,max=200"`
-	Description        *string  `json:"description"        validate:"omitempty,max=2000"`
-	CharacterProfileID *string  `json:"characterProfileId" validate:"omitempty,uuid4"`
-	StyleProfileID     *string  `json:"styleProfileId"     validate:"omitempty,uuid4"`
-	SceneOrder         *int     `json:"sceneOrder"`
-	ActionOverride     *string  `json:"actionOverride"     validate:"omitempty,max=2000"`
-	CameraOverride     *string  `json:"cameraOverride"     validate:"omitempty,max=200"`
-	SettingOverride    *string  `json:"settingOverride"    validate:"omitempty,max=300"`
-	TagIDs             []string `json:"tagIds"             validate:"omitempty,dive,uuid4"`
+	Title              *string `json:"title"              validate:"omitempty,max=200"`
+	Description        *string `json:"description"        validate:"omitempty,max=2000"`
+	CharacterProfileID *string `json:"characterProfileId" validate:"omitempty,uuid4"`
+	// CharacterProfileIDs replaces the scene's characters when present; [] clears them.
+	CharacterProfileIDs []string `json:"characterProfileIds" validate:"omitempty,max=3,unique,dive,uuid4"`
+	StyleProfileID      *string  `json:"styleProfileId"     validate:"omitempty,uuid4"`
+	SceneOrder          *int     `json:"sceneOrder"`
+	ActionOverride      *string  `json:"actionOverride"     validate:"omitempty,max=2000"`
+	CameraOverride      *string  `json:"cameraOverride"     validate:"omitempty,max=200"`
+	SettingOverride     *string  `json:"settingOverride"    validate:"omitempty,max=300"`
+	TagIDs              []string `json:"tagIds"             validate:"omitempty,dive,uuid4"`
 }

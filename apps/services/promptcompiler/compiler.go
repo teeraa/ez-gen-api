@@ -6,6 +6,7 @@ package promptcompiler
 import (
 	"errors"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/ez-gen/ez-gen-api/apps/models"
 	"github.com/ez-gen/ez-gen-api/apps/services/modelark"
@@ -34,17 +35,27 @@ type Result struct {
 // video_generation_jobs.effective_inputs (JSONB). Editing profiles after
 // submission does not change this record.
 type EffectiveInputsSnapshot struct {
-	CharacterProfileID      string          `json:"characterProfileId,omitempty"`
-	CharacterProfileVersion int             `json:"characterProfileVersion,omitempty"`
-	StyleProfileID          string          `json:"styleProfileId,omitempty"`
-	SceneID                 string          `json:"sceneId,omitempty"`
-	Tags                    []SnapshotTag   `json:"tags,omitempty"`
-	Assets                  []SnapshotAsset `json:"assets,omitempty"`
-	ModelID                 string          `json:"modelId"`
-	Resolution              string          `json:"resolution"`
-	CharacterSummary        string          `json:"characterSummary,omitempty"`
-	StyleSummary            string          `json:"styleSummary,omitempty"`
-	SceneSummary            string          `json:"sceneSummary,omitempty"`
+	// CharacterProfileID/Version mirror Characters[0] for rows written before
+	// multi-character scenes.
+	CharacterProfileID      string              `json:"characterProfileId,omitempty"`
+	CharacterProfileVersion int                 `json:"characterProfileVersion,omitempty"`
+	Characters              []SnapshotCharacter `json:"characters,omitempty"`
+	StyleProfileID          string              `json:"styleProfileId,omitempty"`
+	SceneID                 string              `json:"sceneId,omitempty"`
+	Tags                    []SnapshotTag       `json:"tags,omitempty"`
+	Assets                  []SnapshotAsset     `json:"assets,omitempty"`
+	ModelID                 string              `json:"modelId"`
+	Resolution              string              `json:"resolution"`
+	CharacterSummary        string              `json:"characterSummary,omitempty"`
+	StyleSummary            string              `json:"styleSummary,omitempty"`
+	SceneSummary            string              `json:"sceneSummary,omitempty"`
+}
+
+type SnapshotCharacter struct {
+	ProfileID string `json:"profileId"`
+	Version   int    `json:"version"`
+	Name      string `json:"name"`
+	Summary   string `json:"summary"`
 }
 
 type SnapshotTag struct {
@@ -83,11 +94,16 @@ func Compile(in Inputs, model modelark.ModelConfig) (*Result, error) {
 		}
 	}
 
-	// 2b. Character appearance (if no scene override redefines the subject)
-	if in.Character != nil {
-		charDesc := buildCharacterDescription(in.Character)
-		if charDesc != "" {
-			sections = append(sections, charDesc)
+	// 2b. Character appearance. Each description is labelled with the character's
+	// name so the model can tell who is who, and capped so one verbose profile
+	// cannot crowd the others out of the prompt limit.
+	characterBudget := maxCharacterSectionRunes
+	if n := len(in.Characters); n > 1 {
+		characterBudget = maxCharacterSectionRunes / n
+	}
+	for i := range in.Characters {
+		if desc := labelledCharacter(&in.Characters[i], buildCharacterDescription(&in.Characters[i])); desc != "" {
+			sections = append(sections, truncateRunes(desc, characterBudget))
 		}
 	}
 
@@ -114,14 +130,14 @@ func Compile(in Inputs, model modelark.ModelConfig) (*Result, error) {
 	}
 
 	// 2e. Consistency notes appended at the end of the character section
-	if in.Character != nil && in.Character.ConsistencyNotes != "" {
-		sections = append(sections, in.Character.ConsistencyNotes)
+	for i := range in.Characters {
+		if notes := in.Characters[i].ConsistencyNotes; notes != "" {
+			sections = append(sections, truncateRunes(labelledCharacter(&in.Characters[i], notes), characterBudget))
+		}
 	}
 
-	compiledPrompt := strings.Join(sections, ". ")
-	if len(compiledPrompt) > 2000 {
-		compiledPrompt = compiledPrompt[:2000]
-	}
+	// Truncating by rune keeps Thai and other multi-byte text valid UTF-8.
+	compiledPrompt := truncateRunes(strings.Join(sections, ". "), maxPromptRunes)
 
 	negativeInstructions := strings.Join(negativeTagTokens, ", ")
 
@@ -149,10 +165,20 @@ func Compile(in Inputs, model modelark.ModelConfig) (*Result, error) {
 		ModelID:    in.ModelID,
 		Resolution: resolution,
 	}
-	if in.Character != nil {
-		snap.CharacterProfileID = in.Character.ProfileID
-		snap.CharacterProfileVersion = in.Character.ProfileVersion
-		snap.CharacterSummary = buildCharacterDescription(in.Character)
+	for i := range in.Characters {
+		c := &in.Characters[i]
+		snap.Characters = append(snap.Characters, SnapshotCharacter{
+			ProfileID: c.ProfileID,
+			Version:   c.ProfileVersion,
+			Name:      c.Name,
+			Summary:   buildCharacterDescription(c),
+		})
+	}
+	if len(in.Characters) > 0 {
+		first := &in.Characters[0]
+		snap.CharacterProfileID = first.ProfileID
+		snap.CharacterProfileVersion = first.ProfileVersion
+		snap.CharacterSummary = buildCharacterDescription(first)
 	}
 	if in.Style != nil {
 		snap.StyleProfileID = in.Style.ProfileID
@@ -196,6 +222,28 @@ func resolveMode(assets []AssetRef) (string, error) {
 		}
 	}
 	return "text", nil
+}
+
+const (
+	maxPromptRunes           = 2000
+	maxCharacterSectionRunes = 750
+)
+
+func labelledCharacter(c *CharacterInputs, text string) string {
+	if text == "" {
+		return ""
+	}
+	if c.Name == "" {
+		return text
+	}
+	return c.Name + ": " + text
+}
+
+func truncateRunes(s string, max int) string {
+	if utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	return string([]rune(s)[:max])
 }
 
 func buildCharacterDescription(c *CharacterInputs) string {

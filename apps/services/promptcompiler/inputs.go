@@ -5,8 +5,8 @@ import "github.com/ez-gen/ez-gen-api/apps/models"
 // Inputs holds all creative sources passed into the compiler.
 // Every field is optional; the compiler degrades gracefully when absent.
 type Inputs struct {
-	// Character profile to draw appearance tokens from.
-	Character *CharacterInputs
+	// Characters featured in the scene, in billing order (at most 3).
+	Characters []CharacterInputs
 	// Style profile to draw visual/tone tokens from.
 	Style *StyleInputs
 	// Scene-specific instructions that override profile defaults.
@@ -49,10 +49,10 @@ type StyleInputs struct {
 
 // SceneInputs holds scene-level instructions and per-scene overrides.
 type SceneInputs struct {
-	SceneID        string
-	Description    string
-	ActionOverride string // replaces inherited action
-	CameraOverride string // overrides camera from style profile
+	SceneID         string
+	Description     string
+	ActionOverride  string // replaces inherited action
+	CameraOverride  string // overrides camera from style profile
 	SettingOverride string // overrides environment from style profile
 }
 

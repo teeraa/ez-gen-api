@@ -42,19 +42,20 @@ func (h *JobHandler) CreateJob(c *fiber.Ctx) error {
 		return utils.Error(c, fiber.StatusBadRequest, "VALIDATION_ERROR", "validation failed", errs)
 	}
 	in := facade_open_api.CreateJobInput{
-		Prompt:             req.Prompt,
-		Mode:               req.Mode,
-		ModelID:            req.Model,
-		AspectRatio:        req.AspectRatio,
-		DurationSeconds:    req.Duration,
-		Quality:            req.Quality,
-		EnhancePrompt:      req.EnhancePrompt,
-		UploadID:           req.ReferenceImageID,
-		SceneID:            req.SceneID,
-		CharacterProfileID: req.CharacterProfileID,
-		StyleProfileID:     req.StyleProfileID,
-		TagIDs:             req.TagIDs,
-		IdempotencyKey:     req.IdempotencyKey,
+		Prompt:              req.Prompt,
+		Mode:                req.Mode,
+		ModelID:             req.Model,
+		AspectRatio:         req.AspectRatio,
+		DurationSeconds:     req.Duration,
+		Quality:             req.Quality,
+		EnhancePrompt:       req.EnhancePrompt,
+		UploadID:            req.ReferenceImageID,
+		SceneID:             req.SceneID,
+		CharacterProfileID:  req.CharacterProfileID,
+		CharacterProfileIDs: req.CharacterProfileIDs,
+		StyleProfileID:      req.StyleProfileID,
+		TagIDs:              req.TagIDs,
+		IdempotencyKey:      req.IdempotencyKey,
 	}
 	dto, err := h.facade.CreateJob(c.Context(), userID, in)
 	if err != nil {
@@ -133,19 +134,20 @@ func (h *JobHandler) GenerateForScene(c *fiber.Ctx) error {
 		return utils.Error(c, fiber.StatusBadRequest, "VALIDATION_ERROR", "validation failed", errs)
 	}
 	in := facade_open_api.CreateJobInput{
-		Prompt:             req.Prompt,
-		Mode:               req.Mode,
-		ModelID:            req.Model,
-		AspectRatio:        req.AspectRatio,
-		DurationSeconds:    req.Duration,
-		Quality:            req.Quality,
-		EnhancePrompt:      req.EnhancePrompt,
-		UploadID:           req.ReferenceImageID,
-		SceneID:            &sceneID,
-		CharacterProfileID: req.CharacterProfileID,
-		StyleProfileID:     req.StyleProfileID,
-		TagIDs:             req.TagIDs,
-		IdempotencyKey:     req.IdempotencyKey,
+		Prompt:              req.Prompt,
+		Mode:                req.Mode,
+		ModelID:             req.Model,
+		AspectRatio:         req.AspectRatio,
+		DurationSeconds:     req.Duration,
+		Quality:             req.Quality,
+		EnhancePrompt:       req.EnhancePrompt,
+		UploadID:            req.ReferenceImageID,
+		SceneID:             &sceneID,
+		CharacterProfileID:  req.CharacterProfileID,
+		CharacterProfileIDs: req.CharacterProfileIDs,
+		StyleProfileID:      req.StyleProfileID,
+		TagIDs:              req.TagIDs,
+		IdempotencyKey:      req.IdempotencyKey,
 	}
 	dto, err := h.facade.CreateJob(c.Context(), userID, in)
 	if err != nil {

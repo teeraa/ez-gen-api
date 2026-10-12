@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/ez-gen/ez-gen-api/apps/models"
 	"github.com/ez-gen/ez-gen-api/apps/services/modelark"
@@ -42,12 +43,12 @@ func TestCompile_WithCharacterAndStyle(t *testing.T) {
 	in := promptcompiler.Inputs{
 		ModelID: "violet-realism",
 		Quality: "high",
-		Character: &promptcompiler.CharacterInputs{
+		Characters: []promptcompiler.CharacterInputs{{
 			ProfileID:  "char-1",
 			Name:       "Elena",
 			Appearance: "tall woman with sharp features",
 			Clothing:   "crimson armour",
-		},
+		}},
 		Style: &promptcompiler.StyleInputs{
 			ProfileID:      "style-1",
 			VisualStyle:    "cinematic",
@@ -117,7 +118,7 @@ func TestCompile_NegativeTagsIsolated(t *testing.T) {
 	in := promptcompiler.Inputs{
 		ModelID: "violet-motion-2",
 		Quality: "standard",
-		Scene: &promptcompiler.SceneInputs{Description: "forest at night"},
+		Scene:   &promptcompiler.SceneInputs{Description: "forest at night"},
 		Tags: []models.DNATag{
 			{Slug: "avoid_text", Name: "Avoid Text", Category: models.TagCategoryNegativeConstraint},
 			{Slug: "cinematic", Name: "Cinematic", Category: models.TagCategoryVisualStyle},
@@ -197,11 +198,11 @@ func TestCompile_SnapshotCaptures_ProfileVersions(t *testing.T) {
 		ModelID: "violet-motion-2",
 		Quality: "standard",
 		Scene:   &promptcompiler.SceneInputs{SceneID: "sc-1"},
-		Character: &promptcompiler.CharacterInputs{
+		Characters: []promptcompiler.CharacterInputs{{
 			ProfileID:      "cp-1",
 			ProfileVersion: 3,
 			Appearance:     "silver hair",
-		},
+		}},
 		Style: &promptcompiler.StyleInputs{
 			ProfileID:   "sp-1",
 			VisualStyle: "anime",
@@ -251,4 +252,75 @@ func compileForTest(in promptcompiler.Inputs) (*promptcompiler.Result, error) {
 		return nil, fmt.Errorf("unknown model %q", in.ModelID)
 	}
 	return promptcompiler.Compile(in, model)
+}
+
+func TestCompile_MultipleCharactersAreLabelled(t *testing.T) {
+	t.Parallel()
+	in := promptcompiler.Inputs{
+		ModelID: "violet-classic",
+		Quality: "standard",
+		Scene:   &promptcompiler.SceneInputs{Description: "Elena hands sticky rice to Somchai"},
+		Characters: []promptcompiler.CharacterInputs{
+			{ProfileID: "c1", ProfileVersion: 2, Name: "Elena", Appearance: "tall woman", Clothing: "crimson armour", ConsistencyNotes: "confident posture"},
+			{ProfileID: "c2", ProfileVersion: 1, Name: "Somchai", Appearance: "elderly farmer", Accessories: "straw hat"},
+		},
+	}
+	result, err := compileForTest(in)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	for _, want := range []string{"Elena: tall woman, wearing crimson armour", "Somchai: elderly farmer, straw hat", "Elena: confident posture"} {
+		if !strings.Contains(result.CompiledPrompt, want) {
+			t.Errorf("prompt missing %q: %q", want, result.CompiledPrompt)
+		}
+	}
+	if strings.Index(result.CompiledPrompt, "Elena:") > strings.Index(result.CompiledPrompt, "Somchai:") {
+		t.Error("characters must keep their order")
+	}
+	if len(result.Snapshot.Characters) != 2 || result.Snapshot.Characters[1].ProfileID != "c2" || result.Snapshot.Characters[0].Version != 2 {
+		t.Errorf("unexpected snapshot characters: %+v", result.Snapshot.Characters)
+	}
+	if result.Snapshot.CharacterProfileID != "c1" {
+		t.Errorf("legacy snapshot field should mirror the first character, got %q", result.Snapshot.CharacterProfileID)
+	}
+}
+
+func TestCompile_EachCharacterGetsPromptBudget(t *testing.T) {
+	t.Parallel()
+	long := strings.Repeat("ผมยาวสีเงิน ", 200)
+	in := promptcompiler.Inputs{
+		ModelID: "violet-classic",
+		Quality: "standard",
+		Scene:   &promptcompiler.SceneInputs{Description: "two friends talk"},
+		Characters: []promptcompiler.CharacterInputs{
+			{ProfileID: "c1", Name: "Elena", Appearance: long},
+			{ProfileID: "c2", Name: "Somchai", Appearance: "elderly farmer"},
+		},
+	}
+	result, err := compileForTest(in)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if !strings.Contains(result.CompiledPrompt, "Somchai: elderly farmer") {
+		t.Error("a verbose first character must not push the second out of the prompt")
+	}
+}
+
+func TestCompile_TruncatesThaiByRune(t *testing.T) {
+	t.Parallel()
+	in := promptcompiler.Inputs{
+		ModelID: "violet-classic",
+		Quality: "standard",
+		Scene:   &promptcompiler.SceneInputs{Description: strings.Repeat("จกข้าวเหนียว", 400)},
+	}
+	result, err := compileForTest(in)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if !utf8.ValidString(result.CompiledPrompt) {
+		t.Error("compiled prompt is not valid UTF-8")
+	}
+	if n := utf8.RuneCountInString(result.CompiledPrompt); n != 2000 {
+		t.Errorf("prompt has %d runes, want 2000", n)
+	}
 }

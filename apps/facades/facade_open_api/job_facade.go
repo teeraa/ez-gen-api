@@ -41,9 +41,12 @@ type CreateJobInput struct {
 	UploadID           *string
 	SceneID            *string
 	CharacterProfileID *string
-	StyleProfileID     *string
-	TagIDs             []string
-	IdempotencyKey     *string
+	// CharacterProfileIDs takes precedence over CharacterProfileID. When both are empty
+	// and SceneID is set, the scene's own characters are used.
+	CharacterProfileIDs []string
+	StyleProfileID      *string
+	TagIDs              []string
+	IdempotencyKey      *string
 
 	// firstFrameKey is a storage key (or legacy provider URL) of a frame produced by an
 	// earlier job. Unexported so only ContinueScene can set it, never request input.
@@ -217,9 +220,8 @@ func (f *jobFacade) CreateJob(ctx context.Context, userID string, in CreateJobIn
 			job.SceneID = &sceneUUID
 		}
 	}
-	if in.CharacterProfileID != nil {
-		cpUUID, err := uuid.Parse(*in.CharacterProfileID)
-		if err == nil {
+	if len(compilerIn.Characters) > 0 {
+		if cpUUID, err := uuid.Parse(compilerIn.Characters[0].ProfileID); err == nil {
 			job.CharacterProfileID = &cpUUID
 		}
 	}
@@ -356,19 +358,24 @@ func (f *jobFacade) ContinueScene(ctx context.Context, sceneID, userID string, i
 	uid, _ := uuid.Parse(userID)
 	prevID := prev.ID
 	newScene := &models.Scene{
-		UserID:          uid,
-		Title:           strPtr(in.Title),
+		UserID:             uid,
+		Title:              strPtr(in.Title),
 		CharacterProfileID: prev.CharacterProfileID,
-		StyleProfileID:  prev.StyleProfileID,
-		PreviousSceneID: &prevID,
-		SceneOrder:      prev.SceneOrder + 1,
-		ActionOverride:  strPtr(in.ActionOverride),
-		CameraOverride:  strPtr(in.CameraOverride),
-		SettingOverride: strPtr(in.SettingOverride),
+		StyleProfileID:     prev.StyleProfileID,
+		PreviousSceneID:    &prevID,
+		SceneOrder:         prev.SceneOrder + 1,
+		ActionOverride:     strPtr(in.ActionOverride),
+		CameraOverride:     strPtr(in.CameraOverride),
+		SettingOverride:    strPtr(in.SettingOverride),
 	}
 
 	if err := f.scenes.Create(ctx, newScene); err != nil {
 		return nil, fmt.Errorf("create continuation scene: %w", err)
+	}
+	if ids := sceneCharacterIDs(prev); len(ids) > 0 {
+		if err := f.scenes.SetCharacters(ctx, newScene.ID, ids); err != nil {
+			return nil, fmt.Errorf("copy scene characters: %w", err)
+		}
 	}
 
 	// Inherit tags from previous scene
@@ -400,10 +407,6 @@ func (f *jobFacade) ContinueScene(ctx context.Context, sceneID, userID string, i
 		Quality:         in.Quality,
 		SceneID:         &sceneIDStr,
 		IdempotencyKey:  in.IdempotencyKey,
-	}
-	if newScene.CharacterProfileID != nil {
-		v := newScene.CharacterProfileID.String()
-		jobIn.CharacterProfileID = &v
 	}
 	if newScene.StyleProfileID != nil {
 		v := newScene.StyleProfileID.String()
@@ -479,21 +482,29 @@ func (f *jobFacade) buildCompilerInputs(ctx context.Context, userID string, in C
 		Quality: in.Quality,
 	}
 
-	if in.CharacterProfileID != nil {
-		cp, err := f.characters.FindByID(ctx, *in.CharacterProfileID, userID)
-		if err == nil {
-			inputs.Character = &promptcompiler.CharacterInputs{
-				ProfileID:        cp.ID.String(),
-				ProfileVersion:   cp.Version,
-				Name:             cp.Name,
-				Appearance:       strVal(cp.Appearance),
-				Hairstyle:        strVal(cp.Hairstyle),
-				Clothing:         strVal(cp.Clothing),
-				Accessories:      strVal(cp.Accessories),
-				DefiningFeatures: strVal(cp.DefiningFeatures),
-				ConsistencyNotes: strVal(cp.ConsistencyNotes),
-			}
+	var scene *models.Scene
+	if in.SceneID != nil {
+		if sc, err := f.scenes.FindByID(ctx, *in.SceneID, userID); err == nil {
+			scene = sc
 		}
+	}
+
+	characters, err := f.resolveJobCharacters(ctx, userID, in, scene)
+	if err != nil {
+		return inputs, err
+	}
+	for _, cp := range characters {
+		inputs.Characters = append(inputs.Characters, promptcompiler.CharacterInputs{
+			ProfileID:        cp.ID.String(),
+			ProfileVersion:   cp.Version,
+			Name:             cp.Name,
+			Appearance:       strVal(cp.Appearance),
+			Hairstyle:        strVal(cp.Hairstyle),
+			Clothing:         strVal(cp.Clothing),
+			Accessories:      strVal(cp.Accessories),
+			DefiningFeatures: strVal(cp.DefiningFeatures),
+			ConsistencyNotes: strVal(cp.ConsistencyNotes),
+		})
 	}
 
 	if in.StyleProfileID != nil {
@@ -512,21 +523,18 @@ func (f *jobFacade) buildCompilerInputs(ctx context.Context, userID string, in C
 		}
 	}
 
-	if in.SceneID != nil {
-		sc, err := f.scenes.FindByID(ctx, *in.SceneID, userID)
-		if err == nil {
-			desc := strVal(sc.Description)
-			// If the scene has no description of its own, use the request prompt
-			if desc == "" && strVal(sc.ActionOverride) == "" {
-				desc = in.Prompt
-			}
-			inputs.Scene = &promptcompiler.SceneInputs{
-				SceneID:         sc.ID.String(),
-				Description:     desc,
-				ActionOverride:  strVal(sc.ActionOverride),
-				CameraOverride:  strVal(sc.CameraOverride),
-				SettingOverride: strVal(sc.SettingOverride),
-			}
+	if scene != nil {
+		desc := strVal(scene.Description)
+		// If the scene has no description of its own, use the request prompt
+		if desc == "" && strVal(scene.ActionOverride) == "" {
+			desc = in.Prompt
+		}
+		inputs.Scene = &promptcompiler.SceneInputs{
+			SceneID:         scene.ID.String(),
+			Description:     desc,
+			ActionOverride:  strVal(scene.ActionOverride),
+			CameraOverride:  strVal(scene.CameraOverride),
+			SettingOverride: strVal(scene.SettingOverride),
 		}
 	}
 
@@ -623,4 +631,24 @@ func strValOrDefault(p *string, def string) string {
 		return def
 	}
 	return *p
+}
+
+// resolveJobCharacters uses explicitly requested characters, which must all belong to
+// the user, or else the scene's characters, skipping any profile deleted since.
+func (f *jobFacade) resolveJobCharacters(ctx context.Context, userID string, in CreateJobInput, scene *models.Scene) ([]models.CharacterProfile, error) {
+	if requested := requestedCharacterIDs(in.CharacterProfileIDs, in.CharacterProfileID); len(requested) > 0 {
+		ids, err := parseCharacterIDs(requested)
+		if err != nil {
+			return nil, err
+		}
+		return loadOwnedCharacters(ctx, f.characters, ids, userID)
+	}
+	if scene == nil || len(scene.Characters) == 0 {
+		return nil, nil
+	}
+	profiles, err := f.characters.FindByIDs(ctx, sceneCharacterIDs(scene), userID)
+	if err != nil {
+		return nil, fmt.Errorf("load scene characters: %w", err)
+	}
+	return profiles, nil
 }
