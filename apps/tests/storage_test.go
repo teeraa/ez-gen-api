@@ -139,3 +139,20 @@ func TestHTTPFetcher(t *testing.T) {
 		t.Errorf("expected ErrHostNotAllowed, got %v", err)
 	}
 }
+
+func TestSupabaseClient_SignedDownloadURLAddsDownloadParam(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"signedURL": "/object/sign/b/outputs/u/j.mp4?token=t"})
+	}))
+	defer srv.Close()
+	c, _ := storage.NewSupabaseClient(srv.URL, "k", "b", srv.Client())
+
+	u, _, err := c.SignedDownloadURL(t.Context(), "outputs/u/j.mp4", time.Hour, "violet studio.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(u, "?token=t&download=violet+studio.mp4") {
+		t.Errorf("download url = %q", u)
+	}
+}

@@ -130,6 +130,23 @@ func (c *SupabaseClient) SignedURL(ctx context.Context, key string, ttl time.Dur
 	return signed, expiresAt, nil
 }
 
+// SignedDownloadURL makes the browser save the file as filename instead of playing it.
+func (c *SupabaseClient) SignedDownloadURL(ctx context.Context, key string, ttl time.Duration, filename string) (string, time.Time, error) {
+	signed, expiresAt, err := c.SignedURL(ctx, key, ttl)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	return withDownloadParam(signed, filename), expiresAt, nil
+}
+
+func withDownloadParam(signed, filename string) string {
+	sep := "?"
+	if strings.Contains(signed, "?") {
+		sep = "&"
+	}
+	return signed + sep + "download=" + url.QueryEscape(filename)
+}
+
 func (c *SupabaseClient) authorize(req *http.Request) {
 	req.Header.Set("Authorization", "Bearer "+c.serviceKey)
 	req.Header.Set("apikey", c.serviceKey)

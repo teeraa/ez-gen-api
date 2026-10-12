@@ -71,6 +71,7 @@ Handler → Facade → Repository → Model
 | Internal API | `/api/v1/...` | Internal service token |
 | Open API | `/open/v1/...` | User JWT bearer token |
 | OAuth2 | `/oauth/...` | OAuth2 flow |
+| Public API | `/public/v1/...` | None — rate limited per client IP; only data reachable through an unguessable share token |
 
 The video-generation endpoints belong in the **Open API** group.
 

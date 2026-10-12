@@ -12,4 +12,5 @@ var (
 	ErrImageRequired = errors.New("reference image required")
 	ErrImageExpired  = errors.New("reference image expired")
 	ErrModelInvalid  = errors.New("model not supported for this mode")
+	ErrNotShareable  = errors.New("job has no stored output to share")
 )

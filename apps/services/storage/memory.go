@@ -37,6 +37,11 @@ func (m *MemoryClient) SignedURL(_ context.Context, key string, ttl time.Duratio
 	return "https://storage.test/signed/" + key, time.Now().Add(ttl), nil
 }
 
+func (m *MemoryClient) SignedDownloadURL(ctx context.Context, key string, ttl time.Duration, filename string) (string, time.Time, error) {
+	signed, exp, err := m.SignedURL(ctx, key, ttl)
+	return withDownloadParam(signed, filename), exp, err
+}
+
 func (m *MemoryClient) Object(key string) (MemoryObject, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

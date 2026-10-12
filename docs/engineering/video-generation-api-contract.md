@@ -355,6 +355,89 @@ Media in object storage is deleted asynchronously.
 
 ---
 
+### POST /open/v1/jobs/:jobId/shares — Create Share Link
+
+Returns the job's public share link, creating it on first call. One active link per job;
+calling again returns the same link.
+
+**Success — 201 (new) / 200 (existing):**
+```json
+{
+  "data": {
+    "shareId":   "uuid",
+    "jobId":     "uuid",
+    "url":       "https://violetstudio.app/s/<43-char token>",
+    "viewCount": 0,
+    "createdAt": "2026-10-12T09:00:00Z"
+  },
+  "requestId": "..."
+}
+```
+
+| HTTP | code | Cause |
+|---|---|---|
+| 404 | `NOT_FOUND` | Job does not exist or belongs to another user |
+| 409 | `JOB_NOT_SHAREABLE` | Job is not `succeeded`, or its video is not in storage yet |
+
+`url` points at the **frontend** route `/s/:token` (base from `PUBLIC_WEB_BASE_URL`). The
+token is the only credential for the public page: 256-bit random, base64url, 43 chars.
+
+---
+
+### DELETE /open/v1/shares/:shareId — Revoke Share Link
+
+**Success — 204** (no body). The public link stops working (allow up to 60 s for caches).
+Creating a share for the same job afterwards mints a **new** URL.
+**404 `NOT_FOUND`** if the share does not exist, is already revoked, or belongs to another user.
+
+---
+
+### GET /open/v1/jobs/:jobId/download — Download URL (owner)
+
+```json
+{
+  "data": {
+    "url":       "https://<ref>.supabase.co/storage/v1/object/sign/...&download=violet-studio-1a2b3c4d.mp4",
+    "filename":  "violet-studio-1a2b3c4d.mp4",
+    "expiresAt": "2026-10-12T10:00:00Z"
+  },
+  "requestId": "..."
+}
+```
+
+Opening `url` makes the browser save the file. Same 404/409 rules as creating a share.
+
+---
+
+### GET /public/v1/shares/:token — Public Share (no auth)
+
+Used by the frontend share page (server-side) to render the player and Open Graph tags.
+Not authenticated; rate limited per client IP (`PUBLIC_RATE_LIMIT_PER_MINUTE`, default 120)
+→ `429 RATE_LIMITED`. Response is cacheable: `Cache-Control: public, max-age=60`.
+
+```json
+{
+  "data": {
+    "mediaUrl":     "https://<ref>.supabase.co/storage/v1/object/sign/...",
+    "thumbnailUrl": "https://<ref>.supabase.co/storage/v1/object/sign/...",
+    "downloadUrl":  "https://<ref>.supabase.co/storage/v1/object/sign/...&download=...",
+    "mediaType":    "video",
+    "aspectRatio":  "9:16",
+    "duration":     5,
+    "expiresAt":    "2026-10-12T10:00:00Z",
+    "createdAt":    "2026-10-12T09:00:00Z"
+  },
+  "requestId": "..."
+}
+```
+
+- `thumbnailUrl` may be `null`.
+- The response deliberately omits the prompt, user, job ID and any provider identifiers.
+- **404 `NOT_FOUND`** for unknown, malformed or revoked tokens and for deleted jobs. Each
+  successful request increments the share's `viewCount`.
+
+---
+
 ## Model Name Mapping
 
 | UI label | API `model` value | BytePlus model ID |

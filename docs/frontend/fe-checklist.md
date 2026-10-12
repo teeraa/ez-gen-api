@@ -105,3 +105,51 @@ Response ของ job มี field ใหม่:
   - เงื่อนไข `MODEL_NOT_SUPPORTED`
   - `violet-classic`
   - `characterProfileIds` (request) และ `characters` (scene response)
+  - endpoint แชร์ 4 ตัว และ error `JOB_NOT_SHAREABLE` (409)
+
+## 9. แชร์วิดีโอ (ระดับ 1: share link + share sheet)
+
+Endpoint ใหม่ (รายละเอียดใน `video-generation-api-contract.md`):
+
+| Method | Path | Auth | ใช้ทำอะไร |
+|---|---|---|---|
+| `POST` | `/open/v1/jobs/:jobId/shares` | ✅ | สร้าง/ขอ share link (201 ใหม่, 200 มีอยู่แล้ว) |
+| `DELETE` | `/open/v1/shares/:shareId` | ✅ | ยกเลิกลิงก์ (204) |
+| `GET` | `/open/v1/jobs/:jobId/download` | ✅ | URL ดาวน์โหลดไฟล์ (บังคับ save) |
+| `GET` | `/public/v1/shares/:token` | ❌ | ข้อมูลสำหรับหน้าแชร์สาธารณะ |
+
+### ปุ่ม "แชร์" (หน้าวิดีโอที่เสร็จแล้ว)
+- [ ] แสดงปุ่มเฉพาะ job ที่ `status === "succeeded"`; ถ้าได้ `409 JOB_NOT_SHAREABLE` ให้บอก "วิดีโอยังบันทึกไม่เสร็จ ลองใหม่อีกสักครู่"
+- [ ] กดแล้วเรียก `POST /jobs/:jobId/shares` → ได้ `data.url` (เรียกซ้ำได้ ได้ลิงก์เดิม)
+- [ ] เก็บ `shareId` ไว้สำหรับปุ่ม "ยกเลิกลิงก์" และแสดง `viewCount`
+- [ ] ปุ่ม **คัดลอกลิงก์** (`navigator.clipboard.writeText(url)`)
+- [ ] ปุ่ม **LINE**: เปิด `https://social-plugins.line.me/lineit/share?url=${encodeURIComponent(url)}`
+- [ ] ปุ่ม **Facebook**: เปิด `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(url)}`
+- [ ] ปุ่ม **แชร์ไฟล์ (มือถือ — IG/TikTok/LINE ฯลฯ)**:
+  - [ ] เรียก `GET /jobs/:jobId/download` → `fetch(url)` → `blob` → `new File([blob], filename, { type: "video/mp4" })`
+  - [ ] ถ้า `navigator.canShare?.({ files: [file] })` → `navigator.share({ files: [file], title, text: url })`
+  - [ ] ถ้าไม่รองรับ (desktop/บางเบราว์เซอร์) → ซ่อนปุ่มนี้ หรือ fallback เป็นดาวน์โหลด
+  - [ ] ต้องเรียก `navigator.share` จาก user gesture โดยตรง: ดาวน์โหลดไฟล์ไว้ก่อน (preload ตอนเปิดเมนูแชร์) แล้วค่อยกดแชร์ ไม่งั้น iOS Safari จะปฏิเสธ
+  - [ ] ทดสอบ CORS ของ `fetch()` ไปที่ Supabase signed URL บน origin จริง
+- [ ] ปุ่ม **ดาวน์โหลด**: เปิด `data.url` จาก `/download` (ไฟล์ชื่อ `violet-studio-xxxxxxxx.mp4`) สำหรับ desktop → ผู้ใช้อัปโหลดเข้า IG/TikTok เอง
+- [ ] แนะนำ 9:16 สำหรับ Reels/TikTok (เช่น badge "เหมาะกับ TikTok/Reels" เมื่อ `aspectRatio === "9:16"`)
+- [ ] ปุ่ม **ยกเลิกลิงก์** → `DELETE /shares/:shareId` (ยืนยันก่อน) แจ้งว่าอาจใช้ได้อีกไม่เกิน 1 นาที; แชร์ใหม่จะได้ URL ใหม่
+
+### หน้าแชร์สาธารณะ `/s/[token]` (ใน ez-gen-web)
+- [ ] สร้าง route `/s/[token]` แบบ **server-side render** (ไม่ต้อง login)
+- [ ] ฝั่ง server เรียก `GET {API}/public/v1/shares/:token`
+  - [ ] cache ผลลัพธ์ ~60 วินาที (`fetch(..., { next: { revalidate: 60 } })`) — rate limit ของ backend นับต่อ IP และทุก request จาก Next server มาจาก IP เดียวกัน
+  - [ ] 404 → แสดงหน้า "ลิงก์นี้ไม่มีอยู่หรือถูกยกเลิกแล้ว" (HTTP 404)
+- [ ] ใส่ Open Graph/Twitter meta ใน `<head>` (ใช้ `generateMetadata`):
+  - [ ] `og:type=video.other`, `og:url` (URL หน้าแชร์), `og:title` (เช่น "สร้างด้วย VIOLET STUDIO"), `og:description`
+  - [ ] `og:image` = `thumbnailUrl` (มี fallback รูปแบรนด์เมื่อเป็น `null`)
+  - [ ] `og:video`, `og:video:secure_url` = `mediaUrl`, `og:video:type=video/mp4`, `og:video:width/height` ตาม `aspectRatio`
+  - [ ] `twitter:card=summary_large_image`
+  - [ ] หมายเหตุ: signed URL หมดอายุใน 1 ชม. — LINE/FB cache preview ไว้เอง ถ้ารูป preview หายให้ใช้ fallback image ถาวรของแบรนด์เป็น `og:image` แทน thumbnail
+- [ ] แสดง `<video src={mediaUrl} controls playsInline poster={thumbnailUrl}>` + ปุ่มดาวน์โหลด (`downloadUrl`) + CTA "สร้างวิดีโอของคุณเอง"
+- [ ] ห้ามแสดงหรือดึงข้อมูลอื่นของเจ้าของ (API ไม่ส่งมาอยู่แล้ว)
+- [ ] เพิ่ม `<meta name="robots" content="noindex">` ถ้าไม่ต้องการให้ search engine index ลิงก์แชร์
+- [ ] ทดสอบ preview ด้วย Facebook Sharing Debugger และส่งลิงก์ใน LINE จริง
+
+### ตั้งค่า
+- [ ] แจ้ง backend ให้ตั้ง `PUBLIC_WEB_BASE_URL` เป็น origin จริงของเว็บ (เช่น `https://violetstudio.app`) เพื่อให้ `url` ถูกต้อง

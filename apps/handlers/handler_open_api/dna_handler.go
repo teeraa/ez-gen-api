@@ -347,6 +347,8 @@ func mapFacadeError(c *fiber.Ctx, err error) error {
 		return utils.Error(c, fiber.StatusUnprocessableEntity, "IMAGE_EXPIRED", "reference image has expired", nil)
 	case errors.Is(err, facade_open_api.ErrModelInvalid):
 		return utils.Error(c, fiber.StatusUnprocessableEntity, "MODEL_NOT_SUPPORTED", "model does not support the requested mode", nil)
+	case errors.Is(err, facade_open_api.ErrNotShareable):
+		return utils.Error(c, fiber.StatusConflict, "JOB_NOT_SHAREABLE", "job has no finished video to share yet", nil)
 	case errors.Is(err, facade_open_api.ErrProviderError):
 		return utils.Error(c, fiber.StatusBadGateway, "PROVIDER_ERROR", "generation provider returned an error", nil)
 	case errors.Is(err, facade_open_api.ErrValidation):

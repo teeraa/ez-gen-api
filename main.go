@@ -19,6 +19,7 @@ import (
 	"github.com/ez-gen/ez-gen-api/pkgs/configs"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
+	"github.com/gofiber/fiber/v2/middleware/limiter"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/joho/godotenv"
@@ -49,6 +50,7 @@ func main() {
 	sceneRepo := repository_open_api.NewSceneRepository(database)
 	jobRepo := repository_open_api.NewJobRepository(database)
 	uploadRepo := repository_open_api.NewUploadRepository(database)
+	shareRepo := repository_open_api.NewShareRepository(database)
 
 	// ── External services ─────────────────────────────────────────────────────
 	arkClient := modelark.NewClient(cfg.ArkAPIKey, cfg.ArkBaseURL)
@@ -75,6 +77,8 @@ func main() {
 		jobRepo, uploadRepo, characterRepo, styleRepo, sceneRepo, tagRepo,
 		arkClient, modelRegistry, storageClient, mediaFetcher, cfg.MaxConcurrentJobsPerUser,
 	)
+
+	shareFacade := facade_open_api.NewShareFacade(shareRepo, jobRepo, storageClient, cfg.PublicWebBaseURL)
 
 	// ── HTTP application ──────────────────────────────────────────────────────
 	app := fiber.New(fiber.Config{
@@ -110,6 +114,22 @@ func main() {
 		return c.JSON(fiber.Map{"status": "ok"})
 	})
 
+	// ── Public API v1 (/public/v1) — no auth, rate limited per client IP ─────────
+	shareHandler := handler_open_api.NewShareHandler(shareFacade)
+	publicV1 := app.Group("/public/v1", limiter.New(limiter.Config{
+		Max:        cfg.PublicRateLimitPerMinute,
+		Expiration: time.Minute,
+		LimitReached: func(c *fiber.Ctx) error {
+			rid, _ := c.Locals("requestID").(string)
+			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
+				"code":      "RATE_LIMITED",
+				"message":   "Too many requests",
+				"requestId": rid,
+			})
+		},
+	}))
+	shareHandler.RegisterPublicRoutes(publicV1)
+
 	// ── Open API v1 (/open/v1) ────────────────────────────────────────────────
 	// Auth: disabled for dev — swap DevAuth for JWTAuth(cfg.JWTSecret) when ready
 	openV1 := app.Group("/open/v1", middlewares.DevAuth(cfg.DevUserID))
@@ -117,6 +137,7 @@ func main() {
 	// Jobs
 	jobHandler := handler_open_api.NewJobHandler(jobFacade)
 	jobHandler.RegisterRoutes(openV1)
+	shareHandler.RegisterRoutes(openV1)
 
 	// VIOLET DNA (/open/v1/dna)
 	dnaGroup := openV1.Group("/dna")

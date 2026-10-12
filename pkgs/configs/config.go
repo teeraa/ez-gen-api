@@ -37,6 +37,11 @@ type Config struct {
 
 	CORSAllowedOrigins string
 
+	// PublicWebBaseURL is the frontend origin used to build share links (<base>/s/<token>).
+	PublicWebBaseURL string
+	// PublicRateLimitPerMinute caps unauthenticated requests per client IP.
+	PublicRateLimitPerMinute int
+
 	RateLimitJobsPerMinute   int
 	MaxConcurrentJobsPerUser int
 
@@ -75,6 +80,9 @@ func Load() *Config {
 		StorageCDNBaseURL: os.Getenv("STORAGE_CDN_BASE_URL"),
 
 		CORSAllowedOrigins: getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000"),
+
+		PublicWebBaseURL:         getEnv("PUBLIC_WEB_BASE_URL", "http://localhost:3000"),
+		PublicRateLimitPerMinute: getEnvInt("PUBLIC_RATE_LIMIT_PER_MINUTE", 120),
 
 		RateLimitJobsPerMinute:   getEnvInt("RATE_LIMIT_JOBS_PER_MINUTE", 10),
 		MaxConcurrentJobsPerUser: getEnvInt("MAX_CONCURRENT_JOBS_PER_USER", 3),

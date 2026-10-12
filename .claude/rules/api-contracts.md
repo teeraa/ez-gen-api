@@ -109,6 +109,7 @@ Machine-readable codes used in the `code` field:
 | `JOB_NOT_FOUND` | 404 | Job not found or belongs to another user |
 | `PROJECT_NOT_FOUND` | 404 | Project not found or belongs to another user |
 | `JOB_NOT_CANCELLABLE` | 409 | Job already in terminal state |
+| `JOB_NOT_SHAREABLE` | 409 | Job has no finished video in storage to share or download |
 | `IMAGE_REQUIRED` | 422 | Mode requires referenceImageId |
 | `IMAGE_EXPIRED` | 422 | Referenced upload has expired |
 | `MODEL_NOT_SUPPORTED` | 422 | Model doesn't support requested mode |
@@ -245,4 +246,12 @@ Video generation endpoints mount on `/open/v1/`:
 - `DELETE /open/v1/projects/:projectId`
 - `GET    /open/v1/credits`
 
+- `POST   /open/v1/jobs/:jobId/shares`
+- `GET    /open/v1/jobs/:jobId/download`
+- `DELETE /open/v1/shares/:shareId`
+
 All routes in this group require JWT auth middleware.
+
+The unauthenticated `/public/v1/` group (rate limited per client IP) serves only data
+reachable through an unguessable share token:
+- `GET    /public/v1/shares/:token`
