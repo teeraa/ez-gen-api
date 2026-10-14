@@ -10,6 +10,18 @@ func KeyForThumbnail(userID, jobID, ext string) string {
 	return fmt.Sprintf("thumbs/%s/%s.%s", userID, jobID, ext)
 }
 
+func KeyForExport(userID, exportID, ext string) string {
+	return fmt.Sprintf("exports/%s/%s.%s", userID, exportID, ext)
+}
+
+func KeyForUpload(userID, uploadID, ext string) string {
+	return fmt.Sprintf("uploads/%s/%s.%s", userID, uploadID, ext)
+}
+
+func KeyForAudioUpload(userID, uploadID, ext string) string {
+	return fmt.Sprintf("audio/%s/%s.%s", userID, uploadID, ext)
+}
+
 // ExtForContentType falls back to the given default so an unexpected provider
 // content type never blocks persisting the output.
 func ExtForContentType(contentType, fallback string) string {

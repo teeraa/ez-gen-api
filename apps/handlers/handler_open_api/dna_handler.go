@@ -353,6 +353,14 @@ func mapFacadeError(c *fiber.Ctx, err error) error {
 		return utils.Error(c, fiber.StatusBadGateway, "PROVIDER_ERROR", "generation provider returned an error", nil)
 	case errors.Is(err, facade_open_api.ErrValidation):
 		return utils.Error(c, fiber.StatusBadRequest, "VALIDATION_ERROR", "invalid input", nil)
+	case errors.Is(err, facade_open_api.ErrSceneHasNoOutput):
+		return utils.Error(c, fiber.StatusUnprocessableEntity, "SCENE_HAS_NO_OUTPUT", "one or more scenes have no completed video output", nil)
+	case errors.Is(err, facade_open_api.ErrExportNotReady):
+		return utils.Error(c, fiber.StatusConflict, "EXPORT_NOT_READY", "export has no output yet", nil)
+	case errors.Is(err, facade_open_api.ErrInvalidFileType):
+		return utils.Error(c, fiber.StatusBadRequest, "INVALID_FILE_TYPE", "unsupported file type", nil)
+	case errors.Is(err, facade_open_api.ErrFileTooLarge):
+		return utils.Error(c, fiber.StatusRequestEntityTooLarge, "FILE_TOO_LARGE", "file exceeds size limit", nil)
 	default:
 		return utils.Error(c, fiber.StatusInternalServerError, "INTERNAL_ERROR", "an unexpected error occurred", nil)
 	}

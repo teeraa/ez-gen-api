@@ -13,4 +13,10 @@ var (
 	ErrImageExpired  = errors.New("reference image expired")
 	ErrModelInvalid  = errors.New("model not supported for this mode")
 	ErrNotShareable  = errors.New("job has no stored output to share")
+
+	// Export errors
+	ErrSceneHasNoOutput  = errors.New("one or more scenes have no completed video output")
+	ErrExportNotReady    = errors.New("export has no output yet")
+	ErrInvalidFileType   = errors.New("invalid file type")
+	ErrFileTooLarge      = errors.New("file too large")
 )

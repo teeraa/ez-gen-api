@@ -15,6 +15,7 @@ import (
 	"github.com/ez-gen/ez-gen-api/apps/repositories/repository_open_api"
 	"github.com/ez-gen/ez-gen-api/apps/services/modelark"
 	"github.com/ez-gen/ez-gen-api/apps/services/storage"
+	"github.com/ez-gen/ez-gen-api/apps/services/videoprocessing"
 	"github.com/ez-gen/ez-gen-api/middlewares"
 	"github.com/ez-gen/ez-gen-api/pkgs/configs"
 	"github.com/gofiber/fiber/v2"
@@ -51,6 +52,7 @@ func main() {
 	jobRepo := repository_open_api.NewJobRepository(database)
 	uploadRepo := repository_open_api.NewUploadRepository(database)
 	shareRepo := repository_open_api.NewShareRepository(database)
+	exportRepo := repository_open_api.NewExportRepository(database)
 
 	// ── External services ─────────────────────────────────────────────────────
 	arkClient := modelark.NewClient(cfg.ArkAPIKey, cfg.ArkBaseURL)
@@ -79,6 +81,10 @@ func main() {
 	)
 
 	shareFacade := facade_open_api.NewShareFacade(shareRepo, jobRepo, storageClient, cfg.PublicWebBaseURL)
+
+	videoProcessor := videoprocessing.NewFFmpegProcessor()
+	exportFacade := facade_open_api.NewExportFacade(exportRepo, jobRepo, uploadRepo, sceneRepo, storageClient, videoProcessor)
+	uploadFacade := facade_open_api.NewUploadFacade(uploadRepo, storageClient)
 
 	// ── HTTP application ──────────────────────────────────────────────────────
 	app := fiber.New(fiber.Config{
@@ -139,6 +145,14 @@ func main() {
 	jobHandler.RegisterRoutes(openV1)
 	shareHandler.RegisterRoutes(openV1)
 
+	// Uploads
+	uploadHandler := handler_open_api.NewUploadHandler(uploadFacade)
+	uploadHandler.RegisterRoutes(openV1)
+
+	// Storyboard exports
+	exportHandler := handler_open_api.NewExportHandler(exportFacade)
+	exportHandler.RegisterRoutes(openV1)
+
 	// VIOLET DNA (/open/v1/dna)
 	dnaGroup := openV1.Group("/dna")
 	dnaHandler := handler_open_api.NewDNAHandler(dnaFacade)
@@ -152,6 +166,9 @@ func main() {
 	pollInterval := time.Duration(cfg.ArkPollIntervalSeconds) * time.Second
 	poller := crons.NewJobPoller(jobRepo, jobFacade, pollInterval, 20)
 	go poller.Start(ctx)
+
+	exportWorker := crons.NewExportWorker(exportRepo, exportFacade, 10*time.Second, 5)
+	go exportWorker.Start(ctx)
 
 	go func() {
 		n, err := jobFacade.BackfillOutputs(ctx, backfillBatch)
