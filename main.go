@@ -82,7 +82,7 @@ func main() {
 
 	shareFacade := facade_open_api.NewShareFacade(shareRepo, jobRepo, storageClient, cfg.PublicWebBaseURL)
 
-	videoProcessor := videoprocessing.NewFFmpegProcessor()
+	videoProcessor := videoprocessing.NewFFmpegProcessor(cfg.FFmpegFontFile)
 	exportFacade := facade_open_api.NewExportFacade(exportRepo, jobRepo, uploadRepo, sceneRepo, storageClient, videoProcessor)
 	uploadFacade := facade_open_api.NewUploadFacade(uploadRepo, storageClient)
 

@@ -10,11 +10,22 @@ import (
 	"strings"
 )
 
-// FFmpegProcessor implements VideoProcessor using a locally installed ffmpeg binary.
-type FFmpegProcessor struct{}
+// DefaultFontFile is where the Alpine ttf-dejavu package installs DejaVu Sans.
+// drawtext needs an explicit font file because the runtime image has no fontconfig.
+const DefaultFontFile = "/usr/share/fonts/dejavu/DejaVuSans.ttf"
 
-func NewFFmpegProcessor() *FFmpegProcessor {
-	return &FFmpegProcessor{}
+// FFmpegProcessor implements VideoProcessor using a locally installed ffmpeg binary.
+type FFmpegProcessor struct {
+	fontFile string
+}
+
+// NewFFmpegProcessor uses fontFile for text overlays; an empty string falls back to
+// DefaultFontFile.
+func NewFFmpegProcessor(fontFile string) *FFmpegProcessor {
+	if fontFile == "" {
+		fontFile = DefaultFontFile
+	}
+	return &FFmpegProcessor{fontFile: fontFile}
 }
 
 func (p *FFmpegProcessor) Merge(ctx context.Context, req MergeRequest) ([]byte, error) {
@@ -76,41 +87,55 @@ func (p *FFmpegProcessor) postProcess(ctx context.Context, inputPath string, req
 	hasAudio := req.AudioPath != nil
 	hasText := len(req.TextLayers) > 0
 
+	// Generated clips are often video-only; probe so we never map a missing audio stream.
+	clipHasAudio, err := probeHasAudio(ctx, inputPath)
+	if err != nil {
+		return fmt.Errorf("videoprocessing: probe audio: %w", err)
+	}
+
 	// Probe clip durations only when text layers are present (needed for timing).
 	var clipDurations []float64
 	if hasText {
-		var err error
 		clipDurations, err = probeClipDurations(ctx, req.ClipPaths)
 		if err != nil {
 			return fmt.Errorf("videoprocessing: probe durations: %w", err)
 		}
 	}
 
+	vol := req.AudioVolume
+	if vol <= 0 {
+		vol = 1.0
+	}
+
 	args := []string{"-y", "-i", inputPath}
-	audioInputIdx := -1
 	if hasAudio {
-		audioInputIdx = 1
 		args = append(args, "-i", *req.AudioPath)
 	}
 
-	var fc strings.Builder
-	videoOut := "" // empty = no video filter
-	audioOut := "" // empty = map 0:a directly
+	var filters []string
+	videoOut := ""      // filter output label for video, "" = map 0:v directly
+	audioOut := ""      // filter output label for audio, "" = no filter
+	audioMapDirect := "" // direct stream map for audio, "" = none
 
-	if hasAudio {
-		vol := req.AudioVolume
-		if vol <= 0 {
-			vol = 1.0
-		}
-		fmt.Fprintf(&fc, "[0:a][%d:a]amix=inputs=2:duration=first:weights=1 %.2f[fa]", audioInputIdx, vol)
+	// ── Audio routing ──────────────────────────────────────────────────────────
+	switch {
+	case clipHasAudio && hasAudio:
+		// Mix clip audio with background; cap length to the clip audio.
+		filters = append(filters, fmt.Sprintf("[0:a][1:a]amix=inputs=2:duration=first:weights=1 %.2f[fa]", vol))
+		audioOut = "[fa]"
+	case clipHasAudio && !hasAudio:
+		audioMapDirect = "0:a"
+	case !clipHasAudio && hasAudio:
+		// No clip audio: pad background with silence so -shortest trims it to the video.
+		filters = append(filters, fmt.Sprintf("[1:a]volume=%.2f,apad[fa]", vol))
 		audioOut = "[fa]"
 	}
+	// else: no audio anywhere → output has no audio track.
 
+	// ── Text overlay ────────────────────────────────────────────────────────────
 	if hasText {
 		starts := cumulativeStarts(clipDurations)
-		if fc.Len() > 0 {
-			fc.WriteString(";")
-		}
+		var fc strings.Builder
 		fc.WriteString("[0:v]")
 		for i, tl := range req.TextLayers {
 			idx := tl.SceneIdx
@@ -119,38 +144,49 @@ func (p *FFmpegProcessor) postProcess(ctx context.Context, inputPath string, req
 			}
 			startSec := starts[idx]
 			endSec := startSec + clipDurations[idx]
-			fc.WriteString(buildDrawtextSegment(tl, startSec, endSec))
+			fc.WriteString(buildDrawtextSegment(tl, startSec, endSec, p.fontFile))
 			if i < len(req.TextLayers)-1 {
 				label := fmt.Sprintf("[tx%d]", i)
 				fc.WriteString(label + ";" + label)
 			}
 		}
 		fc.WriteString("[fv]")
+		filters = append(filters, fc.String())
 		videoOut = "[fv]"
 	}
 
-	if fc.Len() > 0 {
-		args = append(args, "-filter_complex", fc.String())
+	if len(filters) > 0 {
+		args = append(args, "-filter_complex", strings.Join(filters, ";"))
 	}
 
+	// Map video.
 	if videoOut != "" {
 		args = append(args, "-map", videoOut)
 	} else {
 		args = append(args, "-map", "0:v")
 	}
-	if audioOut != "" {
+	// Map audio (only when there is one).
+	switch {
+	case audioOut != "":
 		args = append(args, "-map", audioOut)
-	} else {
-		args = append(args, "-map", "0:a")
+	case audioMapDirect != "":
+		args = append(args, "-map", audioMapDirect)
 	}
 
-	// Re-encode video only when text overlay is applied (stream copy otherwise).
+	// Re-encode video only when a text overlay is applied (stream copy otherwise).
 	if hasText {
 		args = append(args, "-c:v", "libx264", "-preset", "fast")
 	} else {
 		args = append(args, "-c:v", "copy")
 	}
-	args = append(args, "-c:a", "aac", outPath)
+	if audioOut != "" || audioMapDirect != "" {
+		args = append(args, "-c:a", "aac")
+	}
+	// apad produces an infinite stream; -shortest stops at the video's end.
+	if !clipHasAudio && hasAudio {
+		args = append(args, "-shortest")
+	}
+	args = append(args, outPath)
 
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -159,7 +195,7 @@ func (p *FFmpegProcessor) postProcess(ctx context.Context, inputPath string, req
 	return nil
 }
 
-func buildDrawtextSegment(tl TextLayer, startSec, endSec float64) string {
+func buildDrawtextSegment(tl TextLayer, startSec, endSec float64, fontFile string) string {
 	fontSize := tl.FontSize
 	if fontSize <= 0 {
 		fontSize = 48
@@ -182,11 +218,16 @@ func buildDrawtextSegment(tl TextLayer, startSec, endSec float64) string {
 	text := strings.ReplaceAll(tl.Text, `'`, `'\''`)
 	text = strings.ReplaceAll(text, `:`, `\:`)
 
+	fontOpt := ""
+	if fontFile != "" {
+		fontOpt = fmt.Sprintf("fontfile='%s':", fontFile)
+	}
+
 	// Commas inside between() must be escaped so FFmpeg doesn't treat them as
 	// filter-chain separators.
 	return fmt.Sprintf(
-		"drawtext=text='%s':x=(w-text_w)/2:y=%s:fontsize=%d:fontcolor=0x%s:enable='between(t\\,%f\\,%f)'",
-		text, yExpr, fontSize, color, startSec, endSec,
+		"drawtext=%stext='%s':x=(w-text_w)/2:y=%s:fontsize=%d:fontcolor=0x%s:enable='between(t\\,%f\\,%f)'",
+		fontOpt, text, yExpr, fontSize, color, startSec, endSec,
 	)
 }
 
@@ -201,6 +242,29 @@ func probeClipDurations(ctx context.Context, paths []string) ([]float64, error) 
 		durations[i] = d
 	}
 	return durations, nil
+}
+
+// probeHasAudio reports whether the file has at least one audio stream.
+func probeHasAudio(ctx context.Context, path string) (bool, error) {
+	cmd := exec.CommandContext(ctx, "ffprobe",
+		"-v", "quiet",
+		"-select_streams", "a",
+		"-show_entries", "stream=index",
+		"-print_format", "json",
+		path)
+	out, err := cmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("ffprobe audio: %w", err)
+	}
+	var result struct {
+		Streams []struct {
+			Index int `json:"index"`
+		} `json:"streams"`
+	}
+	if err := json.Unmarshal(out, &result); err != nil {
+		return false, fmt.Errorf("ffprobe audio parse: %w", err)
+	}
+	return len(result.Streams) > 0, nil
 }
 
 func probeDuration(ctx context.Context, path string) (float64, error) {

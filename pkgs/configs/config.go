@@ -35,6 +35,9 @@ type Config struct {
 	StorageSecretKey  string
 	StorageCDNBaseURL string
 
+	// FFmpegFontFile is the font used for text overlays in storyboard exports.
+	FFmpegFontFile string
+
 	CORSAllowedOrigins string
 
 	// PublicWebBaseURL is the frontend origin used to build share links (<base>/s/<token>).
@@ -78,6 +81,8 @@ func Load() *Config {
 		StorageAccessKey:  os.Getenv("STORAGE_ACCESS_KEY"),
 		StorageSecretKey:  os.Getenv("STORAGE_SECRET_KEY"),
 		StorageCDNBaseURL: os.Getenv("STORAGE_CDN_BASE_URL"),
+
+		FFmpegFontFile: getEnv("FFMPEG_FONT_FILE", "/usr/share/fonts/dejavu/DejaVuSans.ttf"),
 
 		CORSAllowedOrigins: getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000"),
 
