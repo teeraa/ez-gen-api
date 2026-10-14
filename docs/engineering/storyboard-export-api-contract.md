@@ -1,9 +1,10 @@
 # Storyboard Export API Contract — Frontend Integration
 
 > Date: 2026-10-14
-> Status: **Implemented**
+> Status: **Implemented** (baseline + timeline editor extension)
 > Backend: Go Fiber (`ez-gen-api`)
-> Scope: Merge scene clips into one video with optional background audio + text overlays.
+> Scope: Merge scene clips into one video with optional per-clip trim, background audio,
+> and text overlays (3-position or free placement).
 
 This document describes the endpoints the frontend uses to upload media and to
 create/track storyboard exports. All conventions follow the existing
@@ -126,10 +127,65 @@ Content-Type: application/json
 | Field | Type | Required | Rules |
 |---|---|---|---|
 | `sceneId` | string | yes | UUID. Must appear in `sceneIds`; layers for other scenes are ignored. |
-| `text` | string | yes | 1–200 chars. Shown for the full duration of that scene's clip. |
-| `position` | string | no | `top` \| `center` \| `bottom`. Default `bottom`. |
-| `fontSize` | number | no | Pixels. Default `48`. |
+| `text` | string | yes | 1–200 chars. Shown for the full duration of that scene's clip (unless timed — see extension). |
+| `position` | string | no | `top` \| `center` \| `bottom`. Default `bottom`. Ignored when `x`/`y` are set. |
+| `fontSize` | number | no | Pixels at a **1080-height reference**; backend scales to the real output height. Default `48`. |
 | `color` | string | no | Hex **without** `#`, e.g. `FFFFFF`. Default white. |
+
+### Timeline editor extension (implemented)
+
+Two additive capabilities on top of the baseline body. Both are optional; a baseline body
+(`sceneIds` + 3-position text) still works unchanged.
+
+**a) Per-clip trim — `clips` supersedes `sceneIds`.**
+
+```json
+{
+  "clips": [
+    { "sceneId": "1111...", "trimStart": 0.0, "trimEnd": 4.5 },
+    { "sceneId": "2222...", "trimEnd": 3.0 }
+  ]
+}
+```
+
+| Field | Type | Required | Rules |
+|---|---|---|---|
+| `clips` | object[] | — | 2–20 items; supersedes `sceneIds` when present. Each scene at most once. |
+| `clips[].sceneId` | string | yes | UUID; must have a selected succeeded video. |
+| `clips[].trimStart` | number | no | Seconds from the clip start. Default `0`. |
+| `clips[].trimEnd` | number | no | Seconds from the clip start. Default = full duration. Must be `> trimStart`. |
+
+- Send **either** `sceneIds` **or** `clips`. If both are present, `clips` wins.
+- Trim units are **seconds** (float). Total export duration is the sum of trimmed clip lengths.
+- Trim forces the FFmpeg concat filter (not stream-copy), so every export is re-encoded.
+
+**b) Free text placement + timing — extra `textLayers` fields.**
+
+```json
+{
+  "textLayers": [
+    {
+      "sceneId": "1111...",
+      "text": "Chapter One",
+      "x": 0.5, "y": 0.9, "align": "center",
+      "fontSize": 48, "color": "FFFFFF",
+      "startTime": 0.0, "endTime": 2.0
+    }
+  ]
+}
+```
+
+| Field | Type | Required | Rules |
+|---|---|---|---|
+| `x` | number | no | Normalized `0..1` of frame width; **centre anchor**. When set with `y`, overrides `position`. |
+| `y` | number | no | Normalized `0..1` of frame height; **centre anchor**. |
+| `align` | string | no | `left` \| `center` \| `right`. Shifts the anchor horizontally. Default `center`. |
+| `startTime` | number | no | Seconds **relative to the clip's trimmed start**. Absent (with `endTime`) = whole clip. |
+| `endTime` | number | no | Seconds relative to the trimmed start. Must be `> startTime`; clamped to clip end. |
+
+- `x` and `y` must be supplied **together** to take effect; a lone `x` or `y` falls back to `position`.
+- `fontSize` is authored against a 1080-px-tall preview; the backend scales it to the output height.
+- Timing is relative to each clip's **trimmed** start, so it lines up after trims are applied.
 
 ### Response `201`
 ```json
@@ -148,7 +204,7 @@ Content-Type: application/json
 ### Errors
 | HTTP | code | When |
 |---|---|---|
-| 400 | `VALIDATION_ERROR` | Body fails field validation (e.g. fewer than 2 scenes) |
+| 400 | `VALIDATION_ERROR` | Body fails validation: fewer than 2 or more than 20 clips, a duplicate scene, a non-UUID, or `trimEnd <= trimStart` |
 | 404 | `NOT_FOUND` | A scene or the audio upload does not exist / belongs to another user |
 | 422 | `SCENE_HAS_NO_OUTPUT` | A scene has no selected succeeded job with a stored video |
 | 400 | `INVALID_FILE_TYPE` | `audioUploadId` references a non-audio upload |

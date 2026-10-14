@@ -14,6 +14,9 @@ import (
 // drawtext needs an explicit font file because the runtime image has no fontconfig.
 const DefaultFontFile = "/usr/share/fonts/dejavu/DejaVuSans.ttf"
 
+// fontReferenceHeight is the output height the client authors fontSize against.
+const fontReferenceHeight = 1080.0
+
 // FFmpegProcessor implements VideoProcessor using a locally installed ffmpeg binary.
 type FFmpegProcessor struct {
 	fontFile string
@@ -28,8 +31,11 @@ func NewFFmpegProcessor(fontFile string) *FFmpegProcessor {
 	return &FFmpegProcessor{fontFile: fontFile}
 }
 
+// Merge trims and concatenates every clip, then applies audio mixing and text overlays,
+// all in a single FFmpeg pass. Per-clip trim forces the concat filter (not the stream-copy
+// demuxer), so the output is always re-encoded.
 func (p *FFmpegProcessor) Merge(ctx context.Context, req MergeRequest) ([]byte, error) {
-	if len(req.ClipPaths) == 0 {
+	if len(req.Clips) == 0 {
 		return nil, fmt.Errorf("videoprocessing: no clips provided")
 	}
 
@@ -39,18 +45,136 @@ func (p *FFmpegProcessor) Merge(ctx context.Context, req MergeRequest) ([]byte, 
 	}
 	defer os.RemoveAll(tmpDir)
 
-	mergedPath := filepath.Join(tmpDir, "merged.mp4")
-	if err := p.concatClips(ctx, req.ClipPaths, tmpDir, mergedPath); err != nil {
-		return nil, err
+	// Probe durations and audio presence. Concat requires uniform streams, so clip audio
+	// is only used when every clip has it; otherwise clip audio is dropped.
+	clipHasAudio := true
+	trimStart := make([]float64, len(req.Clips))
+	outDur := make([]float64, len(req.Clips))
+	for i, c := range req.Clips {
+		full, err := probeDuration(ctx, c.Path)
+		if err != nil {
+			return nil, fmt.Errorf("videoprocessing: probe clip %d: %w", i, err)
+		}
+		has, err := probeHasAudio(ctx, c.Path)
+		if err != nil {
+			return nil, fmt.Errorf("videoprocessing: probe audio clip %d: %w", i, err)
+		}
+		if !has {
+			clipHasAudio = false
+		}
+		ts, te := normalizeTrim(c.TrimStart, c.TrimEnd, full)
+		trimStart[i] = ts
+		outDur[i] = te - ts
+	}
+	starts := cumulativeStarts(outDur)
+
+	// Font scaling reference: the first clip's height (concat preserves input dimensions).
+	outHeight := 0
+	if h, err := probeHeight(ctx, req.Clips[0].Path); err == nil {
+		outHeight = h
 	}
 
-	outPath := mergedPath
-	if req.AudioPath != nil || len(req.TextLayers) > 0 {
-		finalPath := filepath.Join(tmpDir, "final.mp4")
-		if err := p.postProcess(ctx, mergedPath, req, finalPath); err != nil {
-			return nil, err
+	hasBgAudio := req.AudioPath != nil
+	bgAudioIdx := len(req.Clips)
+
+	args := []string{"-y"}
+	for _, c := range req.Clips {
+		args = append(args, "-i", c.Path)
+	}
+	if hasBgAudio {
+		args = append(args, "-i", *req.AudioPath)
+	}
+
+	var parts []string
+
+	// Trim each clip and reset its timestamps.
+	for i := range req.Clips {
+		ts := trimStart[i]
+		te := ts + outDur[i]
+		parts = append(parts, fmt.Sprintf("[%d:v]trim=start=%f:end=%f,setpts=PTS-STARTPTS[v%d]", i, ts, te, i))
+		if clipHasAudio {
+			parts = append(parts, fmt.Sprintf("[%d:a]atrim=start=%f:end=%f,asetpts=PTS-STARTPTS[a%d]", i, ts, te, i))
 		}
-		outPath = finalPath
+	}
+
+	// Concatenate the trimmed segments.
+	var concatIn strings.Builder
+	for i := range req.Clips {
+		concatIn.WriteString(fmt.Sprintf("[v%d]", i))
+		if clipHasAudio {
+			concatIn.WriteString(fmt.Sprintf("[a%d]", i))
+		}
+	}
+	if clipHasAudio {
+		parts = append(parts, fmt.Sprintf("%sconcat=n=%d:v=1:a=1[cv][ca]", concatIn.String(), len(req.Clips)))
+	} else {
+		parts = append(parts, fmt.Sprintf("%sconcat=n=%d:v=1:a=0[cv]", concatIn.String(), len(req.Clips)))
+	}
+
+	// Text overlays on the concatenated video.
+	videoLabel := "[cv]"
+	if len(req.TextLayers) > 0 {
+		var tb strings.Builder
+		tb.WriteString("[cv]")
+		written := 0
+		for _, tl := range req.TextLayers {
+			idx := tl.ClipIdx
+			if idx < 0 || idx >= len(starts) {
+				continue
+			}
+			clipStart := starts[idx]
+			s, e := layerWindow(tl, clipStart, outDur[idx])
+			if written > 0 {
+				label := fmt.Sprintf("[tx%d]", written)
+				tb.WriteString(label + ";" + label)
+			}
+			tb.WriteString(buildDrawtextSegment(tl, s, e, outHeight, p.fontFile))
+			written++
+		}
+		if written > 0 {
+			tb.WriteString("[fv]")
+			parts = append(parts, tb.String())
+			videoLabel = "[fv]"
+		}
+	}
+
+	// Audio routing.
+	vol := req.AudioVolume
+	if vol <= 0 {
+		vol = 1.0
+	}
+	audioLabel := ""
+	switch {
+	case clipHasAudio && hasBgAudio:
+		parts = append(parts, fmt.Sprintf("[ca][%d:a]amix=inputs=2:duration=first:weights=1 %.2f[fa]", bgAudioIdx, vol))
+		audioLabel = "[fa]"
+	case clipHasAudio && !hasBgAudio:
+		audioLabel = "[ca]"
+	case !clipHasAudio && hasBgAudio:
+		// Pad background with silence so -shortest trims it to the video length.
+		parts = append(parts, fmt.Sprintf("[%d:a]volume=%.2f,apad[fa]", bgAudioIdx, vol))
+		audioLabel = "[fa]"
+	}
+
+	args = append(args, "-filter_complex", strings.Join(parts, ";"))
+	args = append(args, "-map", videoLabel)
+	if audioLabel != "" {
+		args = append(args, "-map", audioLabel)
+	}
+	args = append(args, "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p")
+	if audioLabel != "" {
+		args = append(args, "-c:a", "aac")
+	}
+	if !clipHasAudio && hasBgAudio {
+		args = append(args, "-shortest")
+	}
+
+	outPath := filepath.Join(tmpDir, "final.mp4")
+	args = append(args, outPath)
+
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("videoprocessing: merge: %w\n%s", err, lastLines(string(out), 12))
 	}
 
 	data, err := os.ReadFile(outPath)
@@ -60,158 +184,70 @@ func (p *FFmpegProcessor) Merge(ctx context.Context, req MergeRequest) ([]byte, 
 	return data, nil
 }
 
-// concatClips joins clips using the concat demuxer with stream copy (fast, no re-encode).
-func (p *FFmpegProcessor) concatClips(ctx context.Context, clips []string, tmpDir, outPath string) error {
-	listPath := filepath.Join(tmpDir, "clips.txt")
-	var b strings.Builder
-	for _, c := range clips {
-		b.WriteString("file '")
-		b.WriteString(strings.ReplaceAll(c, "'", `'\''`))
-		b.WriteString("'\n")
+// normalizeTrim clamps the trim window to the clip's real duration.
+func normalizeTrim(ts, te, full float64) (float64, float64) {
+	if ts < 0 {
+		ts = 0
 	}
-	if err := os.WriteFile(listPath, []byte(b.String()), 0600); err != nil {
-		return fmt.Errorf("videoprocessing: write concat list: %w", err)
+	if te <= 0 || te > full {
+		te = full
 	}
-	cmd := exec.CommandContext(ctx, "ffmpeg", "-y",
-		"-f", "concat", "-safe", "0", "-i", listPath,
-		"-c", "copy",
-		outPath)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("videoprocessing: concat clips: %w\n%s", err, lastLines(string(out), 10))
+	if ts >= te {
+		ts = 0
 	}
-	return nil
+	return ts, te
 }
 
-// postProcess applies audio mixing and/or text burn-in in a single FFmpeg pass.
-func (p *FFmpegProcessor) postProcess(ctx context.Context, inputPath string, req MergeRequest, outPath string) error {
-	hasAudio := req.AudioPath != nil
-	hasText := len(req.TextLayers) > 0
-
-	// Generated clips are often video-only; probe so we never map a missing audio stream.
-	clipHasAudio, err := probeHasAudio(ctx, inputPath)
-	if err != nil {
-		return fmt.Errorf("videoprocessing: probe audio: %w", err)
+// layerWindow returns the absolute [start,end] of a text layer in the merged video.
+func layerWindow(tl TextLayer, clipStart, clipDur float64) (float64, float64) {
+	if tl.StartTime == 0 && tl.EndTime == 0 {
+		return clipStart, clipStart + clipDur
 	}
-
-	// Probe clip durations only when text layers are present (needed for timing).
-	var clipDurations []float64
-	if hasText {
-		clipDurations, err = probeClipDurations(ctx, req.ClipPaths)
-		if err != nil {
-			return fmt.Errorf("videoprocessing: probe durations: %w", err)
-		}
+	s := clipStart + tl.StartTime
+	e := clipStart + tl.EndTime
+	if e <= s || tl.EndTime > clipDur {
+		e = clipStart + clipDur
 	}
-
-	vol := req.AudioVolume
-	if vol <= 0 {
-		vol = 1.0
-	}
-
-	args := []string{"-y", "-i", inputPath}
-	if hasAudio {
-		args = append(args, "-i", *req.AudioPath)
-	}
-
-	var filters []string
-	videoOut := ""      // filter output label for video, "" = map 0:v directly
-	audioOut := ""      // filter output label for audio, "" = no filter
-	audioMapDirect := "" // direct stream map for audio, "" = none
-
-	// ── Audio routing ──────────────────────────────────────────────────────────
-	switch {
-	case clipHasAudio && hasAudio:
-		// Mix clip audio with background; cap length to the clip audio.
-		filters = append(filters, fmt.Sprintf("[0:a][1:a]amix=inputs=2:duration=first:weights=1 %.2f[fa]", vol))
-		audioOut = "[fa]"
-	case clipHasAudio && !hasAudio:
-		audioMapDirect = "0:a"
-	case !clipHasAudio && hasAudio:
-		// No clip audio: pad background with silence so -shortest trims it to the video.
-		filters = append(filters, fmt.Sprintf("[1:a]volume=%.2f,apad[fa]", vol))
-		audioOut = "[fa]"
-	}
-	// else: no audio anywhere → output has no audio track.
-
-	// ── Text overlay ────────────────────────────────────────────────────────────
-	if hasText {
-		starts := cumulativeStarts(clipDurations)
-		var fc strings.Builder
-		fc.WriteString("[0:v]")
-		for i, tl := range req.TextLayers {
-			idx := tl.SceneIdx
-			if idx < 0 || idx >= len(starts) {
-				continue
-			}
-			startSec := starts[idx]
-			endSec := startSec + clipDurations[idx]
-			fc.WriteString(buildDrawtextSegment(tl, startSec, endSec, p.fontFile))
-			if i < len(req.TextLayers)-1 {
-				label := fmt.Sprintf("[tx%d]", i)
-				fc.WriteString(label + ";" + label)
-			}
-		}
-		fc.WriteString("[fv]")
-		filters = append(filters, fc.String())
-		videoOut = "[fv]"
-	}
-
-	if len(filters) > 0 {
-		args = append(args, "-filter_complex", strings.Join(filters, ";"))
-	}
-
-	// Map video.
-	if videoOut != "" {
-		args = append(args, "-map", videoOut)
-	} else {
-		args = append(args, "-map", "0:v")
-	}
-	// Map audio (only when there is one).
-	switch {
-	case audioOut != "":
-		args = append(args, "-map", audioOut)
-	case audioMapDirect != "":
-		args = append(args, "-map", audioMapDirect)
-	}
-
-	// Re-encode video only when a text overlay is applied (stream copy otherwise).
-	if hasText {
-		args = append(args, "-c:v", "libx264", "-preset", "fast")
-	} else {
-		args = append(args, "-c:v", "copy")
-	}
-	if audioOut != "" || audioMapDirect != "" {
-		args = append(args, "-c:a", "aac")
-	}
-	// apad produces an infinite stream; -shortest stops at the video's end.
-	if !clipHasAudio && hasAudio {
-		args = append(args, "-shortest")
-	}
-	args = append(args, outPath)
-
-	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("videoprocessing: post-process: %w\n%s", err, lastLines(string(out), 10))
-	}
-	return nil
+	return s, e
 }
 
-func buildDrawtextSegment(tl TextLayer, startSec, endSec float64, fontFile string) string {
+func buildDrawtextSegment(tl TextLayer, startSec, endSec float64, outHeight int, fontFile string) string {
 	fontSize := tl.FontSize
 	if fontSize <= 0 {
 		fontSize = 48
+	}
+	if outHeight > 0 {
+		fontSize = int(float64(fontSize)*float64(outHeight)/fontReferenceHeight + 0.5)
+		if fontSize < 1 {
+			fontSize = 1
+		}
 	}
 	color := tl.Color
 	if color == "" {
 		color = "FFFFFF"
 	}
-	var yExpr string
-	switch tl.Position {
-	case "top":
-		yExpr = "20"
-	case "center":
-		yExpr = "(h-text_h)/2"
-	default:
-		yExpr = "h-text_h-30"
+
+	var xExpr, yExpr string
+	if tl.HasXY {
+		switch tl.Align {
+		case "left":
+			xExpr = fmt.Sprintf("w*%f", tl.X)
+		case "right":
+			xExpr = fmt.Sprintf("w*%f-text_w", tl.X)
+		default:
+			xExpr = fmt.Sprintf("w*%f-text_w/2", tl.X)
+		}
+		yExpr = fmt.Sprintf("h*%f-text_h/2", tl.Y)
+	} else {
+		xExpr = "(w-text_w)/2"
+		switch tl.Position {
+		case "top":
+			yExpr = "20"
+		case "center":
+			yExpr = "(h-text_h)/2"
+		default:
+			yExpr = "h-text_h-30"
+		}
 	}
 
 	// Escape single-quotes and colons for FFmpeg's filter parser.
@@ -226,22 +262,9 @@ func buildDrawtextSegment(tl TextLayer, startSec, endSec float64, fontFile strin
 	// Commas inside between() must be escaped so FFmpeg doesn't treat them as
 	// filter-chain separators.
 	return fmt.Sprintf(
-		"drawtext=%stext='%s':x=(w-text_w)/2:y=%s:fontsize=%d:fontcolor=0x%s:enable='between(t\\,%f\\,%f)'",
-		fontOpt, text, yExpr, fontSize, color, startSec, endSec,
+		"drawtext=%stext='%s':x=%s:y=%s:fontsize=%d:fontcolor=0x%s:enable='between(t\\,%f\\,%f)'",
+		fontOpt, text, xExpr, yExpr, fontSize, color, startSec, endSec,
 	)
-}
-
-// probeClipDurations runs ffprobe on each clip and returns its duration in seconds.
-func probeClipDurations(ctx context.Context, paths []string) ([]float64, error) {
-	durations := make([]float64, len(paths))
-	for i, p := range paths {
-		d, err := probeDuration(ctx, p)
-		if err != nil {
-			return nil, fmt.Errorf("probe %q: %w", p, err)
-		}
-		durations[i] = d
-	}
-	return durations, nil
 }
 
 // probeHasAudio reports whether the file has at least one audio stream.
@@ -265,6 +288,32 @@ func probeHasAudio(ctx context.Context, path string) (bool, error) {
 		return false, fmt.Errorf("ffprobe audio parse: %w", err)
 	}
 	return len(result.Streams) > 0, nil
+}
+
+// probeHeight returns the video height of the first video stream.
+func probeHeight(ctx context.Context, path string) (int, error) {
+	cmd := exec.CommandContext(ctx, "ffprobe",
+		"-v", "quiet",
+		"-select_streams", "v:0",
+		"-show_entries", "stream=height",
+		"-print_format", "json",
+		path)
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, fmt.Errorf("ffprobe height: %w", err)
+	}
+	var result struct {
+		Streams []struct {
+			Height int `json:"height"`
+		} `json:"streams"`
+	}
+	if err := json.Unmarshal(out, &result); err != nil {
+		return 0, fmt.Errorf("ffprobe height parse: %w", err)
+	}
+	if len(result.Streams) == 0 {
+		return 0, fmt.Errorf("ffprobe height: no video stream")
+	}
+	return result.Streams[0].Height, nil
 }
 
 func probeDuration(ctx context.Context, path string) (float64, error) {

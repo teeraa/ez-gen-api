@@ -36,23 +36,53 @@ func (h *ExportHandler) CreateExport(c *fiber.Ctx) error {
 	}
 
 	in := facade_open_api.CreateExportInput{
-		SceneIDs:      req.SceneIDs,
 		AudioUploadID: req.AudioUploadID,
 	}
 	if req.AudioVolume != nil {
 		in.AudioVolume = *req.AudioVolume
 	}
+
+	// clips supersedes sceneIds; otherwise build untrimmed clips from sceneIds.
+	if len(req.Clips) > 0 {
+		for _, c := range req.Clips {
+			clip := facade_open_api.ExportClip{SceneID: c.SceneID}
+			if c.TrimStart != nil {
+				clip.TrimStart = *c.TrimStart
+			}
+			if c.TrimEnd != nil {
+				clip.TrimEnd = *c.TrimEnd
+			}
+			in.Clips = append(in.Clips, clip)
+		}
+	} else {
+		for _, sid := range req.SceneIDs {
+			in.Clips = append(in.Clips, facade_open_api.ExportClip{SceneID: sid})
+		}
+	}
+
 	for _, tl := range req.TextLayers {
 		layer := facade_open_api.ExportTextLayer{
 			SceneID:  tl.SceneID,
 			Text:     tl.Text,
 			Position: tl.Position,
+			Align:    tl.Align,
 		}
 		if tl.FontSize != nil {
 			layer.FontSize = *tl.FontSize
 		}
 		if tl.Color != nil {
 			layer.Color = *tl.Color
+		}
+		if tl.X != nil && tl.Y != nil {
+			layer.HasXY = true
+			layer.X = *tl.X
+			layer.Y = *tl.Y
+		}
+		if tl.StartTime != nil {
+			layer.StartTime = *tl.StartTime
+		}
+		if tl.EndTime != nil {
+			layer.EndTime = *tl.EndTime
 		}
 		in.TextLayers = append(in.TextLayers, layer)
 	}

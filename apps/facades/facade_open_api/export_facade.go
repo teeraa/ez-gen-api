@@ -18,6 +18,7 @@ import (
 	"github.com/ez-gen/ez-gen-api/apps/repositories/repository_open_api"
 	"github.com/ez-gen/ez-gen-api/apps/services/storage"
 	"github.com/ez-gen/ez-gen-api/apps/services/videoprocessing"
+	"github.com/google/uuid"
 )
 
 // ExportFacade handles storyboard export creation, status, and processing.
@@ -32,10 +33,17 @@ type ExportFacade interface {
 
 // CreateExportInput is the validated payload for export creation.
 type CreateExportInput struct {
-	SceneIDs      []string
+	Clips         []ExportClip
 	AudioUploadID *string
 	AudioVolume   float64 // 0 → default 1.0
 	TextLayers    []ExportTextLayer
+}
+
+// ExportClip is one scene clip with an optional trim window (seconds from clip start).
+type ExportClip struct {
+	SceneID   string
+	TrimStart float64
+	TrimEnd   float64
 }
 
 // ExportTextLayer is a validated text overlay attached to one scene.
@@ -45,6 +53,13 @@ type ExportTextLayer struct {
 	Position string
 	FontSize int
 	Color    string
+
+	HasXY bool
+	X, Y  float64
+	Align string
+
+	StartTime float64
+	EndTime   float64
 }
 
 type exportFacade struct {
@@ -83,12 +98,28 @@ func NewExportFacade(
 }
 
 func (f *exportFacade) CreateExport(ctx context.Context, userID string, in CreateExportInput) (*dto_open_api.ExportDTO, error) {
-	if _, err := parseUUIDs(in.SceneIDs); err != nil {
+	// Resolve to 2–20 clips, each a distinct scene.
+	if len(in.Clips) < 2 || len(in.Clips) > 20 {
 		return nil, ErrValidation
+	}
+	seen := make(map[string]struct{}, len(in.Clips))
+	sceneIDs := make([]string, 0, len(in.Clips))
+	for _, c := range in.Clips {
+		if _, err := uuid.Parse(c.SceneID); err != nil {
+			return nil, ErrValidation
+		}
+		if _, dup := seen[c.SceneID]; dup {
+			return nil, ErrValidation
+		}
+		seen[c.SceneID] = struct{}{}
+		if c.TrimEnd > 0 && c.TrimEnd <= c.TrimStart {
+			return nil, ErrValidation
+		}
+		sceneIDs = append(sceneIDs, c.SceneID)
 	}
 
 	// Each scene must have a selected job with succeeded output.
-	for _, sid := range in.SceneIDs {
+	for _, sid := range sceneIDs {
 		scene, err := f.scenes.FindByID(ctx, sid, userID)
 		if err != nil {
 			if errors.Is(err, repository_open_api.ErrNotFound) {
@@ -126,14 +157,28 @@ func (f *exportFacade) CreateExport(ctx context.Context, userID string, in Creat
 		vol = 1.0
 	}
 
-	sceneIDsJSON, err := json.Marshal(in.SceneIDs)
+	sceneIDsJSON, err := json.Marshal(sceneIDs)
 	if err != nil {
 		return nil, fmt.Errorf("marshal scene ids: %w", err)
+	}
+
+	storedClips := make([]models.StoredClip, len(in.Clips))
+	for i, c := range in.Clips {
+		storedClips[i] = models.StoredClip{
+			SceneID:   c.SceneID,
+			TrimStart: c.TrimStart,
+			TrimEnd:   c.TrimEnd,
+		}
+	}
+	clipsJSON, err := json.Marshal(storedClips)
+	if err != nil {
+		return nil, fmt.Errorf("marshal clips: %w", err)
 	}
 
 	export := &models.StoryboardExport{
 		UserID:          userID,
 		SceneIDs:        sceneIDsJSON,
+		Clips:           clipsJSON,
 		AudioStorageKey: audioStorageKey,
 		AudioVolume:     vol,
 		Status:          models.ExportStatusQueued,
@@ -143,11 +188,17 @@ func (f *exportFacade) CreateExport(ctx context.Context, userID string, in Creat
 		stored := make([]models.StoredTextLayer, len(in.TextLayers))
 		for i, tl := range in.TextLayers {
 			stored[i] = models.StoredTextLayer{
-				SceneID:  tl.SceneID,
-				Text:     tl.Text,
-				Position: tl.Position,
-				FontSize: tl.FontSize,
-				Color:    tl.Color,
+				SceneID:   tl.SceneID,
+				Text:      tl.Text,
+				Position:  tl.Position,
+				FontSize:  tl.FontSize,
+				Color:     tl.Color,
+				HasXY:     tl.HasXY,
+				X:         tl.X,
+				Y:         tl.Y,
+				Align:     tl.Align,
+				StartTime: tl.StartTime,
+				EndTime:   tl.EndTime,
 			}
 		}
 		b, err := json.Marshal(stored)
@@ -242,31 +293,37 @@ func (f *exportFacade) doProcess(ctx context.Context, export *models.StoryboardE
 	}
 	defer os.RemoveAll(tmpDir)
 
-	var sceneIDs []string
-	if err := json.Unmarshal(export.SceneIDs, &sceneIDs); err != nil {
-		return fmt.Errorf("parse scene ids: %w", err)
+	clips, err := exportClips(export)
+	if err != nil {
+		return err
 	}
 
 	// Download each scene's selected job clip.
-	clipPaths := make([]string, 0, len(sceneIDs))
-	for i, sid := range sceneIDs {
-		scene, err := f.scenes.FindByID(ctx, sid, export.UserID)
+	sceneIDs := make([]string, len(clips))
+	procClips := make([]videoprocessing.Clip, len(clips))
+	for i, c := range clips {
+		sceneIDs[i] = c.SceneID
+		scene, err := f.scenes.FindByID(ctx, c.SceneID, export.UserID)
 		if err != nil || scene.SelectedJobID == nil {
-			return fmt.Errorf("scene %s has no selected job", sid)
+			return fmt.Errorf("scene %s has no selected job", c.SceneID)
 		}
 		job, err := f.jobs.FindByID(ctx, scene.SelectedJobID.String(), export.UserID)
 		if err != nil || job.OutputMediaKey == nil {
-			return fmt.Errorf("scene %s job has no output", sid)
+			return fmt.Errorf("scene %s job has no output", c.SceneID)
 		}
 		signedURL, _, err := f.storage.SignedURL(ctx, *job.OutputMediaKey, 30*time.Minute)
 		if err != nil {
-			return fmt.Errorf("sign clip url scene=%s: %w", sid, err)
+			return fmt.Errorf("sign clip url scene=%s: %w", c.SceneID, err)
 		}
 		clipPath := filepath.Join(tmpDir, fmt.Sprintf("clip_%02d.mp4", i))
 		if err := f.downloadToFile(ctx, signedURL, clipPath); err != nil {
-			return fmt.Errorf("download clip scene=%s: %w", sid, err)
+			return fmt.Errorf("download clip scene=%s: %w", c.SceneID, err)
 		}
-		clipPaths = append(clipPaths, clipPath)
+		procClips[i] = videoprocessing.Clip{
+			Path:      clipPath,
+			TrimStart: c.TrimStart,
+			TrimEnd:   c.TrimEnd,
+		}
 	}
 
 	// Download audio if provided.
@@ -283,14 +340,14 @@ func (f *exportFacade) doProcess(ctx context.Context, export *models.StoryboardE
 		audioPath = &p
 	}
 
-	// Resolve text layers: map sceneID → sceneIdx.
+	// Resolve text layers: map sceneID → clip index.
 	textLayers, err := resolveTextLayers(export.TextLayers, sceneIDs)
 	if err != nil {
 		return fmt.Errorf("resolve text layers: %w", err)
 	}
 
 	videoBytes, err := f.processor.Merge(ctx, videoprocessing.MergeRequest{
-		ClipPaths:   clipPaths,
+		Clips:       procClips,
 		AudioPath:   audioPath,
 		AudioVolume: export.AudioVolume,
 		TextLayers:  textLayers,
@@ -310,7 +367,30 @@ func (f *exportFacade) doProcess(ctx context.Context, export *models.StoryboardE
 	})
 }
 
-// resolveTextLayers maps StoredTextLayer.SceneID to a 0-based SceneIdx.
+// exportClips returns the ordered clips for an export, falling back to the legacy
+// scene_ids column (untrimmed) for rows written before the clips column existed.
+func exportClips(export *models.StoryboardExport) ([]models.StoredClip, error) {
+	if len(export.Clips) > 0 {
+		var clips []models.StoredClip
+		if err := json.Unmarshal(export.Clips, &clips); err != nil {
+			return nil, fmt.Errorf("parse clips: %w", err)
+		}
+		if len(clips) > 0 {
+			return clips, nil
+		}
+	}
+	var sceneIDs []string
+	if err := json.Unmarshal(export.SceneIDs, &sceneIDs); err != nil {
+		return nil, fmt.Errorf("parse scene ids: %w", err)
+	}
+	clips := make([]models.StoredClip, len(sceneIDs))
+	for i, sid := range sceneIDs {
+		clips[i] = models.StoredClip{SceneID: sid}
+	}
+	return clips, nil
+}
+
+// resolveTextLayers maps StoredTextLayer.SceneID to a 0-based clip index.
 func resolveTextLayers(raw []byte, sceneIDs []string) ([]videoprocessing.TextLayer, error) {
 	if len(raw) == 0 {
 		return nil, nil
@@ -330,11 +410,17 @@ func resolveTextLayers(raw []byte, sceneIDs []string) ([]videoprocessing.TextLay
 			continue
 		}
 		layers = append(layers, videoprocessing.TextLayer{
-			SceneIdx: i,
-			Text:     s.Text,
-			Position: s.Position,
-			FontSize: s.FontSize,
-			Color:    s.Color,
+			ClipIdx:   i,
+			Text:      s.Text,
+			Position:  s.Position,
+			FontSize:  s.FontSize,
+			Color:     s.Color,
+			HasXY:     s.HasXY,
+			X:         s.X,
+			Y:         s.Y,
+			Align:     s.Align,
+			StartTime: s.StartTime,
+			EndTime:   s.EndTime,
 		})
 	}
 	return layers, nil
