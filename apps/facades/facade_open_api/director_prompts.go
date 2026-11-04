@@ -104,7 +104,7 @@ func directorImagePrompt(d *directorDocument, p *dto.DirectorProject, sh *dto.Di
 			if i < referenced {
 				ref = fmt.Sprintf(" — identity from reference Image %d (same face, hairstyle, body and outfit)", i+1)
 			}
-			fmt.Fprintf(&b, "- %s: %s%s\n", directorCharacterName(ch, i), directorTruncate(ch.Description, 300), ref)
+			fmt.Fprintf(&b, "- %s: %s%s\n", directorCharacterName(ch, i), directorTruncate(ch.Description, 500), ref)
 		}
 		if referenced > 0 {
 			b.WriteString("Reference images define character identity only. Ignore their backgrounds, lighting, framing and poses.\n")
@@ -175,7 +175,7 @@ func directorCoverPrompt(p *dto.DirectorProject, cast []directorCharacter, refer
 		if i < referenced {
 			ref = fmt.Sprintf(" — identity from reference Image %d", i+1)
 		}
-		fmt.Fprintf(&b, "- %s: %s%s\n", directorCharacterName(ch, i), directorTruncate(ch.Description, 300), ref)
+		fmt.Fprintf(&b, "- %s: %s%s\n", directorCharacterName(ch, i), directorTruncate(ch.Description, 500), ref)
 	}
 	if referenced > 0 {
 		b.WriteString("Reference images define character identity only; ignore their backgrounds.\n")

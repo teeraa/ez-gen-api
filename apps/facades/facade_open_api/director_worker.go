@@ -501,6 +501,10 @@ func (f *DirectorFacade) directorImage(c context.Context, j *models.DirectorJob,
 		// Referenced characters go first so "reference Image N" matches the request order.
 		referenced, unreferenced, refs := []directorCharacter{}, []directorCharacter{}, []string{}
 		for _, ch := range cast {
+			if len(refs) >= f.options.MaxImageReferences {
+				unreferenced = append(unreferenced, ch)
+				continue
+			}
 			u, _, e := f.storage.SignedURL(c, ch.Key, time.Hour)
 			if e == nil && f.options.ReferenceCheck != nil {
 				e = f.options.ReferenceCheck(c, u)

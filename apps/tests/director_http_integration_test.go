@@ -57,6 +57,8 @@ type directorTestMedia struct {
 	entered       chan struct{}
 	release       chan struct{}
 	objects       map[string][]byte
+	requests      []modelark.ImageRequest
+	rejectRefs    error
 }
 
 func (m *directorTestMedia) Upload(_ context.Context, key string, data []byte, _ string) error {
@@ -71,9 +73,15 @@ func (m *directorTestMedia) Upload(_ context.Context, key string, data []byte, _
 func (m *directorTestMedia) SignedURL(_ context.Context, key string, ttl time.Duration) (string, time.Time, error) {
 	return "https://owned.test/" + url.PathEscape(key), time.Now().UTC().Add(ttl), nil
 }
-func (m *directorTestMedia) GenerateImage(ctx context.Context, _ modelark.ImageRequest) ([]byte, error) {
+func (m *directorTestMedia) GenerateImage(ctx context.Context, r modelark.ImageRequest) ([]byte, error) {
 	m.mu.Lock()
 	m.calls++
+	m.requests = append(m.requests, r)
+	if m.rejectRefs != nil && len(r.ReferenceURLs) > 0 {
+		e := m.rejectRefs
+		m.mu.Unlock()
+		return nil, e
+	}
 	failure, entered, release, invalid := m.failure, m.entered, m.release, m.invalid
 	m.entered = nil
 	m.release = nil

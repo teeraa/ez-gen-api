@@ -53,8 +53,11 @@ type DirectorOptions struct {
 	ImagePoints   int
 	VideoPoints   int
 	DraftPoints   int
-	SampleBaseURL string
-	VideoEnabled  bool
+	// MaxImageReferences caps character images sent per Seedream request; other cast members are
+	// described in text. 0 is text-only, matching the Character Studio descriptive strategy.
+	MaxImageReferences int
+	SampleBaseURL      string
+	VideoEnabled       bool
 	// ReferenceCheck confirms a signed reference URL is downloadable before it is sent to the
 	// provider; nil skips the check (tests and storage without public signed URLs).
 	ReferenceCheck func(context.Context, string) error
@@ -634,9 +637,9 @@ func (f *DirectorFacade) job(d *directorDocument, kind, target string, cost int,
 		if e != nil || a.StorageKey == nil {
 			return models.DirectorJob{}, directorInvalid("characterAssetIds")
 		}
-		description := a.Description
-		if strings.TrimSpace(description) == "" {
-			description = a.Prompt
+		description := strings.TrimSpace(a.Description)
+		if p := strings.TrimSpace(a.Prompt); p != "" && !strings.Contains(description, p) {
+			description = strings.TrimSpace(description + "; " + p)
 		}
 		snapshot.Characters = append(snapshot.Characters, directorCharacter{ID: id, Name: a.Name, Description: description, Key: *a.StorageKey})
 	}

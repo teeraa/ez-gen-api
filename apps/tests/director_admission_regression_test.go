@@ -3,6 +3,7 @@ package tests
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -90,5 +91,43 @@ func TestDirectorAdmissionUsesTransactionConnectionForOwnedCharacters(t *testing
 	}
 	if got := d.balance(); got != 27 {
 		t.Fatalf("duplicate charged points: %d", got)
+	}
+}
+
+func TestDirectorCoverLimitsReferencesAndFallsBackToText(t *testing.T) {
+	d := newDirectorFixture(t)
+	if err := d.db.Exec(`CREATE TABLE library_assets(id uuid PRIMARY KEY,user_id uuid NOT NULL,name text,asset_type text NOT NULL,description text,prompt text,storage_key text,deleted_at timestamptz)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{uuid.NewString(), uuid.NewString()}
+	for i, id := range ids {
+		if err := d.db.Exec(`INSERT INTO library_assets(id,user_id,name,asset_type,description,prompt,storage_key) VALUES (?,?,'ตัวละครสังเคราะห์','character',?,?,?)`, id, d.user, fmt.Sprintf("ชุดสีที่ %d", i), fmt.Sprintf("long black hair %d", i), fmt.Sprintf("characters/%d.png", i)).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	registry, err := modelark.NewRegistry("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.facade = facade.NewDirectorFacade(d.store, repo.NewStudioRepository(d.db), d.media, d.analyzer, d.media, registry, nil, nil, facade.DirectorOptions{Enabled: true, AnalysisModel: "fixture-story", ImageModel: "fixture-image", StoryPoints: 4, ImagePoints: 3, VideoPoints: 20, MaxImageReferences: 1})
+	directorAdmissionApp(d, 1000)
+	d.fund(30)
+	p := d.create()
+	p = d.project("PUT", "/projects/"+p.ID+"/idea", map[string]any{"revision": p.Revision, "prompt": "สองจอมยุทธ์ประลองกระบี่", "genre": "fantasy", "moods": []string{"ตื่นเต้น"}, "sceneCount": 1, "characterAssetIds": ids, "storyModelId": "director-story"})
+	d.media.rejectRefs = &modelark.ImageError{Code: "MODEL_UNAVAILABLE", Message: "fixture 404"}
+	p = d.action(p, "/cover")
+	d.tick()
+	p = d.get(p.ID)
+	if p.Cover == nil || p.Cover.Status != "succeeded" {
+		t.Fatalf("cover must fall back to text-only generation: %+v", p.Cover)
+	}
+	if len(d.media.requests) != 2 || len(d.media.requests[0].ReferenceURLs) != 1 || len(d.media.requests[1].ReferenceURLs) != 0 {
+		t.Fatalf("reference attempts: %+v", d.media.requests)
+	}
+	prompt := d.media.requests[1].Prompt
+	for _, want := range []string{"ตัวละครสังเคราะห์ A", "ตัวละครสังเคราะห์ B", "long black hair 0", "long black hair 1"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("text identity missing %q:\n%s", want, prompt)
+		}
 	}
 }
