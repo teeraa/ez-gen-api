@@ -10,6 +10,7 @@ import (
 	repo "github.com/ez-gen/ez-gen-api/apps/repositories/repository_open_api"
 	"github.com/ez-gen/ez-gen-api/apps/services/modelark"
 	"log"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -497,28 +498,60 @@ func (f *DirectorFacade) directorImage(c context.Context, j *models.DirectorJob,
 		if len(cast) > directorMaxImageReferences {
 			cast = cast[:directorMaxImageReferences]
 		}
-		refs := []string{}
+		// Referenced characters go first so "reference Image N" matches the request order.
+		referenced, unreferenced, refs := []directorCharacter{}, []directorCharacter{}, []string{}
 		for _, ch := range cast {
 			u, _, e := f.storage.SignedURL(c, ch.Key, time.Hour)
-			if e != nil {
-				return f.failWith(c, j, in, true, "REFERENCE_UNAVAILABLE", "เปิดภาพตัวละครอ้างอิงไม่ได้ กรุณาลองใหม่", e)
+			if e == nil && f.options.ReferenceCheck != nil {
+				e = f.options.ReferenceCheck(c, u)
 			}
+			if e != nil {
+				log.Printf("director: job=%s reference for character %s unavailable, generating without it: %v", j.ID, ch.ID, directorCause(e))
+				unreferenced = append(unreferenced, ch)
+				continue
+			}
+			referenced = append(referenced, ch)
 			refs = append(refs, u)
 		}
-		if j.Kind == "cover" {
-			prompt = directorCoverPrompt(&in.Project, cast)
-		} else {
-			prompt = directorImagePrompt(&doc, &doc.Project, shot, cast, len(refs))
+		cast = append(referenced, unreferenced...)
+		build := func(n int) string {
+			if j.Kind == "cover" {
+				return directorCoverPrompt(&in.Project, cast, n)
+			}
+			return directorImagePrompt(&doc, &doc.Project, shot, cast, n)
 		}
+		styleRef := ""
 		if len(refs) == 0 && in.CoverKey != "" && j.Kind != "cover" && in.Project.Storyboard.StyleReference == "cover" {
 			u, _, e := f.storage.SignedURL(c, in.CoverKey, time.Hour)
 			if e != nil {
 				return f.fail(c, j, in, true)
 			}
-			refs = append(refs, u)
-			prompt += "\nUse reference Image 1 only for visual style and color tone; keep the described scene content."
+			styleRef = u
 		}
-		data, e := f.images.GenerateImage(c, modelark.ImageRequest{Model: in.ImageModel, Prompt: prompt, Size: directorImageSize(in.Project.AspectRatio), ReferenceURLs: refs})
+		stopProgress := f.imageProgress(c, j, in)
+		var data []byte
+		var e error
+		// A rejected request is retried with fewer references so one unusable reference does not
+		// block the shot; content-policy and account errors are never retried.
+		for n := len(refs); ; {
+			prompt = build(n)
+			attempt := refs[:n]
+			if styleRef != "" {
+				attempt = []string{styleRef}
+				prompt += "\nUse reference Image 1 only for visual style and color tone; keep the described scene content."
+			}
+			data, e = f.images.GenerateImage(c, modelark.ImageRequest{Model: in.ImageModel, Prompt: prompt, Size: directorImageSize(in.Project.AspectRatio), ReferenceURLs: attempt})
+			if e == nil || n == 0 || !directorRetryWithFewerReferences(e) {
+				break
+			}
+			log.Printf("director: job=%s image rejected with %d references, retrying with fewer: %s", j.ID, n, modelark.ImageFailureDetail(e))
+			if n > 1 {
+				n = 1
+			} else {
+				n = 0
+			}
+		}
+		stopProgress()
 		if e != nil {
 			known, definitive := storyDefinitiveImageError(e)
 			code, message := "IMAGE_PROVIDER_ERROR", ""
@@ -526,7 +559,7 @@ func (f *DirectorFacade) directorImage(c context.Context, j *models.DirectorJob,
 			if known != nil {
 				code, message = known.Code, known.Message+directorProviderHint(d.HTTPStatus, d.ProviderCode)
 			}
-			return f.failWith(c, j, in, definitive, code, message, fmt.Errorf("image provider http=%d code=%s model=%s size=%s refs=%d: %w", d.HTTPStatus, d.ProviderCode, in.ImageModel, directorImageSize(in.Project.AspectRatio), len(refs), e))
+			return f.failWith(c, j, in, definitive, code, message, fmt.Errorf("image provider http=%d code=%s model=%s size=%s refs=%d detail=%q: %w", d.HTTPStatus, d.ProviderCode, in.ImageModel, directorImageSize(in.Project.AspectRatio), len(refs), modelark.ImageFailureDetail(e), e))
 		}
 		if !storyValidImage(data) {
 			return f.failWith(c, j, in, true, "IMAGE_INVALID_OUTPUT", "บริการสร้างภาพส่งไฟล์ที่ใช้ไม่ได้ กรุณาลองใหม่", fmt.Errorf("invalid image bytes len=%d type=%s", len(data), http.DetectContentType(data)))
@@ -870,4 +903,60 @@ func directorProviderHint(status int, code string) string {
 		return " (" + code + ")"
 	}
 	return ""
+}
+
+func directorRetryWithFewerReferences(e error) bool {
+	known, _ := storyDefinitiveImageError(e)
+	if known == nil {
+		return false
+	}
+	d := modelark.ImageFailureDiagnostic(e)
+	if strings.Contains(d.ProviderCode, "Sensitive") {
+		return false
+	}
+	switch known.Code {
+	case "PROVIDER_INVALID_INPUT", "MODEL_UNAVAILABLE", "PROVIDER_ERROR":
+		return true
+	}
+	return false
+}
+
+// imageProgress publishes an estimated percentage while the synchronous image call runs,
+// because the provider reports no intermediate progress. It approaches but never reaches 95.
+func (f *DirectorFacade) imageProgress(c context.Context, j *models.DirectorJob, in directorJobInput) func() {
+	ctx, cancel := context.WithCancel(c)
+	done := make(chan struct{})
+	started := time.Now()
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(directorImageProgressTick)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				p := directorEstimatedProgress(time.Since(started))
+				_ = f.progress(ctx, j, in, func(d *directorDocument) error {
+					if j.Kind == "cover" {
+						if d.Project.Cover != nil && d.Project.Cover.Status == "processing" {
+							d.Project.Cover.Progress = p
+						}
+						return nil
+					}
+					if sh := directorFindShot(&d.Project, j.TargetID); sh != nil && sh.Image.Status == "processing" {
+						sh.Image.Progress = p
+					}
+					return nil
+				})
+			}
+		}
+	}()
+	return func() { cancel(); <-done }
+}
+
+const directorImageProgressTick = 2 * time.Second
+
+func directorEstimatedProgress(elapsed time.Duration) int {
+	return min(95, 5+int(90*(1-math.Exp(-elapsed.Seconds()/25))))
 }

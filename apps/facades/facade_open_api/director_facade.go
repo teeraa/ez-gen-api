@@ -55,6 +55,9 @@ type DirectorOptions struct {
 	DraftPoints   int
 	SampleBaseURL string
 	VideoEnabled  bool
+	// ReferenceCheck confirms a signed reference URL is downloadable before it is sent to the
+	// provider; nil skips the check (tests and storage without public signed URLs).
+	ReferenceCheck func(context.Context, string) error
 }
 type DirectorFacade struct {
 	store    directorStore
@@ -631,8 +634,13 @@ func (f *DirectorFacade) job(d *directorDocument, kind, target string, cost int,
 		if e != nil || a.StorageKey == nil {
 			return models.DirectorJob{}, directorInvalid("characterAssetIds")
 		}
-		snapshot.Characters = append(snapshot.Characters, directorCharacter{ID: id, Name: a.Name, Description: a.Description, Key: *a.StorageKey})
+		description := a.Description
+		if strings.TrimSpace(description) == "" {
+			description = a.Prompt
+		}
+		snapshot.Characters = append(snapshot.Characters, directorCharacter{ID: id, Name: a.Name, Description: description, Key: *a.StorageKey})
 	}
+	directorUniqueNames(snapshot.Characters)
 	if d.Project.Cover != nil && d.Project.Cover.Source == "generated" && d.Project.Cover.Status == "succeeded" {
 		snapshot.CoverKey = d.Keys[d.Project.Cover.ID]
 	}

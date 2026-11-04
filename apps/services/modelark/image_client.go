@@ -78,10 +78,10 @@ func (a *imageClient) GenerateImage(c context.Context, r ImageRequest) ([]byte, 
 		event.GeneratedImages = nonnegativeToken(usage.GeneratedImages)
 	}
 	if res.Error.Set {
-		return nil, imageFailure(res.Error.Value.Code, 0, nil)
+		return nil, imageFailureWithDetail(res.Error.Value.Code, res.Error.Value.Message)
 	}
 	if len(res.Data) == 1 && res.Data[0].Error.Set {
-		return nil, imageFailure(res.Data[0].Error.Value.Code, 0, nil)
+		return nil, imageFailureWithDetail(res.Data[0].Error.Value.Code, res.Data[0].Error.Value.Message)
 	}
 	if len(res.Data) != 1 || !res.Data[0].B64JSON.Set {
 		return nil, &ImageError{Code: "INVALID_OUTPUT", Message: "บริการสร้างภาพไม่ส่งคืนภาพที่ใช้งานได้ กรุณาลองเปลี่ยนคำอธิบายภาพ"}

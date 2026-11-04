@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	dto "github.com/ez-gen/ez-gen-api/apps/dto/dto_open_api"
 	"github.com/ez-gen/ez-gen-api/apps/services/modelark"
@@ -228,5 +229,34 @@ func TestDirectorPostgresSeedance25DraftThenFinal(t *testing.T) {
 	p = d.get(p.ID)
 	if v := d.shots(p)[0].Video; v == nil || v.Status != "succeeded" || v.Draft || v.CanFinalize {
 		t.Fatalf("final result: %+v", v)
+	}
+}
+
+func TestDirectorPostgresImageProgressWhileProviderRuns(t *testing.T) {
+	d := newDirectorFixture(t)
+	d.fund(100)
+	p := d.idea(d.create())
+	entered, release := d.media.block()
+	p = d.action(p, "/cover")
+	done := make(chan error, 1)
+	go func() { done <- d.facade.Tick(context.Background()) }()
+	<-entered
+	deadline := time.Now().Add(6 * time.Second)
+	progress := 0
+	for time.Now().Before(deadline) && progress <= 5 {
+		time.Sleep(500 * time.Millisecond)
+		if c := d.get(p.ID).Cover; c != nil {
+			progress = c.Progress
+		}
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if progress <= 5 || progress >= 100 {
+		t.Fatalf("no estimated progress while waiting: %d", progress)
+	}
+	if c := d.get(p.ID).Cover; c == nil || c.Status != "succeeded" || c.Progress != 100 {
+		t.Fatalf("cover not finished: %+v", c)
 	}
 }

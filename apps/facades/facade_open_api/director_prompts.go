@@ -92,20 +92,25 @@ func directorImagePrompt(d *directorDocument, p *dto.DirectorProject, sh *dto.Di
 	sc := directorFindScene(p, sh.SceneID)
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s.\n%s\n", directorCameraTerm(sh.Camera), directorShotAction(d, sh))
+	// The environment is stated before the cast: character references are usually shot on plain
+	// backgrounds, and without an explicit, early setting the model copies that empty backdrop.
+	if setting := directorSceneSetting(d, sc); setting != "" {
+		fmt.Fprintf(&b, "Environment (fully rendered, the same location and lighting in every shot of this scene): %s\n", directorTruncate(setting, 500))
+	}
 	if len(cast) > 0 {
-		b.WriteString("Characters in this frame (all must appear, each exactly once):\n")
+		b.WriteString("Characters in this frame (all must appear, each exactly once, placed inside the environment):\n")
 		for i, ch := range cast {
 			ref := ""
 			if i < referenced {
-				ref = fmt.Sprintf(" — identical to reference Image %d (same face, hairstyle, body and outfit)", i+1)
+				ref = fmt.Sprintf(" — identity from reference Image %d (same face, hairstyle, body and outfit)", i+1)
 			}
 			fmt.Fprintf(&b, "- %s: %s%s\n", directorCharacterName(ch, i), directorTruncate(ch.Description, 300), ref)
 		}
+		if referenced > 0 {
+			b.WriteString("Reference images define character identity only. Ignore their backgrounds, lighting, framing and poses.\n")
+		}
 	} else {
 		b.WriteString("Do not add named main characters that are not described.\n")
-	}
-	if setting := directorSceneSetting(d, sc); setting != "" {
-		fmt.Fprintf(&b, "Location and lighting (keep consistent for every shot in this scene): %s\n", directorTruncate(setting, 500))
 	}
 	if bible := strings.TrimSpace(d.Bible); bible != "" {
 		fmt.Fprintf(&b, "World and production design: %s\n", directorTruncate(bible, 500))
@@ -115,7 +120,7 @@ func directorImagePrompt(d *directorDocument, p *dto.DirectorProject, sh *dto.Di
 		mood = *sc.Mood
 	}
 	fmt.Fprintf(&b, "Visual style: %s. Genre: %s. Mood: %s. Aspect ratio %s.\n", directorStyle(p), p.Idea.Genre, mood, p.AspectRatio)
-	b.WriteString("Keep the same art style, color palette and character designs across the storyboard. No text, captions, logos or watermarks. Anatomically correct hands and faces.")
+	b.WriteString("Detailed, story-appropriate background with depth; never a plain, blank, solid-color, gradient or studio backdrop. Keep the same art style, color palette and character designs across the storyboard. No text, captions, logos or watermarks. Anatomically correct hands and faces.")
 	return directorTruncate(b.String(), directorPromptLimit)
 }
 
@@ -162,12 +167,41 @@ func directorCharacterName(ch directorCharacter, i int) string {
 	return fmt.Sprintf("Character %d", i+1)
 }
 
-func directorCoverPrompt(p *dto.DirectorProject, cast []directorCharacter) string {
+func directorCoverPrompt(p *dto.DirectorProject, cast []directorCharacter, referenced int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Key art poster for a %s story: %s\n", p.Idea.Genre, p.Idea.Prompt)
 	for i, ch := range cast {
-		fmt.Fprintf(&b, "- %s: %s — identical to reference Image %d\n", directorCharacterName(ch, i), directorTruncate(ch.Description, 300), i+1)
+		ref := ""
+		if i < referenced {
+			ref = fmt.Sprintf(" — identity from reference Image %d", i+1)
+		}
+		fmt.Fprintf(&b, "- %s: %s%s\n", directorCharacterName(ch, i), directorTruncate(ch.Description, 300), ref)
 	}
-	fmt.Fprintf(&b, "Visual style: %s. Mood: %s. Aspect ratio %s. Strong focal composition, no text, titles, logos or watermarks.", directorStyle(p), strings.Join(p.Idea.Moods, ", "), p.AspectRatio)
+	if referenced > 0 {
+		b.WriteString("Reference images define character identity only; ignore their backgrounds.\n")
+	}
+	fmt.Fprintf(&b, "Visual style: %s. Mood: %s. Aspect ratio %s. Rich story-world background, strong focal composition, no text, titles, logos or watermarks.", directorStyle(p), strings.Join(p.Idea.Moods, ", "), p.AspectRatio)
 	return directorTruncate(b.String(), directorPromptLimit)
+}
+
+// Library characters often share a default name; duplicates get a letter so the planner and
+// the image prompt can tell them apart ("ตัวละคร A", "ตัวละคร B").
+func directorUniqueNames(chars []directorCharacter) {
+	count := map[string]int{}
+	for i := range chars {
+		chars[i].Name = strings.TrimSpace(chars[i].Name)
+		count[chars[i].Name]++
+	}
+	letter := map[string]int{}
+	for i := range chars {
+		name := chars[i].Name
+		if name == "" || count[name] > 1 {
+			base := name
+			if base == "" {
+				base = "ตัวละคร"
+			}
+			chars[i].Name = fmt.Sprintf("%s %c", base, 'A'+rune(letter[name]))
+			letter[name]++
+		}
+	}
 }

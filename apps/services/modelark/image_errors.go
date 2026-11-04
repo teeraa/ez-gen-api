@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"regexp"
 	"strings"
 
 	sdkmodel "github.com/volcengine/ark-runtime-go/arkruntime/model"
@@ -13,6 +14,7 @@ type ImageError struct {
 	Code       string
 	Message    string
 	diagnostic ImageDiagnostic
+	detail     string
 }
 
 type ImageDiagnostic struct {
@@ -22,6 +24,18 @@ type ImageDiagnostic struct {
 }
 
 func (e *ImageError) Error() string { return e.Message }
+
+var signedQuery = regexp.MustCompile(`(?i)([?&](token|signature|x-amz-[a-z-]+|x-tos-[a-z-]+)=)[^&\s"']+`)
+
+// ImageFailureDetail returns the raw provider code and message for server logs only. Signed URL
+// credentials are redacted and the text is bounded; never return it in an HTTP response.
+func ImageFailureDetail(err error) string {
+	var known *ImageError
+	if !errors.As(err, &known) || known.detail == "" {
+		return ""
+	}
+	return known.detail
+}
 
 // ImageFailureDiagnostic excludes free-form provider messages and request IDs.
 func ImageFailureDiagnostic(err error) ImageDiagnostic {
@@ -88,6 +102,18 @@ func imageFailure(code string, status int, param *string) *ImageError {
 	return e
 }
 
+func imageFailureWithDetail(code, message string) *ImageError {
+	e := imageFailure(code, 0, nil)
+	e.detail = boundedImageDetail(code + ": " + message)
+	return e
+}
+func boundedImageDetail(s string) string {
+	s = signedQuery.ReplaceAllString(s, "${1}REDACTED")
+	if len(s) > 400 {
+		s = s[:400]
+	}
+	return s
+}
 func classifyImageError(err error) error {
 	var known *ImageError
 	if errors.As(err, &known) {
@@ -99,7 +125,13 @@ func classifyImageError(err error) error {
 	}
 	var api *sdkmodel.APIError
 	if errors.As(err, &api) {
-		return imageFailure(api.Code, api.HTTPStatusCode, api.Param)
+		e := imageFailure(api.Code, api.HTTPStatusCode, api.Param)
+		param := ""
+		if api.Param != nil {
+			param = *api.Param
+		}
+		e.detail = boundedImageDetail(api.Code + " param=" + param + ": " + api.Message)
+		return e
 	}
 	return imageFailure("", 0, nil)
 }

@@ -79,3 +79,12 @@ func TestImageFailureModelHintIsNotConfigurationFault(t *testing.T) {
 		}
 	}
 }
+
+func TestImageFailureDetailRedactsSignedURLs(t *testing.T) {
+	t.Parallel()
+	e := imageFailureWithDetail("InvalidParameter", "cannot download https://x.supabase.co/a.png?token=secret123&x=1")
+	got := ImageFailureDetail(e)
+	if strings.Contains(got, "secret123") || !strings.Contains(got, "token=REDACTED") || !strings.Contains(got, "InvalidParameter") {
+		t.Fatalf("detail %q", got)
+	}
+}

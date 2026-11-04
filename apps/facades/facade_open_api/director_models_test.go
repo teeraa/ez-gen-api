@@ -3,6 +3,7 @@ package facade_open_api
 import (
 	"strings"
 	"testing"
+	"time"
 
 	dto "github.com/ez-gen/ez-gen-api/apps/dto/dto_open_api"
 	"github.com/ez-gen/ez-gen-api/apps/services/modelark"
@@ -88,5 +89,38 @@ func TestDirectorImagePromptBindsCastSettingAndStyle(t *testing.T) {
 	p.Scenes[0].Shots[0].Description = "ผู้ใช้แก้คำบรรยายเอง"
 	if got = directorImagePrompt(&d, &p, &p.Scenes[0].Shots[0], cast, 2); strings.Contains(got, "Lin and Feng lock eyes") || !strings.Contains(got, "ผู้ใช้แก้คำบรรยายเอง") {
 		t.Errorf("user edit must replace the planner prompt:\n%s", got)
+	}
+}
+
+func TestDirectorImagePromptPutsEnvironmentBeforeCast(t *testing.T) {
+	t.Parallel()
+	p := directorTestProject()
+	p.Scenes[0].Title, p.Scenes[0].Summary = "ลาน", "สองสำนัก"
+	p.Scenes[0].Shots[0].Description, p.Scenes[0].Shots[0].Camera = "ยืนเผชิญหน้า", "มุมกว้าง"
+	d := directorDocument{Settings: map[string]string{"s1": "misty mountain courtyard"}}
+	cast := []directorCharacter{{ID: "c1", Name: "A"}}
+	got := directorImagePrompt(&d, &p, &p.Scenes[0].Shots[0], cast, 1)
+	env, chars := strings.Index(got, "misty mountain courtyard"), strings.Index(got, "Characters in this frame")
+	if env < 0 || chars < 0 || env > chars || !strings.Contains(got, "Ignore their backgrounds") || !strings.Contains(got, "never a plain") {
+		t.Fatalf("environment must precede cast and references must not supply the backdrop:\n%s", got)
+	}
+}
+
+func TestDirectorUniqueNames(t *testing.T) {
+	t.Parallel()
+	chars := []directorCharacter{{Name: "ตัวละครสังเคราะห์"}, {Name: "ตัวละครสังเคราะห์"}, {Name: "หลิน"}, {Name: ""}}
+	directorUniqueNames(chars)
+	want := []string{"ตัวละครสังเคราะห์ A", "ตัวละครสังเคราะห์ B", "หลิน", "ตัวละคร A"}
+	for i, w := range want {
+		if chars[i].Name != w {
+			t.Errorf("%d: got %q want %q", i, chars[i].Name, w)
+		}
+	}
+}
+
+func TestDirectorEstimatedProgress(t *testing.T) {
+	t.Parallel()
+	if a, b, c := directorEstimatedProgress(0), directorEstimatedProgress(20*time.Second), directorEstimatedProgress(10*time.Minute); a != 5 || b <= a || b >= c || c < 90 || c > 95 {
+		t.Fatalf("progress %d %d %d", a, b, c)
 	}
 }

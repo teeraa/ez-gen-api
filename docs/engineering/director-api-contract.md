@@ -552,6 +552,15 @@ recorded separately in the workspace task report.
   action, every shot character bound to reference Image N (all shot characters,
   up to 4, are sent as references), scene setting, visual bible and a style
   descriptor. Video prompts add camera motion, cast continuity and setting.
+- Image prompts state the scene environment before the cast and tell the model that
+  references define identity only, because character references are usually shot on
+  plain backgrounds. Duplicate library character names get a letter suffix.
+- While an image request runs, `image.progress`/`cover.progress` is an estimate from
+  elapsed time (5→95, updated every 2s); providers report no intermediate progress.
+- Each character reference URL is checked (ranged GET) before submission; unreachable
+  ones are dropped and logged. A rejected request (invalid input, 404, unknown provider
+  error; never content-policy or account errors) is retried with one reference, then
+  none. Server logs carry the redacted raw provider code/message as `detail=`.
 - Planner output is decoded tolerantly (code fences, extra fields, renumbered shot
   IDs, near-miss camera/mood labels are normalized). If shot planning still fails,
   empty shot descriptions fall back to the scene title and summary so storyboard
