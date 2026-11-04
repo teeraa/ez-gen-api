@@ -79,7 +79,7 @@ interface DirectorCapabilities {
   models: {
     story: ModelOption[];                    // โมเดลเขียนเนื้อเรื่อง
     image: ModelOption[];                    // โมเดลสร้างภาพ (ภาพปก + ภาพ shot)
-    video: ModelOption[];                    // ชุดเดียวกับเมนูสร้างวิดีโอ (violet-*) เฉพาะที่รองรับภาพเป็นเฟรมแรก
+    video: ModelOption[];                    // seedance-2-0-fast | seedance-2-5 | seedance-2-0 (ไม่ขึ้นกับ ARK_DEFAULT_MODEL); id violet-* เดิมถูกแปลงให้อัตโนมัติ
   };
   limits: {
     ideaMaxLength: 1000;
@@ -538,9 +538,16 @@ recorded separately in the workspace task report.
   takes priority. A cover can be the image reference when no character is used.
   Do not infer that cover colors were analyzed when only configured style text
   was supplied; `styleReference` must describe the reference actually used.
-- 4K remains unavailable. Story/image models use internal display names; video
-  choices use the video menu's registry IDs and public labels, filtered to
-  models that accept a first-frame image.
+- 4K remains unavailable. Story/image model names are derived from the configured
+  model (e.g. "Gemini 3.5 Flash", "Seedream 5.0"). Video choices are fixed
+  Seedance 2.0 Fast / 2.5 / 2.0 entries resolved directly from provider configs,
+  so the registry's `ARK_DEFAULT_MODEL` override cannot collapse them into one
+  model. Stored `violet-*` IDs are mapped to their Seedance 2.x equivalents.
+- Planner output is decoded tolerantly (code fences, extra fields, renumbered shot
+  IDs, near-miss camera/mood labels are normalized). If shot planning still fails,
+  empty shot descriptions fall back to the scene title and summary so storyboard
+  images are generated. Failures store a specific code/message and are logged as
+  `director: job=… kind=… code=… cause=…` without prompts or credentials.
 - Video jobs submit once, then move to `waiting` with the provider handle held
   only in `director_jobs.output`. Later claims poll that handle and never
   resubmit. The provider task ID never appears in a response. Finished clips are

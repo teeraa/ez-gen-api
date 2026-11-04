@@ -50,7 +50,7 @@ func TestDirectorPostgresVideoLifecycle(t *testing.T) {
 	var caps struct {
 		Data dto.DirectorCapabilities `json:"data"`
 	}
-	if status != 200 || json.Unmarshal(b, &caps) != nil || !caps.Data.VideoEnabled || len(caps.Data.Models.Video) == 0 || caps.Data.Models.Video[0].ID != "violet-motion-2" || caps.Data.Models.Video[0].Name != "Seedance 2.0 Fast" {
+	if status != 200 || json.Unmarshal(b, &caps) != nil || !caps.Data.VideoEnabled || len(caps.Data.Models.Video) == 0 || caps.Data.Models.Video[0].ID != "seedance-2-0-fast" || caps.Data.Models.Video[0].Name != "Seedance 2.0 Fast" {
 		t.Fatalf("video capabilities: %d %s", status, b)
 	}
 
@@ -137,8 +137,8 @@ func TestDirectorPostgresVideoLifecycle(t *testing.T) {
 func TestDirectorPostgresVideoRejectsUnsupportedRatio(t *testing.T) {
 	d := newDirectorFixtureWith(t, modelark.NewMockClient(), &directorTestFetcher{})
 	p := d.board()
-	p = d.project("PATCH", "/projects/"+p.ID+"/storyboard-settings", map[string]any{"revision": p.Revision, "videoModelId": "violet-classic"})
-	if p.Storyboard.VideoModelID != "violet-classic" {
+	p = d.project("PATCH", "/projects/"+p.ID+"/storyboard-settings", map[string]any{"revision": p.Revision, "videoModelId": "seedance-2-0"})
+	if p.Storyboard.VideoModelID != "seedance-2-0" {
 		t.Fatal("video model not saved")
 	}
 	if _, e := uuid.Parse(p.ID); e != nil {
@@ -149,4 +149,31 @@ func TestDirectorPostgresVideoRejectsUnsupportedRatio(t *testing.T) {
 	}
 	p = d.get(p.ID)
 	d.wantError("POST", "/projects/"+p.ID+"/video", map[string]any{"revision": p.Revision, "idempotencyKey": uuid.NewString()}, 422, "MODEL_NOT_SUPPORTED")
+}
+
+func TestDirectorPostgresImagesSurviveUnusableShotPlan(t *testing.T) {
+	d := newDirectorFixture(t)
+	d.analyzer.reply = func(prompt string) (string, error) {
+		if strings.Contains(prompt, "DIRECTOR_PLAN") {
+			return "ขอโทษครับ ไม่สามารถวางแผนได้", nil
+		}
+		return directorPlanner(prompt)
+	}
+	d.fund(100)
+	p := d.idea(d.create())
+	p = d.action(p, "/story")
+	d.tick()
+	p = d.action(d.get(p.ID), "/storyboard")
+	for i := 0; i < 8 && p.Storyboard.Status != "succeeded"; i++ {
+		d.tick()
+		p = d.get(p.ID)
+	}
+	if p.Storyboard.Status != "succeeded" || p.Storyboard.CompletedImages != 3 {
+		t.Fatalf("images did not fall back to scene text: %+v", p.Storyboard)
+	}
+	for _, sh := range d.shots(p) {
+		if !strings.Contains(sh.Description, "ดาวที่หายไป") {
+			t.Fatalf("fallback description: %q", sh.Description)
+		}
+	}
 }

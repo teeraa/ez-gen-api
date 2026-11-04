@@ -11,6 +11,7 @@ import (
 	"github.com/ez-gen/ez-gen-api/apps/services/modelark"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -71,8 +72,57 @@ func NewDirectorFacade(s directorStore, a storyFlowAssets, st mediaStorage, n mo
 	return &DirectorFacade{store: s, assets: a, storage: st, analyzer: n, images: i, registry: r, video: v, fetcher: fe, options: o}
 }
 
-// Video menu model order, so Director offers the same choices as the video studio.
-var directorVideoModelOrder = []string{"violet-motion-2", "violet-cinema", "violet-fast", "violet-realism", "violet-classic"}
+// Director offers explicit Seedance generations. They bypass the registry's ARK_DEFAULT_MODEL
+// override, which otherwise maps every video menu entry to one provider model.
+var directorVideoModels = []struct{ ID, Provider string }{
+	{"seedance-2-0-fast", "dreamina-seedance-2-0-fast-260128"},
+	{"seedance-2-5", "dreamina-seedance-2-5-260628"},
+	{"seedance-2-0", "dreamina-seedance-2-0-260128"},
+}
+
+// Projects created before explicit model IDs stored video menu IDs.
+var directorLegacyVideoModels = map[string]string{"violet-motion-2": "seedance-2-0-fast", "violet-fast": "seedance-2-0-fast", "violet-cinema": "seedance-2-0", "violet-realism": "seedance-2-5", "violet-classic": "seedance-2-0-fast"}
+
+func directorCanonicalVideoModel(id string) string {
+	if next, ok := directorLegacyVideoModels[id]; ok {
+		return next
+	}
+	return id
+}
+func directorVideoModel(id string) (modelark.ModelConfig, bool) {
+	id = directorCanonicalVideoModel(id)
+	for _, m := range directorVideoModels {
+		if m.ID == id {
+			return modelark.ProviderModel(m.Provider)
+		}
+	}
+	return modelark.ModelConfig{}, false
+}
+
+// Display labels name the configured model generation so testers can see which model ran.
+func directorModelLabel(model string) string {
+	parts := strings.Split(strings.ToLower(strings.TrimSpace(model)), "-")
+	if len(parts) == 0 || parts[0] == "" {
+		return "มาตรฐาน"
+	}
+	isNumber := func(s string) bool { _, e := strconv.Atoi(s); return e == nil && len(s) <= 2 }
+	switch parts[0] {
+	case "seedream", "seedance":
+		if len(parts) >= 3 && isNumber(parts[1]) && isNumber(parts[2]) {
+			return strings.ToUpper(parts[0][:1]) + parts[0][1:] + " " + parts[1] + "." + parts[2]
+		}
+	case "gemini":
+		words := []string{"Gemini"}
+		for _, w := range parts[1:] {
+			if w == "" || (len(w) >= 6 && isNumber(w[:2])) {
+				continue
+			}
+			words = append(words, strings.ToUpper(w[:1])+w[1:])
+		}
+		return strings.Join(words, " ")
+	}
+	return model
+}
 
 const directorVideoSecondsTarget = 5
 
@@ -86,7 +136,7 @@ func directorVideoResolution(project string, m modelark.ModelConfig) string {
 	return project
 }
 func (f *DirectorFacade) videoAvailable() bool {
-	return f.options.VideoEnabled && f.video != nil && f.fetcher != nil && f.registry != nil
+	return f.options.VideoEnabled && f.video != nil && f.fetcher != nil
 }
 
 // The public response never includes this private aggregate metadata.
@@ -151,19 +201,17 @@ func (f *DirectorFacade) Capabilities() dto.DirectorCapabilities {
 		c.Genres = append(c.Genres, dto.DirectorOption{Value: s, Label: labels[i], Hint: labels[i]})
 	}
 	if f.options.AnalysisModel != "" {
-		c.Models.Story = append(c.Models.Story, dto.DirectorModel{ID: "director-story", Name: "มาตรฐาน", Note: "เขียนเรื่องและวางแผนฉาก", PointsPerUnit: f.options.StoryPoints, Default: true})
+		c.Models.Story = append(c.Models.Story, dto.DirectorModel{ID: "director-story", Name: directorModelLabel(f.options.AnalysisModel), Note: "เขียนเรื่องและวางแผนฉาก · " + f.options.AnalysisModel, PointsPerUnit: f.options.StoryPoints, Default: true})
 	}
 	if f.options.ImageModel != "" {
-		c.Models.Image = append(c.Models.Image, dto.DirectorModel{ID: "director-image", Name: "มาตรฐาน", Note: "สร้างภาพจากคำบรรยายและตัวละคร", PointsPerUnit: f.options.ImagePoints, SupportsCharacterReference: true, Default: true})
+		c.Models.Image = append(c.Models.Image, dto.DirectorModel{ID: "director-image", Name: directorModelLabel(f.options.ImageModel), Note: "สร้างภาพจากคำบรรยายและตัวละคร · " + f.options.ImageModel, PointsPerUnit: f.options.ImagePoints, SupportsCharacterReference: true, Default: true})
 	}
-	if f.registry != nil {
-		for _, id := range directorVideoModelOrder {
-			m, ok := f.registry.Lookup(id)
-			if !ok || !m.SupportsImgVideo {
-				continue
-			}
-			c.Models.Video = append(c.Models.Video, dto.DirectorModel{ID: id, Name: m.PublicLabel(), Note: "ใช้ภาพสตอรี่บอร์ดเป็นเฟรมแรก · สูงสุด " + m.MaxResolution, SpeedHint: fmt.Sprintf("%d วินาทีต่อ shot", directorVideoSeconds(m)), PointsPerUnit: f.options.VideoPoints, Default: len(c.Models.Video) == 0, AspectRatios: append([]string{}, m.SupportedRatios...)})
+	for _, entry := range directorVideoModels {
+		m, ok := modelark.ProviderModel(entry.Provider)
+		if !ok || !m.SupportsImgVideo {
+			continue
 		}
+		c.Models.Video = append(c.Models.Video, dto.DirectorModel{ID: entry.ID, Name: m.PublicLabel(), Note: fmt.Sprintf("ใช้ภาพสตอรี่บอร์ดเป็นเฟรมแรก · สูงสุด %s · %d–%d วินาที", m.MaxResolution, m.MinDuration, m.MaxDuration), SpeedHint: fmt.Sprintf("%d วินาทีต่อ shot", directorVideoSeconds(m)), PointsPerUnit: f.options.VideoPoints, Default: len(c.Models.Video) == 0, AspectRatios: append([]string{}, m.SupportedRatios...)})
 	}
 	c.VideoEnabled = c.Enabled && f.videoAvailable() && len(c.Models.Video) > 0
 	if !c.Enabled {
@@ -292,6 +340,7 @@ func (f *DirectorFacade) present(c context.Context, m *models.DirectorProject) (
 		return dto.DirectorProject{}, e
 	}
 	p := d.Project
+	p.Storyboard.VideoModelID = directorCanonicalVideoModel(p.Storyboard.VideoModelID)
 	f.estimates(&p)
 	sign := func(key string) (*string, *time.Time, error) {
 		if key == "" {
@@ -493,7 +542,7 @@ func (f *DirectorFacade) job(d *directorDocument, kind, target string, cost int,
 	}
 	if kind == "video" {
 		sh := directorFindShot(&d.Project, strings.TrimPrefix(target, "video:"))
-		m, ok := f.registry.Lookup(d.Project.Storyboard.VideoModelID)
+		m, ok := directorVideoModel(d.Project.Storyboard.VideoModelID)
 		if sh == nil || !ok {
 			return models.DirectorJob{}, directorInvalid("shotIds")
 		}
@@ -748,10 +797,11 @@ func (f *DirectorFacade) Mutate(c context.Context, id, user, action, target stri
 				p.Storyboard.ImageModelID = *in.ImageModelID
 			}
 			if in.VideoModelID != nil {
-				if !directorModel(cap.Models.Video, *in.VideoModelID) {
+				id := directorCanonicalVideoModel(*in.VideoModelID)
+				if !directorModel(cap.Models.Video, id) {
 					return nil, directorInvalid("videoModelId")
 				}
-				p.Storyboard.VideoModelID = *in.VideoModelID
+				p.Storyboard.VideoModelID = id
 			}
 		case "storyboard":
 			if p.Story.Status != "succeeded" || directorBusy(p.Storyboard.Status) || directorAnyVideoBusy(p) {
@@ -929,7 +979,8 @@ func (f *DirectorFacade) enqueueVideos(d *directorDocument, in req.DirectorReque
 	if directorBusy(p.Storyboard.Status) || p.Storyboard.Status == "idle" {
 		return directorError(409, "DIRECTOR_STATE_CONFLICT")
 	}
-	m, ok := f.registry.Lookup(p.Storyboard.VideoModelID)
+	p.Storyboard.VideoModelID = directorCanonicalVideoModel(p.Storyboard.VideoModelID)
+	m, ok := directorVideoModel(p.Storyboard.VideoModelID)
 	if !ok || !m.SupportsImgVideo {
 		return directorInvalid("videoModelId")
 	}

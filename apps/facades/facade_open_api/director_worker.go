@@ -9,9 +9,11 @@ import (
 	"github.com/ez-gen/ez-gen-api/apps/models"
 	repo "github.com/ez-gen/ez-gen-api/apps/repositories/repository_open_api"
 	"github.com/ez-gen/ez-gen-api/apps/services/modelark"
+	"log"
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type directorSceneOutput struct {
@@ -77,13 +79,25 @@ func (f *DirectorFacade) finish(c context.Context, j *models.DirectorJob, in dir
 	})
 }
 func (f *DirectorFacade) fail(c context.Context, j *models.DirectorJob, in directorJobInput, definitive bool) error {
+	return f.failWith(c, j, in, definitive, "", "", nil)
+}
+
+// failWith records a user-safe reason and logs the internal cause; provider payloads and prompts are never logged.
+func (f *DirectorFacade) failWith(c context.Context, j *models.DirectorJob, in directorJobInput, definitive bool, code, message string, cause error) error {
 	status := "needs_attention"
 	if definitive {
 		status = "failed"
 	}
+	log.Printf("director: job=%s kind=%s status=%s code=%s cause=%v", j.ID, j.Kind, status, code, directorCause(cause))
 	failure := dto.DirectorFailure{FailureCode: directorPointer("GENERATION_UNCERTAIN"), FailureMessage: directorPointer("ยังยืนยันผลการสร้างไม่ได้ กรุณาติดต่อผู้ดูแลระบบก่อนส่งซ้ำ"), CanRetry: false}
 	if definitive {
 		failure = dto.DirectorFailure{FailureCode: directorPointer("GENERATION_FAILED"), FailureMessage: directorPointer("สร้างไม่สำเร็จ กรุณาตรวจคำอธิบายแล้วลองใหม่"), CanRetry: true}
+	}
+	if code != "" {
+		failure.FailureCode = directorPointer(code)
+	}
+	if message != "" {
+		failure.FailureMessage = directorPointer(message)
 	}
 	return f.finish(c, j, in, status, definitive, func(d *directorDocument) error {
 		p := &d.Project
@@ -118,6 +132,15 @@ func (f *DirectorFacade) fail(c context.Context, j *models.DirectorJob, in direc
 				}
 			}
 		case "plan":
+			// Images can still be generated from the scene text when shot planning fails.
+			for i := range p.Scenes {
+				sc := &p.Scenes[i]
+				for k := range sc.Shots {
+					if strings.TrimSpace(sc.Shots[k].Description) == "" {
+						sc.Shots[k].Description = directorTruncate(sc.Title+": "+sc.Summary, 600)
+					}
+				}
+			}
 			directorRecount(p)
 		case "video":
 			if sh := directorFindShot(p, in.ShotID); sh != nil && sh.Video != nil {
@@ -213,7 +236,15 @@ func (f *DirectorFacade) Tick(ctx context.Context) error {
 	constraints, _ := json.Marshal(struct{ Moods, Cameras []string }{cap.Moods, cap.Cameras})
 	text, e := f.analyzer.Analyze(c, in.Model, operation+"\nReturn exactly JSON schema: "+schema+"\nTarget ID: "+j.TargetID+"\nAllowed values: "+string(constraints)+"\nProject and instruction data: "+string(b))
 	if e != nil {
-		return f.fail(c, j, in, directorAnalysisDefinitive(e))
+		code, message := "", ""
+		var a *modelark.StoryAnalysisError
+		if errors.As(e, &a) {
+			code, message = a.Code, directorAnalysisMessages[a.Code]
+		}
+		return f.failWith(c, j, in, directorAnalysisDefinitive(e), code, message, e)
+	}
+	invalid := func(reason error) error {
+		return f.failWith(c, j, in, true, "ANALYSIS_INVALID_OUTPUT", "AI ตอบกลับในรูปแบบที่ใช้ไม่ได้ กรุณาลองใหม่อีกครั้ง", reason)
 	}
 	switch j.Kind {
 	case "story":
@@ -221,12 +252,18 @@ func (f *DirectorFacade) Tick(ctx context.Context) error {
 			Logline string                `json:"logline"`
 			Scenes  []directorSceneOutput `json:"scenes"`
 		}
-		if e = storyDecodeStrict(text, &result); e != nil || !directorBound(result.Logline, 1, 1200) || len(result.Scenes) != len(in.Project.Scenes) {
-			return f.fail(c, j, in, true)
+		if e = directorDecodeJSON(text, &result); e != nil {
+			return invalid(e)
 		}
-		for _, sc := range result.Scenes {
-			if !f.validScene(sc, in) {
-				return f.fail(c, j, in, true)
+		result.Logline = directorTruncate(result.Logline, 1200)
+		if result.Logline == "" || len(result.Scenes) < len(in.Project.Scenes) {
+			return invalid(fmt.Errorf("story scenes %d want %d", len(result.Scenes), len(in.Project.Scenes)))
+		}
+		result.Scenes = result.Scenes[:len(in.Project.Scenes)]
+		for i := range result.Scenes {
+			result.Scenes[i] = f.normalizeScene(result.Scenes[i], in)
+			if !f.validScene(result.Scenes[i], in) {
+				return invalid(fmt.Errorf("story scene %d empty", i+1))
 			}
 		}
 		if e = f.progress(c, j, in, func(d *directorDocument) error {
@@ -268,8 +305,11 @@ func (f *DirectorFacade) Tick(ctx context.Context) error {
 		})
 	case "rewrite":
 		var sc directorSceneOutput
-		if e = storyDecodeStrict(text, &sc); e != nil || !f.validScene(sc, in) {
-			return f.fail(c, j, in, true)
+		if e = directorDecodeJSON(text, &sc); e != nil {
+			return invalid(e)
+		}
+		if sc = f.normalizeScene(sc, in); !f.validScene(sc, in) {
+			return invalid(errors.New("rewrite scene empty"))
 		}
 		return f.finish(c, j, in, "succeeded", false, func(d *directorDocument) error {
 			s := directorFindScene(&d.Project, j.TargetID)
@@ -290,20 +330,12 @@ func (f *DirectorFacade) Tick(ctx context.Context) error {
 		var result struct {
 			Shots []directorShotOutput `json:"shots"`
 		}
-		if e = storyDecodeStrict(text, &result); e != nil || len(result.Shots) != directorTotal(&in.Project) {
-			return f.fail(c, j, in, true)
+		if e = directorDecodeJSON(text, &result); e != nil {
+			return invalid(e)
 		}
-		seen := map[string]bool{}
-		for _, s := range result.Shots {
-			old := directorFindShot(&in.Project, s.ID)
-			if old == nil || seen[s.ID] {
-				return f.fail(c, j, in, true)
-			}
-			seen[s.ID] = true
-			sc := directorFindScene(&in.Project, old.SceneID)
-			if !f.validShot(s, sc.CharacterAssetIDs) {
-				return f.fail(c, j, in, true)
-			}
+		result.Shots = f.alignPlannedShots(result.Shots, &in.Project)
+		if len(result.Shots) == 0 {
+			return invalid(errors.New("plan returned no usable shots"))
 		}
 		return f.finish(c, j, in, "succeeded", false, func(d *directorDocument) error {
 			for _, s := range result.Shots {
@@ -320,20 +352,29 @@ func (f *DirectorFacade) Tick(ctx context.Context) error {
 				}
 				sh.CharacterAssetIDs = s.CharacterAssetIDs
 			}
+			for i := range d.Project.Scenes {
+				sc := &d.Project.Scenes[i]
+				for k := range sc.Shots {
+					if strings.TrimSpace(sc.Shots[k].Description) == "" {
+						sc.Shots[k].Description = directorTruncate(sc.Title+": "+sc.Summary, 600)
+					}
+				}
+			}
 			return nil
 		})
 	case "add":
 		var result directorShotOutput
-		if e = storyDecodeStrict(text, &result); e != nil || result.ID != "" {
-			return f.fail(c, j, in, true)
+		if e = directorDecodeJSON(text, &result); e != nil {
+			return invalid(e)
 		}
 		sh := directorFindShot(&in.Project, j.TargetID)
 		if sh == nil {
 			return f.fail(c, j, in, true)
 		}
 		sc := directorFindScene(&in.Project, sh.SceneID)
-		if !f.validShot(result, sc.CharacterAssetIDs) {
-			return f.fail(c, j, in, true)
+		result.ID = ""
+		if result = f.normalizeShot(result, sc.CharacterAssetIDs); !f.validShot(result, sc.CharacterAssetIDs) {
+			return invalid(errors.New("added shot empty"))
 		}
 		if e = f.progress(c, j, in, func(d *directorDocument) error {
 			s := directorFindShot(&d.Project, j.TargetID)
@@ -373,7 +414,7 @@ func (f *DirectorFacade) directorImage(c context.Context, j *models.DirectorJob,
 			return f.finish(c, j, in, "cancelled", len(j.Output) == 0 && j.Status != "submitting", func(*directorDocument) error { return nil })
 		}
 		if !directorBound(sh.Description, 1, 600) {
-			return f.fail(c, j, in, true)
+			return f.failWith(c, j, in, true, "SHOT_NOT_PLANNED", "shot นี้ยังไม่มีคำบรรยายภาพ กรุณาพิมพ์คำบรรยายแล้วกดลองใหม่", nil)
 		}
 		prompt = sh.Description + "\nCamera: " + sh.Camera
 		contentHash = storyHash(struct{ Description, Camera string }{sh.Description, sh.Camera})
@@ -414,7 +455,7 @@ func (f *DirectorFacade) directorImage(c context.Context, j *models.DirectorJob,
 				if ref == "" {
 					u, _, e := f.storage.SignedURL(c, ch.Key, time.Hour)
 					if e != nil {
-						return f.fail(c, j, in, true)
+						return f.failWith(c, j, in, true, "REFERENCE_UNAVAILABLE", "เปิดภาพตัวละครอ้างอิงไม่ได้ กรุณาลองใหม่", e)
 					}
 					ref = u
 				}
@@ -430,11 +471,16 @@ func (f *DirectorFacade) directorImage(c context.Context, j *models.DirectorJob,
 		}
 		data, e := f.images.GenerateImage(c, modelark.ImageRequest{Model: in.ImageModel, Prompt: prompt, Size: directorImageSize(in.Project.AspectRatio), ReferenceURL: ref})
 		if e != nil {
-			_, definitive := storyDefinitiveImageError(e)
-			return f.fail(c, j, in, definitive)
+			known, definitive := storyDefinitiveImageError(e)
+			code, message := "IMAGE_PROVIDER_ERROR", ""
+			if known != nil {
+				code, message = known.Code, known.Message
+			}
+			d := modelark.ImageFailureDiagnostic(e)
+			return f.failWith(c, j, in, definitive, code, message, fmt.Errorf("image provider http=%d code=%s model=%s size=%s ref=%t: %w", d.HTTPStatus, d.ProviderCode, in.ImageModel, directorImageSize(in.Project.AspectRatio), ref != "", e))
 		}
 		if !storyValidImage(data) {
-			return f.fail(c, j, in, true)
+			return f.failWith(c, j, in, true, "IMAGE_INVALID_OUTPUT", "บริการสร้างภาพส่งไฟล์ที่ใช้ไม่ได้ กรุณาลองใหม่", fmt.Errorf("invalid image bytes len=%d type=%s", len(data), http.DetectContentType(data)))
 		}
 		// Persist returned bytes before any fallible storage operation. Recovery performs storage only.
 		if e = f.store.RecordOutput(c, j, data); e != nil {
@@ -521,7 +567,12 @@ func (f *DirectorFacade) directorVideo(c context.Context, j *models.DirectorJob,
 		id, e := f.video.CreateTask(c, modelark.CreateTaskRequest{Model: in.VideoModel, Content: []modelark.ContentItem{{Type: modelark.ContentTypeText, Text: prompt}, {Type: modelark.ContentTypeImageURL, URL: ref, Role: modelark.RoleFirstFrame}}, Ratio: in.Ratio, DurationSeconds: int64(in.Seconds), Resolution: in.Resolution})
 		if e != nil {
 			d := modelark.VideoFailureDiagnostic(e)
-			return f.fail(c, j, in, d.HTTPStatus >= 400 && d.HTTPStatus < 500)
+			code, message := "VIDEO_PROVIDER_ERROR", ""
+			var ve *modelark.VideoError
+			if errors.As(e, &ve) {
+				code, message = ve.Code, ve.Message
+			}
+			return f.failWith(c, j, in, d.HTTPStatus >= 400 && d.HTTPStatus < 500, code, message, fmt.Errorf("video submit http=%d model=%s ratio=%s seconds=%d resolution=%s: %w", d.HTTPStatus, in.VideoModel, in.Ratio, in.Seconds, in.Resolution, e))
 		}
 		if id == "" {
 			return f.fail(c, j, in, false)
@@ -564,7 +615,7 @@ func (f *DirectorFacade) directorVideo(c context.Context, j *models.DirectorJob,
 		}
 		return f.store.Wait(c, j, j.Output, now.Add(directorVideoPoll))
 	case modelark.ProviderStatusFailed, modelark.ProviderStatusCancelled:
-		return f.fail(c, j, in, true)
+		return f.failWith(c, j, in, true, "VIDEO_GENERATION_FAILED", "บริการสร้างวิดีโอไม่สำเร็จหรือปฏิเสธเนื้อหาของ shot นี้ กรุณาปรับคำบรรยายหรือภาพแล้วลองใหม่", fmt.Errorf("video task status=%s code=%s", result.Status, result.ErrorCode))
 	case modelark.ProviderStatusSucceeded:
 		data, kind, e := f.fetcher.Fetch(c, result.VideoURL)
 		if e != nil {
@@ -593,4 +644,122 @@ func (f *DirectorFacade) directorVideo(c context.Context, j *models.DirectorJob,
 	default:
 		return f.fail(c, j, in, false)
 	}
+}
+
+func directorCause(e error) string {
+	if e == nil {
+		return "-"
+	}
+	return directorTruncate(e.Error(), 300)
+}
+func directorTruncate(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	return strings.TrimSpace(string([]rune(s)[:max]))
+}
+
+// Language models sometimes wrap JSON in fences or add explanatory fields; the
+// shape is still validated after decoding, so unknown fields are tolerated here.
+func directorDecodeJSON(text string, out any) error {
+	text = strings.TrimSpace(text)
+	if len(text) > 512<<10 {
+		return errors.New("analysis output too large")
+	}
+	start, end := strings.IndexAny(text, "{["), strings.LastIndexAny(text, "}]")
+	if start < 0 || end < start {
+		return errors.New("analysis output has no JSON object")
+	}
+	return json.Unmarshal([]byte(text[start:end+1]), out)
+}
+func directorFilterIDs(ids, allowed []string) []string {
+	out := []string{}
+	for _, id := range ids {
+		if directorContains(allowed, id) && !directorContains(out, id) {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+func directorPick(value string, allowed []string, fallback string) string {
+	value = strings.TrimSpace(value)
+	if directorContains(allowed, value) {
+		return value
+	}
+	for _, a := range allowed {
+		if value != "" && (strings.Contains(value, a) || strings.Contains(a, value)) {
+			return a
+		}
+	}
+	return fallback
+}
+func (f *DirectorFacade) normalizeScene(s directorSceneOutput, in directorJobInput) directorSceneOutput {
+	moods := f.Capabilities().Moods
+	fallback := moods[0]
+	if len(in.Project.Idea.Moods) > 0 {
+		fallback = in.Project.Idea.Moods[0]
+	}
+	s.Title = directorTruncate(s.Title, 80)
+	s.Summary = directorTruncate(s.Summary, 1200)
+	s.Mood = directorPick(s.Mood, moods, fallback)
+	s.CharacterAssetIDs = directorFilterIDs(s.CharacterAssetIDs, in.Project.Idea.CharacterAssetIDs)
+	return s
+}
+func (f *DirectorFacade) normalizeShot(s directorShotOutput, allowed []string) directorShotOutput {
+	cameras := f.Capabilities().Cameras
+	s.Description = directorTruncate(s.Description, 600)
+	s.Camera = directorPick(s.Camera, cameras, cameras[0])
+	s.CharacterAssetIDs = directorFilterIDs(s.CharacterAssetIDs, allowed)
+	return s
+}
+
+// alignPlannedShots keeps outputs whose IDs match placeholders, then assigns the rest to the
+// remaining placeholders in storyboard order, because models often renumber or drop IDs.
+func (f *DirectorFacade) alignPlannedShots(shots []directorShotOutput, p *dto.DirectorProject) []directorShotOutput {
+	order := []*dto.DirectorShot{}
+	for i := range p.Scenes {
+		for k := range p.Scenes[i].Shots {
+			order = append(order, &p.Scenes[i].Shots[k])
+		}
+	}
+	used := map[string]bool{}
+	out := []directorShotOutput{}
+	rest := []directorShotOutput{}
+	for _, s := range shots {
+		if old := directorFindShot(p, s.ID); old != nil && !used[s.ID] {
+			used[s.ID] = true
+			out = append(out, s)
+		} else {
+			rest = append(rest, s)
+		}
+	}
+	for _, sh := range order {
+		if len(rest) == 0 {
+			break
+		}
+		if !used[sh.ID] {
+			s := rest[0]
+			rest = rest[1:]
+			s.ID = sh.ID
+			used[sh.ID] = true
+			out = append(out, s)
+		}
+	}
+	valid := []directorShotOutput{}
+	for _, s := range out {
+		sc := directorFindScene(p, directorFindShot(p, s.ID).SceneID)
+		if s = f.normalizeShot(s, sc.CharacterAssetIDs); f.validShot(s, sc.CharacterAssetIDs) {
+			valid = append(valid, s)
+		}
+	}
+	return valid
+}
+
+// Analyzer messages may carry provider text, so users see only these fixed messages.
+var directorAnalysisMessages = map[string]string{
+	"ANALYSIS_REJECTED":       "AI ปฏิเสธคำขอนี้ กรุณาปรับไอเดียหรือตรวจสิทธิ์โมเดลแล้วลองใหม่",
+	"ANALYSIS_UNAVAILABLE":    "บริการ AI ไม่ตอบสนอง กรุณาลองใหม่อีกครั้ง",
+	"ANALYSIS_NOT_CONFIGURED": "ยังไม่ได้ตั้งค่าโมเดลเขียนเนื้อเรื่อง กรุณาติดต่อผู้ดูแลระบบ",
+	"ANALYSIS_INVALID_OUTPUT": "AI ตอบกลับในรูปแบบที่ใช้ไม่ได้ กรุณาลองใหม่อีกครั้ง",
 }

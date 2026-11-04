@@ -201,3 +201,16 @@ func DraftExpiresAt(createdAt time.Time) time.Time {
 	}
 	return createdAt.Add(lifetime)
 }
+
+// ProviderModel resolves a provider model directly, ignoring the ARK_DEFAULT_MODEL
+// override, for features that offer explicit model generations to the user.
+func ProviderModel(providerID string) (ModelConfig, bool) {
+	cfg, ok := providerModels[providerID]
+	if !ok {
+		return ModelConfig{}, false
+	}
+	cfg.ProviderModelID = providerID
+	cfg.SupportedRatios = append([]string(nil), cfg.SupportedRatios...)
+	cfg.DisplayName = cfg.PublicLabel()
+	return cfg, true
+}
