@@ -119,6 +119,15 @@ func (f *DirectorFacade) fail(c context.Context, j *models.DirectorJob, in direc
 			}
 		case "plan":
 			directorRecount(p)
+		case "video":
+			if sh := directorFindShot(p, in.ShotID); sh != nil && sh.Video != nil {
+				sh.Video.Status = status
+				sh.Video.Progress = 0
+				sh.Video.DirectorFailure = failure
+				if definitive {
+					sh.Video.PointsRefunded += j.Cost
+				}
+			}
 		default:
 			if sh := directorFindShot(p, j.TargetID); sh != nil {
 				sh.Image.Status = status
@@ -166,6 +175,9 @@ func (f *DirectorFacade) Tick(ctx context.Context) error {
 	// A persisted response can be stored again, but an uncertain external call cannot be repeated.
 	if j.Status == "submitting" && len(j.Output) == 0 {
 		return f.fail(c, j, in, false)
+	}
+	if j.Kind == "video" {
+		return f.directorVideo(c, j, in)
 	}
 	if j.Kind == "image" || j.Kind == "cover" || (j.Kind == "add" && len(j.Output) > 0) {
 		return f.directorImage(c, j, in)
@@ -453,6 +465,7 @@ func (f *DirectorFacade) directorImage(c context.Context, j *models.DirectorJob,
 				sh.Image.Progress = 100
 				sh.Image.Stale = contentHash != storyHash(struct{ Description, Camera string }{sh.Description, sh.Camera})
 				sh.Image.DirectorFailure = dto.DirectorFailure{}
+				directorMarkVideoStale(sh)
 				if d.Project.Cover != nil && d.Project.Cover.ShotID != nil && *d.Project.Cover.ShotID == sh.ID {
 					d.Keys[d.Project.Cover.ID] = key
 				}
@@ -468,4 +481,116 @@ func directorImageSize(ratio string) string {
 		return "1792x2240"
 	}
 	return ImageSize(ratio)
+}
+
+const (
+	directorVideoPoll     = 10 * time.Second
+	directorVideoRetry    = 30 * time.Second
+	directorVideoDeadline = 2 * time.Hour
+	// Provider result URLs expire after about a day; stop retrying the download well before that.
+	directorVideoFetchWindow = 20 * time.Hour
+)
+
+type directorVideoTask struct {
+	TaskID      string    `json:"taskId"`
+	SubmittedAt time.Time `json:"submittedAt"`
+}
+
+func (f *DirectorFacade) directorVideo(c context.Context, j *models.DirectorJob, in directorJobInput) error {
+	now := time.Now().UTC()
+	if len(j.Output) == 0 {
+		if !f.videoAvailable() || in.ImageKey == "" || in.VideoModel == "" {
+			return f.fail(c, j, in, true)
+		}
+		ref, _, e := f.storage.SignedURL(c, in.ImageKey, time.Hour)
+		if e != nil {
+			return f.fail(c, j, in, true)
+		}
+		if e = f.progress(c, j, in, func(d *directorDocument) error {
+			sh := directorFindShot(&d.Project, in.ShotID)
+			if sh == nil || sh.Video == nil {
+				return repo.ErrConflict
+			}
+			sh.Video.Status = "processing"
+			sh.Video.Progress = 5
+			return nil
+		}); e != nil {
+			return e
+		}
+		prompt := in.Description + "\nCamera: " + in.Camera + "\nStyle: " + in.Project.Style + "\nGenre: " + in.Project.Idea.Genre + "\nMoods: " + strings.Join(in.Project.Idea.Moods, ", ") + "\nAnimate the first frame naturally, keep characters and composition consistent. No text overlays."
+		id, e := f.video.CreateTask(c, modelark.CreateTaskRequest{Model: in.VideoModel, Content: []modelark.ContentItem{{Type: modelark.ContentTypeText, Text: prompt}, {Type: modelark.ContentTypeImageURL, URL: ref, Role: modelark.RoleFirstFrame}}, Ratio: in.Ratio, DurationSeconds: int64(in.Seconds), Resolution: in.Resolution})
+		if e != nil {
+			d := modelark.VideoFailureDiagnostic(e)
+			return f.fail(c, j, in, d.HTTPStatus >= 400 && d.HTTPStatus < 500)
+		}
+		if id == "" {
+			return f.fail(c, j, in, false)
+		}
+		raw, e := json.Marshal(directorVideoTask{TaskID: id, SubmittedAt: now})
+		if e != nil {
+			return e
+		}
+		return f.store.Wait(c, j, raw, now.Add(directorVideoPoll))
+	}
+	var task directorVideoTask
+	if json.Unmarshal(j.Output, &task) != nil || task.TaskID == "" {
+		return f.fail(c, j, in, false)
+	}
+	if f.video == nil || f.fetcher == nil {
+		return f.store.Wait(c, j, j.Output, now.Add(time.Minute))
+	}
+	age := now.Sub(task.SubmittedAt)
+	result, e := f.video.GetTask(c, task.TaskID)
+	if e != nil || result == nil {
+		if age > directorVideoDeadline {
+			return f.fail(c, j, in, false)
+		}
+		return f.store.Wait(c, j, j.Output, now.Add(directorVideoRetry))
+	}
+	switch result.Status {
+	case modelark.ProviderStatusQueued, modelark.ProviderStatusRunning:
+		if age > directorVideoDeadline {
+			return f.fail(c, j, in, false)
+		}
+		progress := min(90, 10+int(age.Seconds()*80/120))
+		if e = f.progress(c, j, in, func(d *directorDocument) error {
+			if sh := directorFindShot(&d.Project, in.ShotID); sh != nil && sh.Video != nil {
+				sh.Video.Status = "processing"
+				sh.Video.Progress = progress
+			}
+			return nil
+		}); e != nil {
+			return e
+		}
+		return f.store.Wait(c, j, j.Output, now.Add(directorVideoPoll))
+	case modelark.ProviderStatusFailed, modelark.ProviderStatusCancelled:
+		return f.fail(c, j, in, true)
+	case modelark.ProviderStatusSucceeded:
+		data, kind, e := f.fetcher.Fetch(c, result.VideoURL)
+		if e != nil {
+			if age > directorVideoFetchWindow {
+				return f.fail(c, j, in, false)
+			}
+			return f.store.Wait(c, j, j.Output, now.Add(directorVideoRetry))
+		}
+		if !strings.HasPrefix(kind, "video/") || len(data) == 0 {
+			return f.fail(c, j, in, false)
+		}
+		key := fmt.Sprintf("director/%s/%s/%s/%s.mp4", j.UserID, j.ProjectID, in.ShotID, j.ID)
+		if e = f.storage.Upload(c, key, data, "video/mp4"); e != nil {
+			return f.store.Wait(c, j, j.Output, now.Add(directorVideoRetry))
+		}
+		return f.finish(c, j, in, "succeeded", false, func(d *directorDocument) error {
+			d.Keys[j.TargetID] = key
+			if sh := directorFindShot(&d.Project, in.ShotID); sh != nil && sh.Video != nil {
+				sh.Video.Status = "succeeded"
+				sh.Video.Progress = 100
+				sh.Video.Stale = d.Keys[sh.ID] != in.ImageKey || sh.Description != in.Description || sh.Camera != in.Camera
+				sh.Video.DirectorFailure = dto.DirectorFailure{}
+			}
+			return nil
+		})
+	default:
+		return f.fail(c, j, in, false)
+	}
 }

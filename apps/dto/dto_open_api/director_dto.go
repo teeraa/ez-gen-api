@@ -57,17 +57,29 @@ type DirectorImage struct {
 	Stale     bool       `json:"stale"`
 	DirectorFailure
 }
+type DirectorVideo struct {
+	Status          string     `json:"status"`
+	Progress        int        `json:"progress"`
+	URL             *string    `json:"url"`
+	ExpiresAt       *time.Time `json:"expiresAt"`
+	Stale           bool       `json:"stale"`
+	ModelID         string     `json:"modelId"`
+	DurationSeconds int        `json:"durationSeconds"`
+	DirectorFailure
+	PointsCharged  int `json:"pointsCharged"`
+	PointsRefunded int `json:"pointsRefunded"`
+}
 type DirectorShot struct {
-	ID                string        `json:"id"`
-	SceneID           string        `json:"sceneId"`
-	Index             int           `json:"index"`
-	Description       string        `json:"description"`
-	Camera            string        `json:"camera"`
-	CharacterAssetIDs []string      `json:"characterAssetIds"`
-	Image             DirectorImage `json:"image"`
-	Video             *string       `json:"video"`
-	PointsCharged     *int          `json:"pointsCharged"`
-	PointsRefunded    int           `json:"pointsRefunded"`
+	ID                string         `json:"id"`
+	SceneID           string         `json:"sceneId"`
+	Index             int            `json:"index"`
+	Description       string         `json:"description"`
+	Camera            string         `json:"camera"`
+	CharacterAssetIDs []string       `json:"characterAssetIds"`
+	Image             DirectorImage  `json:"image"`
+	Video             *DirectorVideo `json:"video"`
+	PointsCharged     *int           `json:"pointsCharged"`
+	PointsRefunded    int            `json:"pointsRefunded"`
 }
 type DirectorScene struct {
 	ID                string         `json:"id"`
@@ -143,13 +155,14 @@ type DirectorResolution struct {
 	Available bool `json:"available"`
 }
 type DirectorModel struct {
-	ID                         string `json:"id"`
-	Name                       string `json:"name"`
-	Note                       string `json:"note"`
-	SpeedHint                  string `json:"speedHint"`
-	PointsPerUnit              int    `json:"pointsPerUnit"`
-	SupportsCharacterReference bool   `json:"supportsCharacterReference"`
-	Default                    bool   `json:"default,omitempty"`
+	ID                         string   `json:"id"`
+	Name                       string   `json:"name"`
+	Note                       string   `json:"note"`
+	SpeedHint                  string   `json:"speedHint"`
+	PointsPerUnit              int      `json:"pointsPerUnit"`
+	SupportsCharacterReference bool     `json:"supportsCharacterReference"`
+	Default                    bool     `json:"default,omitempty"`
+	AspectRatios               []string `json:"aspectRatios,omitempty"`
 }
 type DirectorModels struct {
 	Story []DirectorModel `json:"story"`
@@ -172,6 +185,7 @@ type DirectorLimits struct {
 }
 type DirectorCapabilities struct {
 	Enabled           bool                 `json:"enabled"`
+	VideoEnabled      bool                 `json:"videoEnabled"`
 	UnavailableReason *string              `json:"unavailableReason"`
 	AspectRatios      []DirectorOption     `json:"aspectRatios"`
 	Resolutions       []DirectorResolution `json:"resolutions"`

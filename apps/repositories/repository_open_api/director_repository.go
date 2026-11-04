@@ -129,11 +129,11 @@ func (r *DirectorRepository) Change(c context.Context, id, user, key, hash strin
 		}
 		if len(jobs) > 0 {
 			var n int64
-			if e = tx.Model(&models.DirectorJob{}).Where("user_id=? AND status IN ?", user, []string{"queued", "submitting"}).Distinct("project_id").Count(&n).Error; e != nil {
+			if e = tx.Model(&models.DirectorJob{}).Where("user_id=? AND status IN ?", user, []string{"queued", "submitting", "waiting"}).Distinct("project_id").Count(&n).Error; e != nil {
 				return e
 			}
 			var same int64
-			if e = tx.Model(&models.DirectorJob{}).Where("project_id=? AND status IN ?", p.ID, []string{"queued", "submitting"}).Count(&same).Error; e != nil {
+			if e = tx.Model(&models.DirectorJob{}).Where("project_id=? AND status IN ?", p.ID, []string{"queued", "submitting", "waiting"}).Count(&same).Error; e != nil {
 				return e
 			}
 			if same == 0 && n >= r.maxActive {
@@ -217,10 +217,10 @@ func (r *DirectorRepository) Claim(c context.Context) (*models.DirectorJob, erro
 	e := r.db.WithContext(c).Transaction(func(tx *gorm.DB) error {
 		// Lock the project first. All client writes and completions share that lock.
 		var p models.DirectorProject
-		if e := tx.Unscoped().Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).Where("EXISTS (SELECT 1 FROM director_jobs j WHERE j.project_id=director_projects.id AND j.deleted_at IS NULL AND (j.status='queued' OR (j.status='submitting' AND j.lease_until < ?))) AND NOT EXISTS (SELECT 1 FROM director_jobs a WHERE a.project_id=director_projects.id AND a.status='submitting' AND a.lease_until >= ?)", time.Now(), time.Now()).Order("updated_at,id").First(&p).Error; e != nil {
+		if e := tx.Unscoped().Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).Where("EXISTS (SELECT 1 FROM director_jobs j WHERE j.project_id=director_projects.id AND j.deleted_at IS NULL AND (j.status='queued' OR (j.status IN ('submitting','waiting') AND j.lease_until < ?))) AND NOT EXISTS (SELECT 1 FROM director_jobs a WHERE a.project_id=director_projects.id AND a.status='submitting' AND a.lease_until >= ?)", time.Now(), time.Now()).Order("updated_at,id").First(&p).Error; e != nil {
 			return e
 		}
-		if e := tx.Where("project_id=? AND (status='queued' OR (status='submitting' AND lease_until < ?))", p.ID, time.Now()).Order("CASE WHEN status='submitting' THEN 0 ELSE 1 END,created_at,id").First(&j).Error; e != nil {
+		if e := tx.Where("project_id=? AND (status='queued' OR (status IN ('submitting','waiting') AND lease_until < ?))", p.ID, time.Now()).Order("CASE WHEN status='submitting' THEN 0 ELSE 1 END,created_at,id").First(&j).Error; e != nil {
 			return e
 		}
 		token := uuid.New()
@@ -294,6 +294,19 @@ func (r *DirectorRepository) RecordOutput(c context.Context, j *models.DirectorJ
 	q := r.db.WithContext(c).Model(&models.DirectorJob{}).Where("id=? AND user_id=? AND lease_token=? AND status=?", j.ID, j.UserID, j.LeaseToken, "submitting").Updates(map[string]any{"output": data, "snapshot": j.Snapshot})
 	if q.Error != nil {
 		return q.Error
+	}
+	if q.RowsAffected != 1 {
+		return ErrConflict
+	}
+	return nil
+}
+
+// Wait releases the lease of an accepted asynchronous provider task. The stored output is the
+// provider handle, so a later claim polls it instead of submitting the paid request again.
+func (r *DirectorRepository) Wait(c context.Context, j *models.DirectorJob, output []byte, until time.Time) error {
+	q := r.db.WithContext(c).Model(&models.DirectorJob{}).Where("id=? AND user_id=? AND lease_token=? AND status=?", j.ID, j.UserID, j.LeaseToken, "submitting").Updates(map[string]any{"status": "waiting", "output": output, "snapshot": j.Snapshot, "lease_token": nil, "lease_until": until, "updated_at": time.Now()})
+	if q.Error != nil {
+		return wrapErr("director wait", q.Error)
 	}
 	if q.RowsAffected != 1 {
 		return ErrConflict

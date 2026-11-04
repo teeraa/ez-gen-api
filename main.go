@@ -15,6 +15,7 @@ import (
 	"github.com/ez-gen/ez-gen-api/apps/handlers/handler_open_api"
 	"github.com/ez-gen/ez-gen-api/apps/repositories/repository_open_api"
 	"github.com/ez-gen/ez-gen-api/apps/services/editorai"
+	"github.com/ez-gen/ez-gen-api/apps/services/gemini"
 	"github.com/ez-gen/ez-gen-api/apps/services/modelark"
 	"github.com/ez-gen/ez-gen-api/apps/services/storage"
 	"github.com/ez-gen/ez-gen-api/apps/services/videoprocessing"
@@ -195,7 +196,8 @@ func main() {
 	handler_open_api.NewVideoEditorAIHandler(editorAIFacade).RegisterRoutes(openV1)
 	storyFacade := facade_open_api.NewStoryFlowFacade(repository_open_api.NewStoryFlowRepository(database, cfg.MaxConcurrentJobsPerUser), studioRepo, modelRegistry, modelark.NewImageClient(cfg.ArkImageAPIKey, cfg.ArkImageBaseURL, cfg.ArkImageModel), modelark.NewStoryFlowAnalyzer(cfg.ArkStoryAnalysisAPIKey, cfg.ArkStoryAnalysisBaseURL), modelark.NewClient(cfg.ArkAPIKey, cfg.ArkBaseURL), storageClient, mediaFetcher, videoProcessor, facade_open_api.StoryFlowOptions{AnalysisModel: cfg.ArkStoryAnalysisModel, ImageModel: imageModel, Enabled: cfg.ArkAPIKey != "" && cfg.ArkStoryAnalysisAPIKey != "", ExportAvailable: productionFacade.Capabilities().Export.Available})
 	handler_open_api.NewStoryFlowHandler(storyFacade, cfg.RateLimitJobsPerMinute).RegisterRoutes(openV1)
-	directorFacade := facade_open_api.NewDirectorFacade(repository_open_api.NewDirectorRepository(database, cfg.MaxConcurrentJobsPerUser), studioRepo, storageClient, modelark.NewStoryFlowAnalyzer(cfg.ArkStoryAnalysisAPIKey, cfg.ArkStoryAnalysisBaseURL), modelark.NewImageClient(cfg.ArkImageAPIKey, cfg.ArkImageBaseURL, cfg.ArkImageModel), modelRegistry, facade_open_api.DirectorOptions{Enabled: imageEnabled && cfg.ArkStoryAnalysisAPIKey != "", AnalysisModel: cfg.ArkStoryAnalysisModel, ImageModel: imageModel, StoryPoints: cfg.DirectorStoryPoints, ImagePoints: cfg.DirectorImagePoints, VideoPoints: cfg.DirectorVideoPoints, SampleBaseURL: cfg.DirectorSampleBaseURL})
+	directorAnalyzer, directorAnalysisModel, directorStoryReady := directorStoryPlanner(cfg)
+	directorFacade := facade_open_api.NewDirectorFacade(repository_open_api.NewDirectorRepository(database, cfg.MaxConcurrentJobsPerUser), studioRepo, storageClient, directorAnalyzer, modelark.NewImageClient(cfg.ArkImageAPIKey, cfg.ArkImageBaseURL, cfg.ArkImageModel), modelRegistry, arkClient, mediaFetcher, facade_open_api.DirectorOptions{Enabled: imageEnabled && directorStoryReady, AnalysisModel: directorAnalysisModel, ImageModel: imageModel, StoryPoints: cfg.DirectorStoryPoints, ImagePoints: cfg.DirectorImagePoints, VideoPoints: cfg.DirectorVideoPoints, SampleBaseURL: cfg.DirectorSampleBaseURL, VideoEnabled: cfg.ArkAPIKey != ""})
 	handler_open_api.NewDirectorHandler(directorFacade, cfg.RateLimitJobsPerMinute).RegisterRoutes(openV1)
 
 	// Jobs
@@ -264,4 +266,19 @@ func main() {
 	if err := app.ShutdownWithTimeout(10 * time.Second); err != nil {
 		log.Printf("shutdown error: %v", err)
 	}
+}
+
+// Gemini is used when explicitly selected, or when no ModelArk text model is configured
+// but a Gemini key is, so a development environment can plan stories without an Ark text endpoint.
+func directorStoryPlanner(cfg *configs.Config) (modelark.StoryFlowAnalyzer, string, bool) {
+	provider := cfg.DirectorStoryProvider
+	if provider == "" && cfg.ArkStoryAnalysisModel == "" && cfg.GeminiAPIKey != "" {
+		provider = "gemini"
+	}
+	if provider == "gemini" {
+		log.Printf("director: story planner provider=gemini model=%s", cfg.GeminiModel)
+		return gemini.NewStoryAnalyzer(cfg.GeminiAPIKey), cfg.GeminiModel, cfg.GeminiAPIKey != "" && cfg.GeminiModel != ""
+	}
+	log.Printf("director: story planner provider=modelark model=%s", cfg.ArkStoryAnalysisModel)
+	return modelark.NewStoryFlowAnalyzer(cfg.ArkStoryAnalysisAPIKey, cfg.ArkStoryAnalysisBaseURL), cfg.ArkStoryAnalysisModel, cfg.ArkStoryAnalysisAPIKey != "" && cfg.ArkStoryAnalysisModel != ""
 }

@@ -126,6 +126,15 @@ func (a *directorTestAnalyzer) Analyze(_ context.Context, _ string, prompt strin
 
 func newDirectorFixture(t *testing.T) *directorFixture {
 	t.Helper()
+	return newDirectorFixtureWith(t, nil, nil)
+}
+
+type directorVideoFetcher interface {
+	Fetch(context.Context, string) ([]byte, string, error)
+}
+
+func newDirectorFixtureWith(t *testing.T, video modelark.Client, fetcher directorVideoFetcher) *directorFixture {
+	t.Helper()
 	dsn := os.Getenv("DIRECTOR_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("DIRECTOR_TEST_DATABASE_URL unset; disposable loopback fixture only")
@@ -187,7 +196,7 @@ func newDirectorFixture(t *testing.T) *directorFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := facade.NewDirectorFacade(store, directorTestAssets{}, media, analyzer, media, registry, facade.DirectorOptions{Enabled: true, AnalysisModel: "fixture-story", ImageModel: "fixture-image", StoryPoints: 4, ImagePoints: 3, VideoPoints: 20, SampleBaseURL: "https://samples.test/director"})
+	f := facade.NewDirectorFacade(store, directorTestAssets{}, media, analyzer, media, registry, video, fetcher, facade.DirectorOptions{Enabled: true, AnalysisModel: "fixture-story", ImageModel: "fixture-image", StoryPoints: 4, ImagePoints: 3, VideoPoints: 20, SampleBaseURL: "https://samples.test/director", VideoEnabled: video != nil})
 	app := fiber.New()
 	app.Use(func(c *fiber.Ctx) error {
 		owner := c.Get("X-Test-User")
@@ -328,7 +337,7 @@ func TestDirectorPostgresHTTPRevisionIdempotencyBilling(t *testing.T) {
 	if status != 304 || len(b) != 0 {
 		t.Fatalf("conditional GET %d %s", status, b)
 	}
-	d.wantError("POST", path+"/video", map[string]any{"revision": done.Revision, "idempotencyKey": uuid.NewString()}, 501, "NOT_IMPLEMENTED")
+	d.wantError("POST", path+"/video", map[string]any{"revision": done.Revision, "idempotencyKey": uuid.NewString()}, 503, "DIRECTOR_VIDEO_UNAVAILABLE")
 	status, b, _ = d.http("DELETE", path, nil, nil)
 	if status != 204 {
 		t.Fatalf("delete %d %s", status, b)

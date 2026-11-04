@@ -12,6 +12,7 @@ type Config struct {
 	DirectorImagePoints   int
 	DirectorVideoPoints   int
 	DirectorSampleBaseURL string
+	DirectorStoryProvider string
 
 	EditorAIEnabled     bool
 	GeminiAPIKey        string
@@ -125,6 +126,7 @@ func Load() *Config {
 		DirectorImagePoints:         getEnvInt("DIRECTOR_IMAGE_POINTS", 3),
 		DirectorVideoPoints:         getEnvInt("DIRECTOR_VIDEO_POINTS", 20),
 		DirectorSampleBaseURL:       strings.TrimRight(strings.TrimSpace(os.Getenv("DIRECTOR_SAMPLE_BASE_URL")), "/"),
+		DirectorStoryProvider:       strings.ToLower(strings.TrimSpace(os.Getenv("DIRECTOR_STORY_PROVIDER"))),
 		ArkStoryAnalysisModel:       strings.TrimSpace(os.Getenv("ARK_STORY_ANALYSIS_MODEL")),
 		ArkStoryAnalysisAPIKey:      getEnv("ARK_STORY_ANALYSIS_API_KEY", getEnv("ARK_REFERENCE_ANALYSIS_API_KEY", getEnv("ARK_IMAGE_API_KEY", os.Getenv("ARK_API_KEY")))),
 		ArkStoryAnalysisBaseURL:     getEnv("ARK_STORY_ANALYSIS_BASE_URL", getEnv("ARK_REFERENCE_ANALYSIS_BASE_URL", getEnv("ARK_IMAGE_BASE_URL", getEnv("ARK_BASE_URL", "https://ark.ap-southeast.bytepluses.com/api/v3")))),

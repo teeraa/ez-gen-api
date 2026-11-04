@@ -11,7 +11,6 @@ import (
 	"github.com/ez-gen/ez-gen-api/apps/services/modelark"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
-	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -43,6 +42,7 @@ type directorStore interface {
 	Complete(context.Context, *models.DirectorJob, string, bool, func(*models.DirectorProject) error) error
 	Progress(context.Context, *models.DirectorJob, func(*models.DirectorProject) error) error
 	RecordOutput(context.Context, *models.DirectorJob, []byte) error
+	Wait(context.Context, *models.DirectorJob, []byte, time.Time) error
 }
 type DirectorOptions struct {
 	Enabled       bool
@@ -52,6 +52,7 @@ type DirectorOptions struct {
 	ImagePoints   int
 	VideoPoints   int
 	SampleBaseURL string
+	VideoEnabled  bool
 }
 type DirectorFacade struct {
 	store    directorStore
@@ -60,11 +61,32 @@ type DirectorFacade struct {
 	analyzer modelark.StoryFlowAnalyzer
 	images   modelark.ImageGenerator
 	registry *modelark.Registry
+	video    modelark.Client
+	fetcher  mediaFetcher
 	options  DirectorOptions
 }
 
-func NewDirectorFacade(s directorStore, a storyFlowAssets, st mediaStorage, n modelark.StoryFlowAnalyzer, i modelark.ImageGenerator, r *modelark.Registry, o DirectorOptions) *DirectorFacade {
-	return &DirectorFacade{s, a, st, n, i, r, o}
+// A nil video client or fetcher leaves the storyboard usable and reports video as unavailable.
+func NewDirectorFacade(s directorStore, a storyFlowAssets, st mediaStorage, n modelark.StoryFlowAnalyzer, i modelark.ImageGenerator, r *modelark.Registry, v modelark.Client, fe mediaFetcher, o DirectorOptions) *DirectorFacade {
+	return &DirectorFacade{store: s, assets: a, storage: st, analyzer: n, images: i, registry: r, video: v, fetcher: fe, options: o}
+}
+
+// Video menu model order, so Director offers the same choices as the video studio.
+var directorVideoModelOrder = []string{"violet-motion-2", "violet-cinema", "violet-fast", "violet-realism", "violet-classic"}
+
+const directorVideoSecondsTarget = 5
+
+func directorVideoSeconds(m modelark.ModelConfig) int {
+	return min(max(directorVideoSecondsTarget, m.MinDuration), m.MaxDuration)
+}
+func directorVideoResolution(project string, m modelark.ModelConfig) string {
+	if m.MaxResolution == "720p" {
+		return "720p"
+	}
+	return project
+}
+func (f *DirectorFacade) videoAvailable() bool {
+	return f.options.VideoEnabled && f.video != nil && f.fetcher != nil && f.registry != nil
 }
 
 // The public response never includes this private aggregate metadata.
@@ -83,6 +105,12 @@ type directorJobInput struct {
 	ImageModel  string              `json:"imageModel"`
 	Characters  []directorCharacter `json:"characters"`
 	CoverKey    string              `json:"coverKey"`
+	ShotID      string              `json:"shotId,omitempty"`
+	ImageKey    string              `json:"imageKey,omitempty"`
+	VideoModel  string              `json:"videoModel,omitempty"`
+	Ratio       string              `json:"ratio,omitempty"`
+	Resolution  string              `json:"resolution,omitempty"`
+	Seconds     int                 `json:"seconds,omitempty"`
 }
 type directorCharacter struct {
 	ID          string `json:"id"`
@@ -103,7 +131,7 @@ func directorEncode(p *models.DirectorProject, d *directorDocument) error {
 	return e
 }
 func (f *DirectorFacade) Capabilities() dto.DirectorCapabilities {
-	c := dto.DirectorCapabilities{Enabled: f.options.Enabled && f.options.AnalysisModel != "" && f.options.ImageModel != "" && f.options.SampleBaseURL != "" && f.options.StoryPoints > 0 && f.options.ImagePoints > 0 && f.options.VideoPoints >= 0, AspectRatios: []dto.DirectorOption{}, Resolutions: []dto.DirectorResolution{}, Styles: []dto.DirectorStyle{}, Genres: []dto.DirectorOption{}, Moods: []string{"อบอุ่น", "ตื่นเต้น", "ลึกลับ", "มีความหวัง", "เศร้า", "ฮึกเหิม", "ตลกขบขัน", "น่ากลัว", "สงบ", "โรแมนติก"}, Cameras: []string{"มุมกว้าง", "มุมกลาง", "โคลสอัพ", "มุมสูง", "มุมต่ำ", "มุมข้ามไหล่"}, Limits: dto.DirectorLimits{IdeaMaxLength: 1000, NameMaxLength: 80, MinScenes: 1, MaxScenes: 10, MinShotsPerScene: 1, MaxShotsPerScene: 6, MaxShotsPerSceneAfterEdit: 8, MaxTotalShots: 40, MaxCast: 4, MaxMoods: 3, SceneSummaryMaxLength: 1200, ShotDescriptionMaxLength: 600}, Models: dto.DirectorModels{Story: []dto.DirectorModel{}, Image: []dto.DirectorModel{}, Video: []dto.DirectorModel{}}}
+	c := dto.DirectorCapabilities{Enabled: f.options.Enabled && f.options.AnalysisModel != "" && f.options.ImageModel != "" && f.options.StoryPoints > 0 && f.options.ImagePoints > 0 && f.options.VideoPoints >= 0, AspectRatios: []dto.DirectorOption{}, Resolutions: []dto.DirectorResolution{}, Styles: []dto.DirectorStyle{}, Genres: []dto.DirectorOption{}, Moods: []string{"อบอุ่น", "ตื่นเต้น", "ลึกลับ", "มีความหวัง", "เศร้า", "ฮึกเหิม", "ตลกขบขัน", "น่ากลัว", "สงบ", "โรแมนติก"}, Cameras: []string{"มุมกว้าง", "มุมกลาง", "โคลสอัพ", "มุมสูง", "มุมต่ำ", "มุมข้ามไหล่"}, Limits: dto.DirectorLimits{IdeaMaxLength: 1000, NameMaxLength: 80, MinScenes: 1, MaxScenes: 10, MinShotsPerScene: 1, MaxShotsPerScene: 6, MaxShotsPerSceneAfterEdit: 8, MaxTotalShots: 40, MaxCast: 4, MaxMoods: 3, SceneSummaryMaxLength: 1200, ShotDescriptionMaxLength: 600}, Models: dto.DirectorModels{Story: []dto.DirectorModel{}, Image: []dto.DirectorModel{}, Video: []dto.DirectorModel{}}}
 	for _, s := range []string{"16:9", "9:16", "1:1", "4:5"} {
 		c.AspectRatios = append(c.AspectRatios, dto.DirectorOption{Value: s, Label: s, Hint: "สัดส่วนภาพ"})
 	}
@@ -112,7 +140,11 @@ func (f *DirectorFacade) Capabilities() dto.DirectorCapabilities {
 	}
 	names := []string{"ซีเนมาติก", "อนิเมะ", "3D การ์ตูน", "สีน้ำ", "ดินปั้น", "สมจริง"}
 	for i, s := range []string{"cinematic", "anime", "3d", "watercolor", "clay", "realistic"} {
-		c.Styles = append(c.Styles, dto.DirectorStyle{DirectorOption: dto.DirectorOption{Value: s, Label: names[i], Hint: names[i]}, SampleImageURL: strings.TrimRight(f.options.SampleBaseURL, "/") + "/" + s + ".jpg"})
+		sample := ""
+		if f.options.SampleBaseURL != "" {
+			sample = strings.TrimRight(f.options.SampleBaseURL, "/") + "/" + s + ".jpg"
+		}
+		c.Styles = append(c.Styles, dto.DirectorStyle{DirectorOption: dto.DirectorOption{Value: s, Label: names[i], Hint: names[i]}, SampleImageURL: sample})
 	}
 	labels := []string{"ผจญภัย", "ดราม่า", "แฟนตาซี", "ตลก", "ระทึกขวัญ", "ไซไฟ", "โรแมนติก", "โฆษณา"}
 	for i, s := range []string{"adventure", "drama", "fantasy", "comedy", "thriller", "scifi", "romance", "ad"} {
@@ -125,20 +157,27 @@ func (f *DirectorFacade) Capabilities() dto.DirectorCapabilities {
 		c.Models.Image = append(c.Models.Image, dto.DirectorModel{ID: "director-image", Name: "มาตรฐาน", Note: "สร้างภาพจากคำบรรยายและตัวละคร", PointsPerUnit: f.options.ImagePoints, SupportsCharacterReference: true, Default: true})
 	}
 	if f.registry != nil {
-		ids := []string{}
-		for id := range f.registry.Routes() {
-			ids = append(ids, id)
-		}
-		sort.Strings(ids)
-		for _, id := range ids {
-			m, _ := f.registry.Lookup(id)
-			if m.SupportsImgVideo {
-				c.Models.Video = append(c.Models.Video, dto.DirectorModel{ID: id, Name: "วิดีโอ " + fmt.Sprint(len(c.Models.Video)+1), Note: "เตรียมสำหรับระยะถัดไป", PointsPerUnit: f.options.VideoPoints, SupportsCharacterReference: true, Default: len(c.Models.Video) == 0})
+		for _, id := range directorVideoModelOrder {
+			m, ok := f.registry.Lookup(id)
+			if !ok || !m.SupportsImgVideo {
+				continue
 			}
+			c.Models.Video = append(c.Models.Video, dto.DirectorModel{ID: id, Name: m.PublicLabel(), Note: "ใช้ภาพสตอรี่บอร์ดเป็นเฟรมแรก · สูงสุด " + m.MaxResolution, SpeedHint: fmt.Sprintf("%d วินาทีต่อ shot", directorVideoSeconds(m)), PointsPerUnit: f.options.VideoPoints, Default: len(c.Models.Video) == 0, AspectRatios: append([]string{}, m.SupportedRatios...)})
 		}
 	}
+	c.VideoEnabled = c.Enabled && f.videoAvailable() && len(c.Models.Video) > 0
 	if !c.Enabled {
-		c.UnavailableReason = directorPointer("ผู้กำกับยังไม่พร้อมใช้งาน กรุณาติดต่อผู้ดูแลระบบเพื่อตั้งค่าโมเดล ภาพตัวอย่าง และบริการจัดเก็บ")
+		missing := []string{}
+		if !f.options.Enabled || f.options.AnalysisModel == "" {
+			missing = append(missing, "โมเดลเขียนเนื้อเรื่อง")
+		}
+		if f.options.ImageModel == "" {
+			missing = append(missing, "โมเดลสร้างภาพ")
+		}
+		if f.options.StoryPoints <= 0 || f.options.ImagePoints <= 0 || f.options.VideoPoints < 0 {
+			missing = append(missing, "ราคาพอยต์")
+		}
+		c.UnavailableReason = directorPointer("ผู้กำกับยังไม่พร้อมใช้งาน ยังไม่ได้ตั้งค่า: " + strings.Join(missing, ", ") + " กรุณาติดต่อผู้ดูแลระบบ")
 	}
 	return c
 }
@@ -278,6 +317,12 @@ func (f *DirectorFacade) present(c context.Context, m *models.DirectorProject) (
 			if e != nil {
 				return p, e
 			}
+			if s.Video != nil {
+				s.Video.URL, s.Video.ExpiresAt, e = sign(d.Keys[directorVideoTarget(s.ID)])
+				if e != nil {
+					return p, e
+				}
+			}
 			if first == nil && s.Image.Status == "succeeded" {
 				first = s
 			}
@@ -391,6 +436,25 @@ func directorTotal(p *dto.DirectorProject) int {
 	}
 	return n
 }
+func directorVideoTarget(shotID string) string { return "video:" + shotID }
+func directorVideoBusy(s *dto.DirectorShot) bool {
+	return s.Video != nil && directorBusy(s.Video.Status)
+}
+func directorAnyVideoBusy(p *dto.DirectorProject) bool {
+	for i := range p.Scenes {
+		for j := range p.Scenes[i].Shots {
+			if directorVideoBusy(&p.Scenes[i].Shots[j]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+func directorMarkVideoStale(s *dto.DirectorShot) {
+	if s.Video != nil && s.Video.Status == "succeeded" {
+		s.Video.Stale = true
+	}
+}
 func directorRecount(p *dto.DirectorProject) {
 	n, done, active, bad := 0, 0, false, false
 	for _, sc := range p.Scenes {
@@ -427,6 +491,21 @@ func (f *DirectorFacade) job(d *directorDocument, kind, target string, cost int,
 		snapshot.Description = sh.Description
 		snapshot.Camera = sh.Camera
 	}
+	if kind == "video" {
+		sh := directorFindShot(&d.Project, strings.TrimPrefix(target, "video:"))
+		m, ok := f.registry.Lookup(d.Project.Storyboard.VideoModelID)
+		if sh == nil || !ok {
+			return models.DirectorJob{}, directorInvalid("shotIds")
+		}
+		snapshot.ShotID = sh.ID
+		snapshot.Description = sh.Description
+		snapshot.Camera = sh.Camera
+		snapshot.ImageKey = d.Keys[sh.ID]
+		snapshot.VideoModel = m.ProviderModelID
+		snapshot.Ratio = d.Project.AspectRatio
+		snapshot.Resolution = directorVideoResolution(d.Project.Resolution, m)
+		snapshot.Seconds = directorVideoSeconds(m)
+	}
 	for _, id := range d.Project.Idea.CharacterAssetIDs {
 		a, e := loadAsset(id)
 		if e != nil || a.StorageKey == nil {
@@ -445,7 +524,7 @@ func (f *DirectorFacade) Mutate(c context.Context, id, user, action, target stri
 	if _, e := uuid.Parse(id); e != nil {
 		return dto.DirectorProject{}, repo.ErrNotFound
 	}
-	ai := directorContains([]string{"cover-generate", "story", "rewrite", "storyboard", "regenerate", "retry", "add"}, action)
+	ai := directorContains([]string{"cover-generate", "story", "rewrite", "storyboard", "regenerate", "retry", "add", "video"}, action)
 	if ai {
 		if _, e := uuid.Parse(in.IdempotencyKey); e != nil {
 			return dto.DirectorProject{}, directorInvalid("idempotencyKey")
@@ -578,7 +657,7 @@ func (f *DirectorFacade) Mutate(c context.Context, id, user, action, target stri
 			}
 			p.Cover = nil
 		case "story":
-			if directorBusy(p.Story.Status) || directorBusy(p.Storyboard.Status) || directorAnyWriting(p) {
+			if directorBusy(p.Story.Status) || directorBusy(p.Storyboard.Status) || directorAnyWriting(p) || directorAnyVideoBusy(p) {
 				return nil, directorError(409, "DIRECTOR_STATE_CONFLICT")
 			}
 			if p.Story.Status != "idle" && !in.Replace {
@@ -615,7 +694,7 @@ func (f *DirectorFacade) Mutate(c context.Context, id, user, action, target stri
 				return nil, directorError(409, "SCENE_BUSY")
 			}
 			retryableScene := action == "rewrite" && sc.Status == "failed" && sc.CanRetry
-			if (sc.Status != "ready" && !retryableScene) || directorBusy(p.Storyboard.Status) {
+			if (sc.Status != "ready" && !retryableScene) || directorBusy(p.Storyboard.Status) || (action == "rewrite" && directorAnyVideoBusy(p)) {
 				return nil, directorError(409, "DIRECTOR_STATE_CONFLICT")
 			}
 			if action == "rewrite" {
@@ -675,7 +754,7 @@ func (f *DirectorFacade) Mutate(c context.Context, id, user, action, target stri
 				p.Storyboard.VideoModelID = *in.VideoModelID
 			}
 		case "storyboard":
-			if p.Story.Status != "succeeded" || directorBusy(p.Storyboard.Status) {
+			if p.Story.Status != "succeeded" || directorBusy(p.Storyboard.Status) || directorAnyVideoBusy(p) {
 				return nil, directorError(409, "DIRECTOR_STATE_CONFLICT")
 			}
 			if directorTotal(p) > 0 && !in.Replace {
@@ -727,6 +806,9 @@ func (f *DirectorFacade) Mutate(c context.Context, id, user, action, target stri
 			if sh == nil {
 				return nil, directorError(404, "SHOT_NOT_FOUND")
 			}
+			if action != "shot" && directorVideoBusy(sh) {
+				return nil, directorError(409, "SHOT_BUSY")
+			}
 			switch action {
 			case "shot":
 				if in.Description != nil {
@@ -744,6 +826,7 @@ func (f *DirectorFacade) Mutate(c context.Context, id, user, action, target stri
 				if sh.Image.Status == "succeeded" || d.Keys[sh.ID] != "" {
 					sh.Image.Stale = true
 				}
+				directorMarkVideoStale(sh)
 			case "shot-delete":
 				sc := directorFindScene(p, sh.SceneID)
 				if len(sc.Shots) < 2 {
@@ -758,6 +841,7 @@ func (f *DirectorFacade) Mutate(c context.Context, id, user, action, target stri
 				}
 				sc.Shots = next
 				delete(d.Generations, target)
+				delete(d.Generations, directorVideoTarget(target))
 				if p.Cover != nil && p.Cover.ShotID != nil && *p.Cover.ShotID == target {
 					p.Cover = nil
 				}
@@ -815,7 +899,10 @@ func (f *DirectorFacade) Mutate(c context.Context, id, user, action, target stri
 			}
 			directorRecount(p)
 		case "video":
-			return nil, directorError(501, "NOT_IMPLEMENTED")
+			changed = false
+			if e = f.enqueueVideos(&d, in, enqueue); e != nil {
+				return nil, e
+			}
 		default:
 			return nil, directorInvalid("action")
 		}
@@ -832,6 +919,70 @@ func (f *DirectorFacade) Mutate(c context.Context, id, user, action, target stri
 		return dto.DirectorProject{}, e
 	}
 	return f.present(c, row)
+}
+
+func (f *DirectorFacade) enqueueVideos(d *directorDocument, in req.DirectorRequest, enqueue func(string, string, int) error) error {
+	p := &d.Project
+	if !f.Capabilities().VideoEnabled {
+		return directorError(503, "DIRECTOR_VIDEO_UNAVAILABLE")
+	}
+	if directorBusy(p.Storyboard.Status) || p.Storyboard.Status == "idle" {
+		return directorError(409, "DIRECTOR_STATE_CONFLICT")
+	}
+	m, ok := f.registry.Lookup(p.Storyboard.VideoModelID)
+	if !ok || !m.SupportsImgVideo {
+		return directorInvalid("videoModelId")
+	}
+	seconds := directorVideoSeconds(m)
+	if !m.SupportsOutput(p.AspectRatio, seconds) {
+		return directorError(422, "MODEL_NOT_SUPPORTED")
+	}
+	targets := []*dto.DirectorShot{}
+	if in.ShotIDs != nil {
+		if len(*in.ShotIDs) == 0 || len(*in.ShotIDs) > 40 {
+			return directorInvalid("shotIds")
+		}
+		seen := map[string]bool{}
+		for _, id := range *in.ShotIDs {
+			sh := directorFindShot(p, id)
+			if sh == nil {
+				return directorError(404, "SHOT_NOT_FOUND")
+			}
+			if seen[id] {
+				return directorInvalid("shotIds")
+			}
+			seen[id] = true
+			targets = append(targets, sh)
+		}
+	} else {
+		// Whole-story requests only fill shots without a current video, so a retry never pays twice.
+		for i := range p.Scenes {
+			for j := range p.Scenes[i].Shots {
+				sh := &p.Scenes[i].Shots[j]
+				if sh.Video == nil || sh.Video.Status != "succeeded" || sh.Video.Stale {
+					targets = append(targets, sh)
+				}
+			}
+		}
+		if len(targets) == 0 {
+			return directorError(409, "VIDEO_UP_TO_DATE")
+		}
+	}
+	for _, sh := range targets {
+		if sh.Image.Status != "succeeded" || d.Keys[sh.ID] == "" {
+			return directorError(409, "STORYBOARD_INCOMPLETE")
+		}
+		if directorVideoBusy(sh) || directorBusy(sh.Image.Status) {
+			return directorError(409, "SHOT_BUSY")
+		}
+	}
+	for _, sh := range targets {
+		sh.Video = &dto.DirectorVideo{Status: "queued", ModelID: p.Storyboard.VideoModelID, DurationSeconds: seconds, PointsCharged: f.options.VideoPoints}
+		if e := enqueue("video", directorVideoTarget(sh.ID), f.options.VideoPoints); e != nil {
+			return e
+		}
+	}
+	return nil
 }
 
 // HTTP consumers classify domain failures without importing persistence packages.

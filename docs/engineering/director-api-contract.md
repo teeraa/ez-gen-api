@@ -10,7 +10,7 @@
 ## 1. ภาพรวม flow
 
 ```
-[สร้างโปรเจกต์] ─► ① ไอเดีย ──(สร้างเนื้อเรื่อง)──► ② เนื้อเรื่อง ──(สร้างสตอรี่บอร์ด)──► ③ สตอรี่บอร์ด ──(สร้างวิดีโอ: phase 2)
+[สร้างโปรเจกต์] ─► ① ไอเดีย ──(สร้างเนื้อเรื่อง)──► ② เนื้อเรื่อง ──(สร้างสตอรี่บอร์ด)──► ③ สตอรี่บอร์ด ──(สร้างวิดีโอ)
                     │                                │                                  │
                     └─ (ไม่บังคับ) สร้างภาพปกเรื่อง      └─ แก้ฉาก / เขียนฉากใหม่              └─ แก้ shot / สร้างภาพใหม่ / เพิ่ม-ลบ shot / เลือกภาพปก
 ```
@@ -24,7 +24,7 @@
 | ② เนื้อเรื่อง | แก้ชื่อ/เนื้อเรื่อง/จำนวน shot, เขียนฉากใหม่ | `PATCH /scenes/:sceneId`, `POST /scenes/:sceneId/rewrite` |
 | ② → ③ | เลือกโมเดลภาพ/วิดีโอ แล้วสร้างสตอรี่บอร์ด | `POST /projects/:id/storyboard` |
 | ③ สตอรี่บอร์ด | แก้คำบรรยาย/มุมกล้อง, สร้างภาพใหม่, เพิ่ม/ลบ shot | `PATCH/DELETE /shots/:shotId`, `POST /shots/:shotId/regenerate`, `POST /scenes/:sceneId/shots` |
-| ③ | สร้างวิดีโอทั้งเรื่อง / รายช็อต | **phase 2** (`POST /projects/:id/video`) |
+| ③ | สร้างวิดีโอทั้งเรื่อง / รายช็อต | `POST /projects/:id/video` (ภาพสตอรี่บอร์ดเป็นเฟรมแรก) |
 
 หน้าเว็บอ่านสถานะทั้งหมดจาก `GET /projects/:id` เพียง endpoint เดียว แล้ว poll ระหว่างที่มีงานค้าง (ดู §9)
 
@@ -65,20 +65,21 @@
 ```ts
 interface DirectorCapabilities {
   enabled: boolean;
-  unavailableReason: string | null;          // ข้อความภาษาไทยที่แสดงผู้ใช้ได้
+  videoEnabled: boolean;                     // enabled และตั้งค่าบริการวิดีโอแล้ว
+  unavailableReason: string | null;          // ข้อความภาษาไทยที่แสดงผู้ใช้ได้ ระบุสิ่งที่ยังไม่ได้ตั้งค่า
   aspectRatios: Array<{ value: "16:9" | "9:16" | "1:1" | "4:5"; label: string; hint: string }>;
   resolutions: Array<{ value: "720p" | "1080p" | "4k"; label: string; hint: string; available: boolean }>;
   styles: Array<{
     value: string;                           // "cinematic" | "anime" | "3d" | "watercolor" | "clay" | "realistic" | ...
     label: string; hint: string;
-    sampleImageUrl: string;                  // ภาพตัวอย่างประจำสไตล์ (static asset, ไม่หมดอายุ) — ใช้เป็นพื้นหลังโปสเตอร์ขั้นไอเดีย
+    sampleImageUrl: string;                  // ภาพตัวอย่างประจำสไตล์ (static asset, ไม่หมดอายุ) — "" เมื่อยังไม่ได้ตั้ง DIRECTOR_SAMPLE_BASE_URL
   }>;
   genres: Array<{ value: string; label: string; hint: string }>;
   moods: string[];                           // ป้ายภาษาไทย เช่น "อบอุ่น", "ลึกลับ"
   models: {
     story: ModelOption[];                    // โมเดลเขียนเนื้อเรื่อง
     image: ModelOption[];                    // โมเดลสร้างภาพ (ภาพปก + ภาพ shot)
-    video: ModelOption[];                    // โมเดลวิดีโอ (ใช้ใน phase 2 แต่เลือกไว้ตั้งแต่ขั้นเนื้อเรื่อง)
+    video: ModelOption[];                    // ชุดเดียวกับเมนูสร้างวิดีโอ (violet-*) เฉพาะที่รองรับภาพเป็นเฟรมแรก
   };
   limits: {
     ideaMaxLength: 1000;
@@ -101,6 +102,7 @@ interface ModelOption {
   pointsPerUnit: number;                     // story: ต่อเรื่อง · image: ต่อภาพ · video: ต่อ shot
   supportsCharacterReference: boolean;       // image/video เท่านั้น
   default?: boolean;
+  aspectRatios?: string[];                   // video เท่านั้น: สัดส่วนที่โมเดลรองรับ (4:5 ไม่มีโมเดลวิดีโอรองรับ)
 }
 ```
 
@@ -205,7 +207,16 @@ interface Shot {
     stale: boolean;                          // true = คำบรรยาย/มุมกล้องถูกแก้หลังได้ภาพนี้ → UI แสดงปุ่ม "สร้างภาพใหม่"
     failureCode: string | null; failureMessage: string | null; canRetry: boolean;
   };
-  video: null;                               // phase 2
+  video: null | {                            // null = ยังไม่เคยสั่งสร้างวิดีโอ shot นี้
+    status: "queued" | "processing" | "succeeded" | "failed" | "needs_attention";
+    progress: number;                        // 0–100 (ประมาณจากเวลาที่ผ่านไประหว่างรอ provider)
+    url: string | null;                      // signed URL ของไฟล์ mp4 ใน storage ของแอป
+    expiresAt: string | null;
+    stale: boolean;                          // ภาพ/คำบรรยาย/มุมกล้องเปลี่ยนหลังได้วิดีโอนี้
+    modelId: string; durationSeconds: number;
+    failureCode: string | null; failureMessage: string | null; canRetry: boolean;
+    pointsCharged: number; pointsRefunded: number;
+  };
   pointsCharged: number | null;
 }
 
@@ -365,10 +376,14 @@ UI แสดงแถว "อ้างอิงโทนภาพ: ภาพป�
 | DELETE | `/projects/:id/shots/:shotId?revision=` | – | `DirectorProject` ฉากต้องเหลืออย่างน้อย 1 shot (`409 LAST_SHOT`) แล้วจัด index ใหม่ ถ้า shot นั้นเป็นปกให้ `cover = null` |
 | POST | `/projects/:id/shots/:shotId/retry` | `{ revision, idempotencyKey }` | เฉพาะ `canRetry = true` (`failed` / `needs_attention`) |
 
-### วิดีโอ (phase 2 — ระบุไว้ให้ data model รองรับ)
-- `POST /projects/:id/video` `{ revision, idempotencyKey, shotIds?: string[] }` ไม่ส่ง `shotIds` = ทั้งเรื่อง
-- เงื่อนไข: ภาพทุก shot ที่จะใช้ต้อง `succeeded` และ `stale = false`
-- ตอนนี้ UI แสดงข้อความ "ยังไม่ได้เชื่อมต่อระบบ" ฝั่งเซิร์ฟเวอร์ให้ตอบ `501 NOT_IMPLEMENTED` ไปก่อน
+### วิดีโอ
+- `POST /projects/:id/video` `{ revision, idempotencyKey, shotIds?: string[] }` → `DirectorProject` (revision ไม่เปลี่ยน)
+- ไม่ส่ง `shotIds` = ทุก shot ที่ยังไม่มีวิดีโอสำเร็จหรือวิดีโอ `stale` (ไม่มีเลย → `409 VIDEO_UP_TO_DATE`); ส่ง `shotIds` = สร้างใหม่เฉพาะ shot ที่ระบุ
+- เงื่อนไข: ภาพของทุก shot ที่จะใช้ต้อง `succeeded` (`409 STORYBOARD_INCOMPLETE`), shot ไม่มีงานค้าง (`409 SHOT_BUSY`), โมเดล `storyboard.videoModelId` รองรับสัดส่วนของโปรเจกต์ (`422 MODEL_NOT_SUPPORTED`)
+- ตัดพอยต์ `videoModel.pointsPerUnit` ต่อ shot; provider ล้มเหลวแบบชัดเจนคืนพอยต์และ `canRetry = true`
+- ความยาว 5 วินาทีต่อ shot (ปรับตามขั้นต่ำ/สูงสุดของโมเดล), ความละเอียดตามโปรเจกต์แต่ไม่เกินที่โมเดลรองรับ, ภาพ shot เป็น first frame
+- ระหว่างมีวิดีโอค้าง: สร้างเนื้อเรื่องใหม่/สตอรี่บอร์ดใหม่/เขียนฉากใหม่ → `409 DIRECTOR_STATE_CONFLICT`, ลบ/สร้างภาพ shot นั้นใหม่ → `409 SHOT_BUSY`
+- แก้ description/camera หรือได้ภาพใหม่หลังวิดีโอสำเร็จ → `video.stale = true`
 
 ---
 
@@ -426,8 +441,10 @@ Worker: ใช้กฎเดียวกับ Story Flow คือ lease ใ�
 | 409 | `SHOT_LIMIT` / `LAST_SHOT` | เกินหรือต่ำกว่าขีดจำกัด | ปิดปุ่ม |
 | 409 | `DIRECTOR_STATE_CONFLICT` | action ไม่ตรงกับ state | โหลดใหม่ |
 | 429 | `RATE_LIMITED` | เกินโควตาต่อนาที/งานพร้อมกัน | แสดง `Retry-After` |
-| 501 | `NOT_IMPLEMENTED` | สร้างวิดีโอ (phase 2) | toast เดิม |
+| 409 | `VIDEO_UP_TO_DATE` / `STORYBOARD_INCOMPLETE` | ไม่มี shot ต้องสร้างวิดีโอ / ภาพยังไม่ครบ | ปิดปุ่ม |
+| 422 | `MODEL_NOT_SUPPORTED` | โมเดลวิดีโอไม่รองรับสัดส่วนโปรเจกต์ | ให้เลือกโมเดลอื่น |
 | 503 | `DIRECTOR_UNAVAILABLE` | ยังไม่ได้ตั้งค่า provider/โมเดล | แสดง `capabilities.unavailableReason` |
+| 503 | `DIRECTOR_VIDEO_UNAVAILABLE` | ยังไม่ได้ตั้งค่าบริการวิดีโอ (`ARK_API_KEY`) | ปิดปุ่มตาม `capabilities.videoEnabled` |
 | 500 | `INTERNAL_ERROR` | อื่น ๆ | ข้อความทั่วไป + requestId |
 
 ทุกข้อความ (`message`, `failureMessage`) เป็นภาษาไทยที่แสดงผู้ใช้ได้ ห้ามมีชื่อ provider, task ID หรือ stack trace
@@ -521,9 +538,13 @@ recorded separately in the workspace task report.
   takes priority. A cover can be the image reference when no character is used.
   Do not infer that cover colors were analyzed when only configured style text
   was supplied; `styleReference` must describe the reference actually used.
-- 4K remains unavailable in phase one. Story/image models use internal display
-  names; video choices reflect configured registry entries and remain selection
-  metadata because video generation returns `501 NOT_IMPLEMENTED`.
+- 4K remains unavailable. Story/image models use internal display names; video
+  choices use the video menu's registry IDs and public labels, filtered to
+  models that accept a first-frame image.
+- Video jobs submit once, then move to `waiting` with the provider handle held
+  only in `director_jobs.output`. Later claims poll that handle and never
+  resubmit. The provider task ID never appears in a response. Finished clips are
+  copied to application storage under `director/<user>/<project>/<shot>/<job>.mp4`.
 - Static style samples must be supplied by the operator/design team. Do not
   fabricate a CDN URL or claim sample files were uploaded by this implementation.
 - The follow-up Web integration uses `/api/proxy/director/*`, server DTOs and
@@ -538,11 +559,13 @@ recorded separately in the workspace task report.
 
 Apply migration `029_director.sql` through the normal deployment process before
 enabling the API; this implementation task does not apply production migrations.
-Reuse the configured story-analysis, image and storage credentials already used
-by the backend. `DIRECTOR_STORY_POINTS` defaults to 4,
+Story planning uses `DIRECTOR_STORY_PROVIDER` (`gemini` with `GEMINI_API_KEY` /
+`GEMINI_MODEL`, or `modelark` with `ARK_STORY_ANALYSIS_MODEL`); when blank, Gemini is
+chosen if no ModelArk text model is set but a Gemini key is. Images use
+`ARK_IMAGE_MODEL`; shot videos use `ARK_API_KEY` and the video registry. `DIRECTOR_STORY_POINTS` defaults to 4,
 `DIRECTOR_IMAGE_POINTS` to 3 and `DIRECTOR_VIDEO_POINTS` to 20. These are application
 point prices, not a provider-cost quotation. `DIRECTOR_SAMPLE_BASE_URL` names the
-public static sample directory; supply `cinematic.jpg`, `anime.jpg`, `3d.jpg`,
+public static sample directory (optional: blank shows a placeholder); supply `cinematic.jpg`, `anime.jpg`, `3d.jpg`,
 `watercolor.jpg`, `clay.jpg` and `realistic.jpg` there. The task does not publish
 those design assets.
 

@@ -55,7 +55,7 @@ func TestDirectorAdmissionUsesTransactionConnectionForOwnedCharacters(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	d.facade = facade.NewDirectorFacade(d.store, repo.NewStudioRepository(d.db), d.media, d.analyzer, d.media, registry, facade.DirectorOptions{Enabled: true, AnalysisModel: "fixture-story", ImageModel: "fixture-image", StoryPoints: 4, ImagePoints: 3, VideoPoints: 20, SampleBaseURL: "https://samples.test/director"})
+	d.facade = facade.NewDirectorFacade(d.store, repo.NewStudioRepository(d.db), d.media, d.analyzer, d.media, registry, nil, nil, facade.DirectorOptions{Enabled: true, AnalysisModel: "fixture-story", ImageModel: "fixture-image", StoryPoints: 4, ImagePoints: 3, VideoPoints: 20, SampleBaseURL: "https://samples.test/director"})
 	directorAdmissionApp(d, 1000)
 	p := d.create()
 	d.fund(30)

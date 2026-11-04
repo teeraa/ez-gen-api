@@ -577,12 +577,13 @@ Pipeline validation feedback adds safe `details: [{field,reason,message}]` on fa
 
 See [Story Flow API](story-flow-api-contract.md). Requires migration020; no legacy scenes/jobs/pipelines/exports are repurposed.
 
-## Director (editable successor, phase 1)
+## Director (editable successor)
 
 The separate `/open/v1/director` domain follows the
 [Director contract](director-api-contract.md). It preserves Story Flow projects and
-routes. Its browser caller remains the Director prototype until the Web client is
-connected; see the implementation addendum for billing and adapter constraints.
+routes. `POST /open/v1/director/projects/:id/video` turns storyboard shots into clips
+with the same video models as the video menu; see the contract for billing and
+adapter constraints.
 
 ## Independent footage video editor
 
