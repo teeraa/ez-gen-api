@@ -20,6 +20,7 @@ type DirectorRequest struct {
 	Replace           bool      `json:"replace,omitempty"`
 	Title             *string   `json:"title,omitempty"`
 	Summary           *string   `json:"summary,omitempty"`
+	Setting           *string   `json:"setting,omitempty"`
 	ShotCount         *int      `json:"shotCount,omitempty"`
 	Instruction       *string   `json:"instruction,omitempty"`
 	Description       *string   `json:"description,omitempty"`

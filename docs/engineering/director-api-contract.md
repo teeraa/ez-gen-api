@@ -552,6 +552,15 @@ recorded separately in the workspace task report.
   action, every shot character bound to reference Image N (all shot characters,
   up to 4, are sent as references), scene setting, visual bible and a style
   descriptor. Video prompts add camera motion, cast continuity and setting.
+- `GET /director/points` → `{ balance }`: the caller's Director point balance (0 when never
+  funded, `Cache-Control: private, no-store`). The web navbar shows this real balance.
+- Scenes expose an editable `setting` (location/lighting, ≤400 chars, `PATCH /scenes/:id`
+  `{ setting }`); it leads every image prompt of the scene and is restated at the end, so
+  shots whose description omits the place keep the same background. Editing it marks the
+  scene's images (and videos) stale.
+- Shot cast is narrowed to characters named in the shot text, in mention order, before the
+  single reference image is chosen; a close-up of one character no longer borrows another
+  character's reference. With no names mentioned the planned cast is kept.
 - Image prompts state the scene environment before the cast and tell the model that
   references define identity only, because character references are usually shot on
   plain backgrounds. Duplicate library character names get a letter suffix.

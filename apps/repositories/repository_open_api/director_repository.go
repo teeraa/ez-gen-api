@@ -313,3 +313,13 @@ func (r *DirectorRepository) Wait(c context.Context, j *models.DirectorJob, outp
 	}
 	return nil
 }
+
+// Balance reads the owner's Director point balance; an account that was never funded is zero.
+func (r *DirectorRepository) Balance(c context.Context, user string) (int64, error) {
+	var a models.DirectorAccount
+	e := r.db.WithContext(c).Where("user_id=?", user).First(&a).Error
+	if errors.Is(e, gorm.ErrRecordNotFound) {
+		return 0, nil
+	}
+	return a.Balance, wrapErr("director balance", e)
+}

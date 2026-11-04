@@ -260,3 +260,53 @@ func TestDirectorPostgresImageProgressWhileProviderRuns(t *testing.T) {
 		t.Fatalf("cover not finished: %+v", c)
 	}
 }
+
+func TestDirectorPostgresPointsBalance(t *testing.T) {
+	d := newDirectorFixture(t)
+	read := func() int64 {
+		t.Helper()
+		status, b, h := d.http("GET", "/points", nil, nil)
+		var out struct {
+			Data dto.DirectorPoints `json:"data"`
+		}
+		if status != 200 || json.Unmarshal(b, &out) != nil || h.Get("Cache-Control") != "private, no-store" {
+			t.Fatalf("points: %d %s", status, b)
+		}
+		return out.Data.Balance
+	}
+	if got := read(); got != 0 {
+		t.Fatalf("unfunded balance %d", got)
+	}
+	d.fund(100)
+	d.analyzer.reply = directorPlanner
+	p := d.idea(d.create())
+	d.action(p, "/story")
+	if got := read(); got != 96 {
+		t.Fatalf("balance after story charge %d", got)
+	}
+	status, b, _ := d.http("GET", "/points", nil, map[string]string{"X-Test-User": uuid.NewString()})
+	if status != 200 || !bytes.Contains(b, []byte(`"balance":0`)) {
+		t.Fatalf("another user's balance leaked: %d %s", status, b)
+	}
+}
+
+func TestDirectorPostgresSceneSettingIsEditableAndMarksImagesStale(t *testing.T) {
+	d := newDirectorFixture(t)
+	p := d.board()
+	sc := p.Scenes[0]
+	p = d.project("PATCH", "/projects/"+p.ID+"/scenes/"+sc.ID, map[string]any{"revision": p.Revision, "setting": "misty bamboo forest at dawn"})
+	if p.Scenes[0].Setting != "misty bamboo forest at dawn" {
+		t.Fatalf("setting not saved: %+v", p.Scenes[0])
+	}
+	for _, sh := range p.Scenes[0].Shots {
+		if !sh.Image.Stale {
+			t.Fatal("changing the scene location must mark its images stale")
+		}
+	}
+	d.media.requests = nil
+	p = d.action(p, "/shots/"+sc.Shots[0].ID+"/regenerate")
+	d.tick()
+	if len(d.media.requests) != 1 || !strings.HasPrefix(d.media.requests[0].Prompt, "Location (fully rendered, identical in every shot of this scene): misty bamboo forest at dawn") {
+		t.Fatalf("regenerated prompt must lead with the edited location: %+v", d.media.requests)
+	}
+}

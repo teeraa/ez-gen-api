@@ -26,6 +26,14 @@ func NewDirectorHandler(facade *f.DirectorFacade, rate int) *DirectorHandler {
 func (h *DirectorHandler) RegisterRoutes(r fiber.Router) {
 	g := r.Group("/director")
 	g.Get("/capabilities", func(c *fiber.Ctx) error { return utils.Success(c, 200, h.facade.Capabilities()) })
+	g.Get("/points", func(c *fiber.Ctx) error {
+		v, e := h.facade.Points(c.Context(), productionUser(c))
+		if e != nil {
+			return directorHTTPError(c, e)
+		}
+		c.Set("Cache-Control", "private, no-store")
+		return utils.Success(c, 200, v)
+	})
 	g.Get("/projects", func(c *fiber.Ctx) error {
 		page, e := strconv.Atoi(c.Query("page", "1"))
 		if e != nil {

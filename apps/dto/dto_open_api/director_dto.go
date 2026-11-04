@@ -85,15 +85,17 @@ type DirectorShot struct {
 	PointsRefunded    int            `json:"pointsRefunded"`
 }
 type DirectorScene struct {
-	ID                string         `json:"id"`
-	Index             int            `json:"index"`
-	Status            string         `json:"status"`
-	Title             string         `json:"title"`
-	Summary           string         `json:"summary"`
-	Mood              *string        `json:"mood"`
-	CharacterAssetIDs []string       `json:"characterAssetIds"`
-	ShotCount         int            `json:"shotCount"`
-	Shots             []DirectorShot `json:"shots"`
+	ID                string   `json:"id"`
+	Index             int      `json:"index"`
+	Status            string   `json:"status"`
+	Title             string   `json:"title"`
+	Summary           string   `json:"summary"`
+	Mood              *string  `json:"mood"`
+	CharacterAssetIDs []string `json:"characterAssetIds"`
+	ShotCount         int      `json:"shotCount"`
+	// Setting is the location/lighting shared by every shot image of the scene.
+	Setting string         `json:"setting"`
+	Shots   []DirectorShot `json:"shots"`
 	DirectorFailure
 	PointsRefunded int `json:"pointsRefunded"`
 }
@@ -200,4 +202,8 @@ type DirectorCapabilities struct {
 	Models            DirectorModels       `json:"models"`
 	Limits            DirectorLimits       `json:"limits"`
 	Cameras           []string             `json:"cameras"`
+}
+
+type DirectorPoints struct {
+	Balance int64 `json:"balance"`
 }

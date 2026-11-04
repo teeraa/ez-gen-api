@@ -2,6 +2,7 @@ package facade_open_api
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	dto "github.com/ez-gen/ez-gen-api/apps/dto/dto_open_api"
@@ -63,6 +64,9 @@ func directorSceneSetting(d *directorDocument, sc *dto.DirectorScene) string {
 	if sc == nil {
 		return ""
 	}
+	if s := strings.TrimSpace(sc.Setting); s != "" {
+		return s
+	}
 	if s := strings.TrimSpace(d.Settings[sc.ID]); s != "" {
 		return s
 	}
@@ -91,12 +95,14 @@ func directorStyle(p *dto.DirectorProject) string {
 func directorImagePrompt(d *directorDocument, p *dto.DirectorProject, sh *dto.DirectorShot, cast []directorCharacter, referenced int) string {
 	sc := directorFindScene(p, sh.SceneID)
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s.\n%s\n", directorCameraTerm(sh.Camera), directorShotAction(d, sh))
-	// The environment is stated before the cast: character references are usually shot on plain
-	// backgrounds, and without an explicit, early setting the model copies that empty backdrop.
-	if setting := directorSceneSetting(d, sc); setting != "" {
-		fmt.Fprintf(&b, "Environment (fully rendered, the same location and lighting in every shot of this scene): %s\n", directorTruncate(setting, 500))
+	// The environment leads the prompt: character references are usually shot on plain
+	// backgrounds and shot descriptions often omit the place, so the scene location must
+	// constrain the frame before the action and the cast.
+	setting := directorSceneSetting(d, sc)
+	if setting != "" {
+		fmt.Fprintf(&b, "Location (fully rendered, identical in every shot of this scene): %s\n", directorTruncate(setting, 500))
 	}
+	fmt.Fprintf(&b, "%s.\n%s\n", directorCameraTerm(sh.Camera), directorShotAction(d, sh))
 	if len(cast) > 0 {
 		b.WriteString("Characters in this frame (all must appear, each exactly once, placed inside the environment):\n")
 		for i, ch := range cast {
@@ -120,6 +126,9 @@ func directorImagePrompt(d *directorDocument, p *dto.DirectorProject, sh *dto.Di
 		mood = *sc.Mood
 	}
 	fmt.Fprintf(&b, "Visual style: %s. Genre: %s. Mood: %s. Aspect ratio %s.\n", directorStyle(p), p.Idea.Genre, mood, p.AspectRatio)
+	if setting != "" {
+		fmt.Fprintf(&b, "Background must show this location: %s. ", directorTruncate(setting, 160))
+	}
 	b.WriteString("Detailed, story-appropriate background with depth; never a plain, blank, solid-color, gradient or studio backdrop. Keep the same art style, color palette and character designs across the storyboard. No text, captions, logos or watermarks. Anatomically correct hands and faces.")
 	return directorTruncate(b.String(), directorPromptLimit)
 }
@@ -204,4 +213,38 @@ func directorUniqueNames(chars []directorCharacter) {
 			letter[name]++
 		}
 	}
+}
+
+// directorFeaturedCast narrows a shot's cast to characters named in its text, ordered by first
+// mention. Planners often list every scene character on every shot; with a single reference
+// image the first listed character would otherwise replace the one the shot is about.
+func directorFeaturedCast(chars []directorCharacter, text string) []directorCharacter {
+	type hit struct {
+		ch  directorCharacter
+		pos int
+	}
+	hits := []hit{}
+	masked := text
+	order := append([]directorCharacter{}, chars...)
+	// Longer names first so "บักจ่อย" is not consumed by a shorter overlapping name.
+	sort.SliceStable(order, func(i, j int) bool { return len([]rune(order[i].Name)) > len([]rune(order[j].Name)) })
+	for _, ch := range order {
+		name := strings.TrimSpace(ch.Name)
+		if name == "" {
+			continue
+		}
+		if pos := strings.Index(masked, name); pos >= 0 {
+			hits = append(hits, hit{ch, pos})
+			masked = strings.ReplaceAll(masked, name, strings.Repeat(" ", len(name)))
+		}
+	}
+	if len(hits) == 0 {
+		return chars
+	}
+	sort.SliceStable(hits, func(i, j int) bool { return hits[i].pos < hits[j].pos })
+	out := make([]directorCharacter, 0, len(hits))
+	for _, h := range hits {
+		out = append(out, h.ch)
+	}
+	return out
 }

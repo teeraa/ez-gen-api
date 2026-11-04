@@ -47,6 +47,7 @@ type directorCastBrief struct {
 }
 
 const directorPlannerGuide = "Write for a storyboard whose images are generated one shot at a time, so every shot must be self-contained and consistent. " +
+	"Every shot description and prompt must name the scene's location explicitly and name every visible character; a close-up lists only the character in frame. " +
 	"Use each character's supplied name and look exactly; never invent new main characters. " +
 	"Keep each scene in one coherent location unless the story requires a move."
 const directorShotGuide = ` "prompt" is an English image-generation prompt of 60-120 words: subject and action, every visible character by name with expression and pose, ` +
@@ -258,6 +259,12 @@ func (f *DirectorFacade) Tick(ctx context.Context) error {
 		return f.fail(c, j, in, true)
 	}
 	brief := directorPlannerInput{Project: in.Project, Instruction: in.Instruction, Characters: []directorCastBrief{}, VisualBible: doc.Bible, Settings: doc.Settings}
+	// Scene settings live on the current scenes (users can edit them); the snapshot may predate an edit.
+	for i := range brief.Project.Scenes {
+		if cur := directorFindScene(&doc.Project, brief.Project.Scenes[i].ID); cur != nil && cur.Setting != "" {
+			brief.Project.Scenes[i].Setting = cur.Setting
+		}
+	}
 	for _, ch := range in.Characters {
 		brief.Characters = append(brief.Characters, directorCastBrief{ch.ID, ch.Name, ch.Description})
 	}
@@ -320,7 +327,7 @@ func (f *DirectorFacade) Tick(ctx context.Context) error {
 				s.CharacterAssetIDs = sc.CharacterAssetIDs
 				s.Status = "ready"
 				if setting := directorTruncate(sc.Setting, 400); setting != "" {
-					d.Settings[s.ID] = setting
+					s.Setting = setting
 				}
 				d.Project.Story.CompletedScenes = i + 1
 				if i+1 < len(d.Project.Scenes) {
@@ -357,7 +364,7 @@ func (f *DirectorFacade) Tick(ctx context.Context) error {
 			s.CharacterAssetIDs = sc.CharacterAssetIDs
 			s.Status = "ready"
 			if setting := directorTruncate(sc.Setting, 400); setting != "" {
-				d.Settings[s.ID] = setting
+				s.Setting = setting
 			}
 			for i := range s.Shots {
 				s.Shots[i].Image.Stale = true
@@ -495,6 +502,9 @@ func (f *DirectorFacade) directorImage(c context.Context, j *models.DirectorJob,
 			return e
 		}
 		cast := directorShotCharacters(in.Characters, characters)
+		if shot != nil {
+			cast = directorFeaturedCast(cast, directorShotAction(&doc, shot))
+		}
 		if len(cast) > directorMaxImageReferences {
 			cast = cast[:directorMaxImageReferences]
 		}
@@ -662,7 +672,7 @@ func (f *DirectorFacade) directorVideo(c context.Context, j *models.DirectorJob,
 			if sh == nil {
 				return f.fail(c, j, in, true)
 			}
-			prompt := directorVideoPrompt(&doc, &doc.Project, sh, directorShotCharacters(in.Characters, sh.CharacterAssetIDs), in.NextImageKey != "")
+			prompt := directorVideoPrompt(&doc, &doc.Project, sh, directorFeaturedCast(directorShotCharacters(in.Characters, sh.CharacterAssetIDs), directorShotAction(&doc, sh)), in.NextImageKey != "")
 			request.Content = []modelark.ContentItem{{Type: modelark.ContentTypeText, Text: prompt}, {Type: modelark.ContentTypeImageURL, URL: first, Role: modelark.RoleFirstFrame}}
 			if in.NextImageKey != "" {
 				last, _, e := f.storage.SignedURL(c, in.NextImageKey, time.Hour)

@@ -124,3 +124,27 @@ func TestDirectorEstimatedProgress(t *testing.T) {
 		t.Fatalf("progress %d %d %d", a, b, c)
 	}
 }
+
+func TestDirectorFeaturedCastFollowsNamesInShot(t *testing.T) {
+	t.Parallel()
+	chars := []directorCharacter{{ID: "1", Name: "บักจ่าย"}, {ID: "2", Name: "บักจ่อย"}, {ID: "3", Name: "บักเบิ้ล"}}
+	got := directorFeaturedCast(chars, "โคลสอัพใบหน้าของบักเบิ้ล ขณะที่บักจ่อยยืนด้านหลัง")
+	if len(got) != 2 || got[0].ID != "3" || got[1].ID != "2" {
+		t.Fatalf("featured cast must follow mention order: %+v", got)
+	}
+	if all := directorFeaturedCast(chars, "ภาพมุมกว้างของลานประลอง"); len(all) != 3 {
+		t.Fatalf("no names mentioned keeps the planned cast: %+v", all)
+	}
+}
+
+func TestDirectorImagePromptLeadsWithSceneLocation(t *testing.T) {
+	t.Parallel()
+	p := directorTestProject()
+	p.Scenes[0].Setting = "ancient stone arena on a mountain at sunset"
+	p.Scenes[0].Shots[0].Description, p.Scenes[0].Shots[0].Camera = "โคลสอัพใบหน้า", "โคลสอัพ"
+	d := directorDocument{}
+	got := directorImagePrompt(&d, &p, &p.Scenes[0].Shots[0], nil, 0)
+	if !strings.HasPrefix(got, "Location") || strings.Count(got, "ancient stone arena") < 2 {
+		t.Fatalf("scene location must lead and be restated even when the shot omits it:\n%s", got)
+	}
+}

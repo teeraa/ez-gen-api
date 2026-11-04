@@ -44,6 +44,7 @@ type directorStore interface {
 	Progress(context.Context, *models.DirectorJob, func(*models.DirectorProject) error) error
 	RecordOutput(context.Context, *models.DirectorJob, []byte) error
 	Wait(context.Context, *models.DirectorJob, []byte, time.Time) error
+	Balance(context.Context, string) (int64, error)
 }
 type DirectorOptions struct {
 	Enabled       bool
@@ -396,8 +397,13 @@ func (f *DirectorFacade) present(c context.Context, m *models.DirectorProject) (
 			return p, e
 		}
 	}
+	// Copy before filling display-only values so the stored document is not mutated.
+	p.Scenes = append([]dto.DirectorScene(nil), p.Scenes...)
 	var first *dto.DirectorShot
 	for i := range p.Scenes {
+		if p.Scenes[i].Setting == "" {
+			p.Scenes[i].Setting = d.Settings[p.Scenes[i].ID]
+		}
 		for j := range p.Scenes[i].Shots {
 			s := &p.Scenes[i].Shots[j]
 			s.Image.URL, s.Image.ExpiresAt, e = sign(d.Keys[s.ID])
@@ -854,6 +860,21 @@ func (f *DirectorFacade) Mutate(c context.Context, id, user, action, target stri
 					}
 					sc.Summary = *in.Summary
 				}
+				if in.Setting != nil {
+					setting := strings.TrimSpace(*in.Setting)
+					if !directorBound(setting, 0, 400) {
+						return nil, directorInvalid("setting")
+					}
+					if setting != sc.Setting {
+						sc.Setting = setting
+						for i := range sc.Shots {
+							if sc.Shots[i].Image.Status == "succeeded" {
+								sc.Shots[i].Image.Stale = true
+							}
+							directorMarkVideoStale(&sc.Shots[i])
+						}
+					}
+				}
 				if in.ShotCount != nil {
 					if *in.ShotCount < 1 || *in.ShotCount > 6 {
 						return nil, directorInvalid("shotCount")
@@ -1137,6 +1158,17 @@ func (f *DirectorFacade) enqueueVideos(d *directorDocument, in req.DirectorReque
 		}
 	}
 	return nil
+}
+
+func (f *DirectorFacade) Points(c context.Context, user string) (dto.DirectorPoints, error) {
+	if _, e := uuid.Parse(user); e != nil {
+		return dto.DirectorPoints{}, repo.ErrNotFound
+	}
+	b, e := f.store.Balance(c, user)
+	if e != nil {
+		return dto.DirectorPoints{}, fmt.Errorf("director points: %w", e)
+	}
+	return dto.DirectorPoints{Balance: b}, nil
 }
 
 // HTTP consumers classify domain failures without importing persistence packages.
