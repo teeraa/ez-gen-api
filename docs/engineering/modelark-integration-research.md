@@ -1,9 +1,11 @@
 # BytePlus ModelArk — Video Generation API Research
 
 > Researched: 2026-10-12
-> Status: DRAFT — verify against live docs before implementation
+> Last verified: 2026-11-01
+> Status: UPDATED — SDK v0.11.0 source verified 2026-11-01; official docs remain SPA-blocked
 > Agent: D — ModelArk Integration Specialist
 > Sources: github.com/volcengine/ark-runtime-go v0.11.0 (official SDK, Apache-2.0),
+>          SDK installed at /Users/mac/go/pkg/mod/github.com/volcengine/ark-runtime-go@v0.11.0,
 >          community integrations (axy-full/aimighty-workspace, jeboong/byteplus-seedance-2-studio),
 >          official docs.byteplus.com (SPA — could not extract raw spec programmatically)
 
@@ -125,43 +127,62 @@ POST https://ark.ap-southeast.bytepluses.com/api/v3/contents/generations/tasks
 
 ### Request Schema
 
-Fields relevant to VIOLET STUDIO (from `oas_schemas_gen.go` in official SDK):
+Fields from `oas_schemas_gen.go` in official SDK v0.11.0 — **SDK-CONFIRMED** unless marked otherwise:
 
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| `model` | string | **Yes** | See Section 5 for IDs |
-| `content` | []ContentItem | **Yes** | Text first, images second |
-| `ratio` | string | No | `"16:9"`, `"9:16"`, `"1:1"`, `"4:3"`, `"21:9"` |
-| `duration` | int64 | No | Seconds (model-specific range) |
-| `resolution` | string | No | `"480p"`, `"720p"`, `"1080p"`, `"4k"` |
-| `optimize_prompt` | bool | No | Auto-enhances the prompt; revised prompt in response |
-| `generate_audio` | bool | No | Seedance 2.5 only |
-| `watermark` | bool | No | Adds BytePlus watermark |
-| `seed` | int64 | No | For reproducibility |
-| `file_format` | string | No | `"mp4"` (default) or `"mov"` |
-| `execution_expires_after` | int64 | No | Seconds until task expires |
-| `callback_url` | string | No | Webhook URL for completion notification |
-| `return_last_frame` | bool | No | Return last frame as image |
+| Field | JSON key | Type | Required | Notes |
+|---|---|---|---|---|
+| `Model` | `model` | string | **Yes** | See Section 5 for IDs |
+| `Content` | `content` | []ContentItem | **Yes** | Text first, images second |
+| `Ratio` | `ratio` | string | No | `"16:9"`, `"9:16"`, `"1:1"`, `"4:3"`, `"21:9"` |
+| `Duration` | `duration` | int64 | No | Seconds (model-specific range) |
+| `Resolution` | `resolution` | string | No | `"480p"`, `"720p"`, `"1080p"`, `"4k"` |
+| `OptimizePrompt` | `optimize_prompt` | bool | No | Auto-enhances the prompt; revised prompt in response |
+| `GenerateAudio` | `generate_audio` | bool | No | Seedance 2.5 only |
+| `Watermark` | `watermark` | bool | No | Adds BytePlus watermark |
+| `Seed` | `seed` | int64 | No | For reproducibility |
+| `FileFormat` | `file_format` | string | No | `"mp4"` (default) or `"mov"` |
+| `ExecutionExpiresAfter` | `execution_expires_after` | int64 | No | Seconds until task expires |
+| `CallbackURL` | `callback_url` | string | No | Webhook URL for completion notification |
+| `ReturnLastFrame` | `return_last_frame` | bool | No | Return last frame as image |
+| **`Draft`** | **`draft`** | **bool** | **No** | **"Mark this task as a draft (cheaper, lower-quality)." SDK-CONFIRMED v0.11.0** |
+| `Frames` | `frames` | int64 | No | Alternative to `duration` (frame count) |
+| `SubdivisionLevel` | `subdivision_level` | string | No | Render-quality tier (`"high"`, `"medium"`, `"low"`) |
+| `CameraFixed` | `camera_fixed` | bool | No | Lock the camera; disables motion |
+| `ServiceTier` | `service_tier` | string | No | Service tier hint (`"default"`, `"priority"`) |
+| `HumanFaceMode` | `human_face_mode` | string | No | Face handling mode (`"strict"`, `"relaxed"`) |
+| `SafetyIdentifier` | `safety_identifier` | string | No | End-user identifier for safety/abuse signals |
+| `ReasoningEffort` | `reasoning_effort` | string | No | `"low"`, `"medium"`, `"high"`, `"max"` |
+| `Tools` | `tools` | []Tool | No | Tools model may invoke; only `"web_search"` defined |
 
-### ContentItem Structure
+### ContentItem Structure (SDK-CONFIRMED v0.11.0)
 
 ```go
+// SDK: arkruntime/model/contentgeneration/oas_schemas_gen.go
 type ContentItem struct {
-    Type     string    // "text" | "image_url" | "video_url" | "audio_url" | "draft_task"
-    Text     string    // when Type == "text"
-    ImageURL *URLRef   // when Type == "image_url"
-    VideoURL *URLRef   // when Type == "video_url"
-    AudioURL *URLRef   // when Type == "audio_url"
-    DraftTask *DraftTaskRef // when Type == "draft_task"
-    Role     string    // "first_frame" | "last_frame" | "reference_image" | "reference_video"
+    Type      ContentType  // "text" | "image_url" | "video_url" | "audio_url" | "draft_task"
+    Text      OptString    // when Type == "text"
+    ImageURL  OptImageURL  // when Type == "image_url"
+    VideoURL  OptVideoURL  // when Type == "video_url"
+    AudioURL  OptAudioURL  // when Type == "audio_url"
+    DraftTask OptDraftTask // when Type == "draft_task" — wraps DraftTask{ID string}
+    Role      OptString    // "first_frame" | "last_frame" | "reference_image" | "reference_video"
+}
+
+type DraftTask struct {
+    ID string `json:"id"` // "Identifier of the draft task to refine."
 }
 ```
+
+ContentType constants (SDK-CONFIRMED):
+- `"text"`, `"image_url"`, `"video_url"`, `"audio_url"`, `"draft_task"`
 
 **Ordering rule:** text element must come first in the array, then image references.
 
 **Image-to-Video:** Set `Role: "first_frame"` on an image ContentItem. The model
 interprets this as an image-to-video request. A `last_frame` without a `first_frame`
 is rejected.
+
+**Draft-to-Final Refinement:** Pass a `ContentItem{Type: "draft_task", DraftTask: {ID: "<draft-task-id>"}}` in the content array of a new task to refine a completed draft into final quality. The response `ContentGenerationTask.DraftTaskID` field echoes the upstream draft ID on refinement tasks. This workflow is SDK-CONFIRMED and official documentation now confirms Seedance 2.5 draft480p → final1080p; see Section 13 (verified 2026-11-02).
 
 ### Example: Text-to-Video
 
@@ -355,15 +376,18 @@ The VIOLET STUDIO frontend supports `16:9`, `9:16`, and `1:1`. All three are ava
 
 ### Resolution (`resolution` field)
 
-| Value | Models |
-|---|---|
-| `"480p"` | All models; also draft mode output |
-| `"720p"` | All models |
-| `"1080p"` | Seedance 2.5, Seedance 2.0 |
-| `"4k"` | Seedance 2.0 (use with caution) |
+| Value | Models | Notes |
+|---|---|---|
+| `"480p"` | All listed models | Required for Seedance 2.5 Draft mode; see Section 13 |
+| `"720p"` | All models | Current default for `quality: "standard"` |
+| `"1080p"` | Seedance 2.5, Seedance 2.0 | Current default for `quality: "high"` |
+| `"4k"` | Seedance 2.0 (use with caution) | Not confirmed for Seedance 2.5 |
 
 Map `quality: "standard"` → `"720p"`, `quality: "high"` → `"1080p"` for the
-VIOLET STUDIO quality field. (Product decision — confirm before implementation.)
+VIOLET STUDIO quality field. Seedance 2.5 draft requests explicitly use
+`draft:true` and `resolution:"480p"`; final refinement explicitly uses
+`resolution:"1080p"` and omits inherited parameters. See Section 13 for the
+verified request rules. The older advice to omit draft resolution is superseded.
 
 ### Duration (`duration` field)
 
@@ -483,6 +507,56 @@ are confirmed. Webhooks can be added later as an optimization.
 
 ---
 
+## 13. Draft Mode (Seedance 2.5)
+
+Verified 2026-11-02 using official BytePlus documentation and installed SDK v0.11.0.
+This section supersedes the 2026-11-01 unresolved draft research below and any
+older guidance to omit draft resolution or postpone refinement.
+
+Sources:
+- [Dreamina Seedance 2.5 tutorial](https://docs.byteplus.com/en/docs/ModelArk/seedance-2-5)
+- [Create video generation task](https://console.byteplus.com/ark/region%3Aap-southeast-1/docs/create-video-generation-task-api)
+- [Model list](https://docs.byteplus.com/en/docs/modelark/model-list?redirect=1)
+
+Primary documentation is available through indexed page content; some direct page
+opens still return SPA shells or sign-in redirects. No paid API verification ran.
+
+### Verified two-pass contract
+
+Draft creation uses the resolved Seedance 2.5 provider with `draft:true` and
+`resolution:"480p"`. Final creation uses the **same provider model**,
+`resolution:"1080p"`, and a single `draft_task` content item referencing the
+successful draft provider task. Omit draft (or false) for the final request.
+The final must omit prompt, input assets, duration, ratio, seed, generate_audio,
+and omni_reference_task_type; the provider inherits these from the draft and
+rejects resubmission even when values match. Draft and final are billed separately.
+
+Draft task validity runs from provider creation: fourteen days for tasks created
+at/after 2026-10-28 10:00 UTC+8 (02:00 UTC), seven days for earlier tasks. The app uses its job
+creation time conservatively, which precedes provider submission. Expired drafts
+remain playable in durable storage but cannot be refined.
+
+### Application boundaries and verification
+
+`ModelConfig.SupportsDraft` checks the resolved provider model, preserving account
+overrides. Public labels likewise reflect the actual resolved Seedance variant.
+The pipeline pins the source model; the job facade additionally stores provider
+provenance in existing effective_inputs JSON and checks it before refinement.
+Legacy drafts lacking provenance are rejected rather than guessing a provider.
+The internal-only source application job UUID is owner-scoped, succeeded, draft,
+and unexpired; raw provider IDs are never accepted from browser requests.
+Final job request hashing includes source identity. Replays return the durable
+job before expiry checks, preventing duplicate billed provider submissions.
+
+Final generation does not sign or re-read old character media. It reuses the
+source frozen inputs and sends a minimal provider request. Existing SDK optional
+fields permit forbidden parameters to be absent. Fake transport tests assert the
+serialized payload, and facade tests cover source eligibility, provenance,
+expiry, idempotency, draft480p and final1080p without provider calls.
+
+
+---
+
 ## 12. Implementation Checklist
 
 Before writing `apps/services/modelark/client.go`:
@@ -518,3 +592,96 @@ Before writing `apps/services/modelark/client.go`:
 > The current `.env.example` uses `MODELARK_API_KEY` and `MODELARK_BASE_URL`.
 > Reconcile these names during the implementation setup step. Either rename the
 > env vars to match the SDK, or add an adapter in the config loader.
+
+---
+
+## Research Log
+
+The 2026-11-01 entry below records historical unresolved findings; Section 13 contains the current official verification.
+
+### 2026-11-01 — Draft Mode verification for Seedance 2.5
+
+**Questions answered:**
+1. What is the exact SDK parameter name for draft mode?
+   → **CONFIRMED:** `Draft OptBool \`json:"draft"\`` in `CreateContentGenerationTaskRequest`. Comment: "Mark this task as a draft (cheaper, lower-quality)."
+2. What content type enables draft-to-final refinement?
+   → **CONFIRMED:** `ContentTypeDraftTask = "draft_task"` with `DraftTask{ID string}` — pass in `content` array to reference a previous draft.
+3. What is the draft output resolution?
+   → **UNRESOLVED** — no SDK constant; `"480p"` noted historically is unconfirmed.
+4. Does the SDK confirm which models support `draft: true`?
+   → **UNRESOLVED** — SDK schema is model-agnostic. No per-model constraint in the Go struct.
+5. Are there new fields in SDK v0.11.0 not yet in `client.go`?
+   → **YES (SDK-CONFIRMED):** `CameraFixed`, `SubdivisionLevel`, `Frames`, `HumanFaceMode`, `ServiceTier`, `SafetyIdentifier`, `ReasoningEffort`, `Tools` — all present in SDK but not currently mapped in `apps/services/modelark/client.go`'s `CreateTaskRequest` struct.
+
+**Sources used:**
+- `/Users/mac/go/pkg/mod/github.com/volcengine/ark-runtime-go@v0.11.0/arkruntime/model/contentgeneration/oas_schemas_gen.go` (read directly)
+- `/Users/mac/go/pkg/mod/github.com/volcengine/ark-runtime-go@v0.11.0/arkruntime/content_generation.go` (read directly)
+- `https://raw.githubusercontent.com/volcengine/ark-runtime-go/main/arkruntime/model/contentgeneration/oas_schemas_gen.go` (WebFetch — confirmed matches installed v0.11.0)
+- `https://docs.byteplus.com/en/docs/ModelArk/*` (WebFetch — all SPA-blocked, no content extracted)
+- `https://github.com/axy-full/aimighty-workspace` (WebFetch — no draft mode docs found)
+- `https://github.com/jeboong/byteplus-seedance-2-studio` (WebFetch — no draft mode docs found)
+
+**Remaining blockers:**
+- BytePlus official docs remain inaccessible via automated fetch (SPA rendering). Draft mode behavioral details (resolution, cost, model constraints) require either browser access to the docs or live API testing.
+
+## Thai spoken dialogue prompt guidance (2026-11-02)
+
+Verified against the official [Seedance 2.5 tutorial](https://docs.byteplus.com/en/docs/ModelArk/seedance-2-5)
+and [create-task API](https://docs.byteplus.com/en/docs/ModelArk/create-video-generation-task-api)
+using indexed primary-source content on 2026-11-02 (direct opens can return SPA
+shells). The tutorial recommends separating dialogue with braces and providing a
+language hint for non-Chinese speech; the API recommends quoting spoken text.
+No external prompt skill was installed and no paid audio generation was run.
+
+For resolved `dreamina-seedance-2-5-260628`, the compiler adds a Thai hint only
+when meaningful Thai letters outnumber letters from other scripts. Combining
+marks, digits, punctuation and Thai repetition/abbreviation signs do not determine
+the language. This is a conservative prompt heuristic, not language recognition:
+Thai-dominant speech with an English brand receives the hint; an English sentence
+containing a Thai brand or an equal mixed utterance retains the generic prompt.
+Account overrides follow the resolved provider, not the internal model alias.
+
+Thai formatting uses `{Thai: <JSON-quoted original dialogue>}` and requests clear
+native pronunciation with an unhurried conversational pace. Existing native-audio,
+natural lip-sync and spoken-versus-subtitle intent remain. It neither translates
+nor shortens words and does not mute music or change the submitted sound intent.
+Quotes, whitespace, newlines and embedded English names remain exact in the
+quoted text and immutable snapshot. Other models and non-Thai-dominant dialogue
+keep the existing generic speech template; absent dialogue gains no instruction.
+
+The common compiler counts the complete language prefix, braces, JSON quoting,
+scene and reference controls against the existing 2,000-rune budget. Pipeline
+preflight invokes this same compiler, so it uses identical counting. Over-budget
+requests keep the existing actionable prompt_budget error; dialogue is never
+truncated to fit. The existing individual input and quoted-encoding caps stay.
+Tests verify model overrides, mixed languages, exact words, serialized SDK content
+and exact boundary acceptance/rejection with fake providers. Perceived audio
+quality and lip-sync improvement still require listening to a generated sample;
+prompt correctness alone does not guarantee either outcome.
+
+## Terminal generation failures versus uncertain submission (2026-11-02)
+
+A task accepted with a provider task ID can later finish with `failed`. This is
+an affirmative generation outcome, distinct from an interrupted/unknown create
+request. An SDK task error in family `OutputVideoSensitiveContentDetected`
+(including the policy-violation suffix observed by authorized read-only diagnosis)
+now maps to `PROVIDER_OUTPUT_REJECTED`. The fixed Thai message explains generated
+output was rejected by content policy and asks the user to revise the scene or
+reference; it does not infer a face, copyright, or other unreported cause.
+
+Unknown or absent error codes on a terminal failed task map to
+`PROVIDER_GENERATION_FAILED`, not the submission-uncertainty `PROVIDER_ERROR`.
+Submission errors and timeouts preserve their existing semantics. The polling
+facade stores a minimal `provider_error` JSON object in the existing JSONB column:
+`{"phase":"generation","providerCode":"OutputVideoSensitiveContentDetected"}`.
+The code family is allowlisted; unknown families are omitted. Raw suffixes,
+messages, prompts, URLs, credentials and request IDs are not retained. HTTP status
+and parameter are omitted because task-level SDK errors do not provide them.
+Polling HTTP errors do not fabricate a terminal generation result or resubmit.
+
+Fake SDK task tests and fake facade polling tests verify policy and unknown
+terminal cases, unchanged submission/timeout handling, bounded diagnostic storage
+and zero create/retry calls. No actual failed-job record was changed or retried
+for these checks. Existing legacy rows without diagnostics cannot recover an exact
+policy reason from the database alone; any projection uses only affirmative
+terminal status evidence and must not invent the missing reason.

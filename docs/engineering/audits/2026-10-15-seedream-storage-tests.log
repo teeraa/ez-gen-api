@@ -1,0 +1,19 @@
+?   	github.com/ez-gen/ez-gen-api	[no test files]
+ok  	github.com/ez-gen/ez-gen-api/apps/crons	2.682s
+?   	github.com/ez-gen/ez-gen-api/apps/db	[no test files]
+?   	github.com/ez-gen/ez-gen-api/apps/dto/dto_open_api	[no test files]
+ok  	github.com/ez-gen/ez-gen-api/apps/facades/facade_open_api	3.850s
+ok  	github.com/ez-gen/ez-gen-api/apps/handlers/handler_open_api	5.881s
+?   	github.com/ez-gen/ez-gen-api/apps/models	[no test files]
+?   	github.com/ez-gen/ez-gen-api/apps/repositories/repository_open_api	[no test files]
+?   	github.com/ez-gen/ez-gen-api/apps/requests/request_open_api	[no test files]
+ok  	github.com/ez-gen/ez-gen-api/apps/services/modelark	7.400s
+?   	github.com/ez-gen/ez-gen-api/apps/services/promptcompiler	[no test files]
+ok  	github.com/ez-gen/ez-gen-api/apps/services/storage	8.580s
+?   	github.com/ez-gen/ez-gen-api/apps/services/videoprocessing	[no test files]
+ok  	github.com/ez-gen/ez-gen-api/apps/tests	10.393s
+?   	github.com/ez-gen/ez-gen-api/apps/utils	[no test files]
+ok  	github.com/ez-gen/ez-gen-api/cmd/setup-character-storage	11.549s
+ok  	github.com/ez-gen/ez-gen-api/middlewares	8.607s
+?   	github.com/ez-gen/ez-gen-api/migrate	[no test files]
+ok  	github.com/ez-gen/ez-gen-api/pkgs/configs	12.509s

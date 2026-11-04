@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/datatypes"
 )
 
 const MaxSceneCharacters = 3
@@ -11,7 +12,10 @@ const MaxSceneCharacters = 3
 type Scene struct {
 	Base
 
-	UserID uuid.UUID `gorm:"type:uuid;not null;index"`
+	UserID           uuid.UUID      `gorm:"type:uuid;not null;index"`
+	ProjectID        *uuid.UUID     `gorm:"type:uuid;index"`
+	ReferenceAssetID *uuid.UUID     `gorm:"type:uuid"`
+	VideoSettings    datatypes.JSON `gorm:"type:jsonb"`
 
 	Title       *string
 	Description *string

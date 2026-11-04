@@ -33,13 +33,13 @@ type VideoGenerationJob struct {
 	ProviderStatus *string
 
 	// Generation parameters (immutable after creation)
-	Prompt          string    `gorm:"not null"`
-	Mode            string    `gorm:"not null"`
-	ModelID         string    `gorm:"not null"`
-	AspectRatio     string    `gorm:"not null"`
-	DurationSeconds int       `gorm:"not null"`
-	Quality         string    `gorm:"not null;default:'standard'"`
-	EnhancePrompt   bool      `gorm:"not null;default:false"`
+	Prompt          string     `gorm:"not null"`
+	Mode            string     `gorm:"not null"`
+	ModelID         string     `gorm:"not null"`
+	AspectRatio     string     `gorm:"not null"`
+	DurationSeconds int        `gorm:"not null"`
+	Quality         string     `gorm:"not null;default:'standard'"`
+	EnhancePrompt   bool       `gorm:"not null;default:false"`
 	UploadID        *uuid.UUID `gorm:"type:uuid"`
 
 	// VIOLET DNA links (set at job creation; immutable)
@@ -52,13 +52,13 @@ type VideoGenerationJob struct {
 	CompiledPrompt  *string
 
 	// Output (set when succeeded)
-	OutputMediaKey  *string
-	OutputThumbKey  *string
-	OutputMediaType *string
+	OutputMediaKey   *string
+	OutputThumbKey   *string
+	OutputMediaType  *string
 	OutputDurationMs *int
 
 	// Progress
-	Progress    int    `gorm:"not null;default:0"`
+	Progress    int `gorm:"not null;default:0"`
 	CurrentStep *string
 
 	// Failure
@@ -70,12 +70,16 @@ type VideoGenerationJob struct {
 	EstimatedCredits *int
 	ChargedCredits   *int
 
+	// Draft mode — only honoured for violet-realism jobs.
+	IsDraft bool `gorm:"not null;default:false"`
+
 	// Submission tracking
 	SubmittedAt  *time.Time
 	CompletedAt  *time.Time
 	LastPolledAt *time.Time
 
 	// Idempotency
+	RequestHash    *string
 	IdempotencyKey *string `gorm:"uniqueIndex"`
 }
 

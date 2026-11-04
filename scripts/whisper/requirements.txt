@@ -1,0 +1,2 @@
+-c constraints.txt
+faster-whisper==1.2.1

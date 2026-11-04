@@ -1,5 +1,7 @@
 package dto_open_api
 
+import "github.com/ez-gen/ez-gen-api/apps/models"
+
 // TagDTO represents a single DNA tag.
 type TagDTO struct {
 	ID          string `json:"id"`
@@ -62,9 +64,12 @@ type StyleProfileListDTO struct {
 
 // SceneDTO is the API response shape for a scene.
 type SceneDTO struct {
-	ID          string `json:"id"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
+	ProjectID        *string              `json:"projectId"`
+	ReferenceAssetID *string              `json:"referenceAssetId"`
+	VideoSettings    models.VideoSettings `json:"videoSettings"`
+	ID               string               `json:"id"`
+	Title            string               `json:"title"`
+	Description      string               `json:"description"`
 	// CharacterProfileID is the first entry of Characters, kept for older clients.
 	CharacterProfileID *string             `json:"characterProfileId"`
 	Characters         []SceneCharacterDTO `json:"characters"`

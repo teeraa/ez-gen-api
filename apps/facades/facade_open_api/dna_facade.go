@@ -2,6 +2,8 @@ package facade_open_api
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -38,6 +40,12 @@ type DNAFacade interface {
 	UpdateScene(ctx context.Context, id, userID string, in UpdateSceneInput) (*dto_open_api.SceneDTO, error)
 	DeleteScene(ctx context.Context, id, userID string) error
 	SelectSceneOutput(ctx context.Context, sceneID, jobID, userID string) error
+}
+
+func ConfigureDNAProduction(d DNAFacade, p *ProductionFacade) {
+	if f, ok := d.(*dnaFacade); ok {
+		f.production = p
+	}
 }
 
 // ─── Input types ─────────────────────────────────────────────────────────────
@@ -105,8 +113,11 @@ type CreateSceneInput struct {
 }
 
 type UpdateSceneInput struct {
-	Title       *string
-	Description *string
+	ReferenceAssetID      *string
+	ReferenceAssetPresent bool
+	VideoSettings         *models.VideoSettings
+	Title                 *string
+	Description           *string
 	// CharacterProfileIDs replaces the whole list when non-nil; an empty slice clears it.
 	// The legacy CharacterProfileID also replaces the whole list, with a single entry.
 	CharacterProfileIDs []string
@@ -128,6 +139,7 @@ type dnaFacade struct {
 	scenes     repository_open_api.SceneRepository
 	jobs       repository_open_api.JobRepository
 	storage    mediaStorage
+	production *ProductionFacade
 }
 
 func NewDNAFacade(
@@ -482,6 +494,34 @@ func (f *dnaFacade) UpdateScene(ctx context.Context, id, userID string, in Updat
 		return nil, mapRepoErr(err)
 	}
 
+	if f.production != nil {
+		if e := f.production.repo.ProjectForScene(ctx, s, userID); e != nil {
+			return nil, mapRepoErr(e)
+		}
+		if in.ReferenceAssetPresent {
+			if e := f.production.validateReference(ctx, in.ReferenceAssetID, userID); e != nil {
+				return nil, e
+			}
+			s.ReferenceAssetID = nil
+			if in.ReferenceAssetID != nil && *in.ReferenceAssetID != "" {
+				id, _ := uuid.Parse(*in.ReferenceAssetID)
+				s.ReferenceAssetID = &id
+			}
+		}
+		if in.VideoSettings != nil {
+			if e := f.production.ValidateSettings(*in.VideoSettings); e != nil {
+				return nil, e
+			}
+			s.VideoSettings, _ = json.Marshal(in.VideoSettings)
+		}
+		if s.ReferenceAssetID != nil {
+			var v models.VideoSettings
+			_ = json.Unmarshal(s.VideoSettings, &v)
+			if v.Mode == "text" {
+				return nil, ErrImageRequired
+			}
+		}
+	}
 	applyOptStringPtr(&s.Title, in.Title)
 	applyOptStringPtr(&s.Description, in.Description)
 	applyOptStringPtr(&s.ActionOverride, in.ActionOverride)
@@ -514,6 +554,11 @@ func (f *dnaFacade) UpdateScene(ctx context.Context, id, userID string, in Updat
 		}
 	}
 
+	if f.production != nil && (in.ReferenceAssetPresent || in.VideoSettings != nil) {
+		if e := f.production.repo.UpdateSceneProduction(ctx, s); e != nil {
+			return nil, mapRepoErr(e)
+		}
+	}
 	if err := f.scenes.Update(ctx, s); err != nil {
 		return nil, fmt.Errorf("update scene: %w", err)
 	}
@@ -553,9 +598,21 @@ func (f *dnaFacade) SelectSceneOutput(ctx context.Context, sceneID, jobID, userI
 	if err != nil {
 		return ErrValidation
 	}
-	// Without this, a scene could point at another user's job ID.
-	if _, err := f.jobs.FindByID(ctx, jobID, userID); err != nil {
+	scene, err := f.scenes.FindByID(ctx, sceneID, userID)
+	if err != nil {
 		return mapRepoErr(err)
+	}
+	if f.production != nil {
+		if e := f.production.repo.ProjectForScene(ctx, scene, userID); e != nil {
+			return mapRepoErr(e)
+		}
+	}
+	job, err := f.jobs.FindByID(ctx, jobID, userID)
+	if err != nil {
+		return mapRepoErr(err)
+	}
+	if !isSceneVideo(job, scene.ID) {
+		return ErrSceneHasNoOutput
 	}
 	if err := f.scenes.SetSelectedJob(ctx, sceneUUID, jobUUID, userID); err != nil {
 		return mapRepoErr(err)
@@ -621,6 +678,17 @@ func mapStyleProfileToDTO(p models.StyleProfile) dto_open_api.StyleProfileDTO {
 }
 
 func mapSceneToDTO(s models.Scene) dto_open_api.SceneDTO {
+	var settings models.VideoSettings
+	_ = json.Unmarshal(s.VideoSettings, &settings)
+	var pid, ref *string
+	if s.ProjectID != nil {
+		x := s.ProjectID.String()
+		pid = &x
+	}
+	if s.ReferenceAssetID != nil {
+		x := s.ReferenceAssetID.String()
+		ref = &x
+	}
 	tags := make([]dto_open_api.TagDTO, len(s.Tags))
 	for i, t := range s.Tags {
 		tags[i] = mapTagToDTO(t)
@@ -637,6 +705,7 @@ func mapSceneToDTO(s models.Scene) dto_open_api.SceneDTO {
 		})
 	}
 	dto := dto_open_api.SceneDTO{
+		ProjectID: pid, ReferenceAssetID: ref, VideoSettings: settings,
 		Characters:  characters,
 		ID:          s.ID.String(),
 		Title:       strVal(s.Title),
@@ -713,8 +782,11 @@ func mapRepoErr(err error) error {
 	if err == nil {
 		return nil
 	}
-	if err == repository_open_api.ErrNotFound {
+	if errors.Is(err, repository_open_api.ErrNotFound) {
 		return ErrNotFound
+	}
+	if errors.Is(err, repository_open_api.ErrConflict) {
+		return ErrConflict
 	}
 	return err
 }

@@ -41,7 +41,7 @@ type uploadStorage interface {
 
 func NewUploadFacade(
 	uploads repository_open_api.UploadRepository,
-	stor *storage.SupabaseClient,
+	stor uploadStorage,
 ) UploadFacade {
 	return &uploadFacade{uploads: uploads, storage: stor}
 }

@@ -113,7 +113,7 @@ func TestCompile_CameraOverrideFromScene(t *testing.T) {
 	}
 }
 
-func TestCompile_NegativeTagsIsolated(t *testing.T) {
+func TestCompile_NegativeTagsReachProviderText(t *testing.T) {
 	t.Parallel()
 	in := promptcompiler.Inputs{
 		ModelID: "violet-motion-2",
@@ -128,8 +128,8 @@ func TestCompile_NegativeTagsIsolated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if strings.Contains(result.CompiledPrompt, "Avoid Text") {
-		t.Error("negative constraint tag must not appear in compiled prompt")
+	if !strings.Contains(result.ContentItems[0].Text, "Constraints: Avoid Text") {
+		t.Error("negative constraint tag must reach the provider text")
 	}
 	if result.NegativeInstructions != "Avoid Text" {
 		t.Errorf("expected negative instructions = 'Avoid Text', got: %q", result.NegativeInstructions)

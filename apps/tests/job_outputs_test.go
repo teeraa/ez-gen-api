@@ -1,7 +1,9 @@
 package tests
 
 import (
+	"bytes"
 	"context"
+	_ "embed"
 	"errors"
 	"strings"
 	"sync"
@@ -98,6 +100,9 @@ func (r *fakeJobRepo) UpdateOutputKeys(_ context.Context, id string, mediaKey st
 	return nil
 }
 
+//go:embed testdata/video.mp4
+var validTestVideo []byte
+
 type fakeFetcher struct {
 	err   error
 	calls []string
@@ -114,7 +119,7 @@ func (f *fakeFetcher) Fetch(_ context.Context, rawURL string) ([]byte, string, e
 	if strings.Contains(rawURL, ".png") {
 		return []byte("png-bytes"), "image/png", nil
 	}
-	return []byte("mp4-bytes"), "video/mp4", nil
+	return validTestVideo, "video/mp4", nil
 }
 
 func newOutputJob(status models.JobStatus, submittedAgo time.Duration) *models.VideoGenerationJob {
@@ -166,7 +171,7 @@ func TestPollAndUpdate_PersistsOutputsToStorage(t *testing.T) {
 	if !ok || thumb == nil || *thumb != storage.KeyForThumbnail(job.UserID.String(), job.ID.String(), "png") {
 		t.Errorf("unexpected output_thumb_key: %v", updates["output_thumb_key"])
 	}
-	if obj, ok := store.Object(wantVideo); !ok || string(obj.Data) != "mp4-bytes" || obj.ContentType != "video/mp4" {
+	if obj, ok := store.Object(wantVideo); !ok || !bytes.Equal(obj.Data, validTestVideo) || obj.ContentType != "video/mp4" {
 		t.Errorf("video not stored correctly: %+v", obj)
 	}
 }

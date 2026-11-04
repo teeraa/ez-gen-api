@@ -3,8 +3,9 @@ package middlewares
 import (
 	"strings"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/gofiber/fiber/v2"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 )
 
 type JWTClaims struct {
@@ -21,11 +22,11 @@ func JWTAuth(secret string) fiber.Handler {
 
 		tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
 		token, err := jwt.ParseWithClaims(tokenStr, &JWTClaims{}, func(t *jwt.Token) (any, error) {
-			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			if t.Method != jwt.SigningMethodHS256 || len(secret) < 32 {
 				return nil, fiber.ErrUnauthorized
 			}
 			return []byte(secret), nil
-		})
+		}, jwt.WithValidMethods([]string{"HS256"}), jwt.WithExpirationRequired())
 		if err != nil || !token.Valid {
 			return respondUnauthorized(c)
 		}
@@ -36,7 +37,7 @@ func JWTAuth(secret string) fiber.Handler {
 		}
 
 		userID := claims.Subject
-		if userID == "" {
+		if _, err := uuid.Parse(userID); err != nil {
 			return respondUnauthorized(c)
 		}
 
@@ -60,7 +61,7 @@ func respondUnauthorized(c *fiber.Ctx) error {
 	rid, _ := c.Locals("requestID").(string)
 	return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 		"code":      "UNAUTHORIZED",
-		"message":   "Valid authentication required",
+		"message":   "กรุณาเข้าสู่ระบบเพื่อใช้งาน",
 		"requestId": rid,
 	})
 }

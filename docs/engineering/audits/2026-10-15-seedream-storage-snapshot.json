@@ -1,0 +1,68 @@
+{
+  "task": "seedream45-separate-storage",
+  "files": [
+    {
+      "path": "main.go",
+      "sha256": "d53abdab292a1b36c2b0e986a640e576e102e5868d46a6e151c4428de8c7db79"
+    },
+    {
+      "path": "pkgs/configs/config.go",
+      "sha256": "b61e3b945e820ef795fbc8f56814734cd9dadebb5be309c003d1ae13b2a8d20b"
+    },
+    {
+      "path": "pkgs/configs/config_test.go",
+      "sha256": "8843094c3406111bda40506cfda290d28afa6a430ba13b848c348f28532afea6"
+    },
+    {
+      "path": "apps/services/storage/bucket_router.go",
+      "sha256": "efe433e313475a1b8c02cce2982b7d478bd62e1e14ad90a5e402df1cdee1ac82"
+    },
+    {
+      "path": "apps/services/storage/bucket_router_test.go",
+      "sha256": "50375ca9dfd350170e32fa9f3e618b27a222ca9f98989c9142273821160e7278"
+    },
+    {
+      "path": "apps/services/storage/keys.go",
+      "sha256": "277df1c66c17ceab4861d001a3d91bcd5503f077a9d49ea16854e44fae830c7a"
+    },
+    {
+      "path": "apps/crons/image_worker.go",
+      "sha256": "4df809ec403dc6c7253884b64d36a13c1f35caef1ef9f61ab2264f2ae31a0373"
+    },
+    {
+      "path": "apps/crons/image_worker_test.go",
+      "sha256": "c6d647210c73b3cb4ae8a780d46a0b6933908c9b6355bd78da85e6575697204b"
+    },
+    {
+      "path": "apps/facades/facade_open_api/upload_facade.go",
+      "sha256": "2290734be3e115b3d5d08d5da3cefedfab07305937a6651f82d117d14c92ae32"
+    },
+    {
+      "path": "apps/facades/facade_open_api/export_facade.go",
+      "sha256": "ad5a1657e87b3aa359d496c77017710fc1e36efb66711eb164488f50525d1ed5"
+    },
+    {
+      "path": ".env.example",
+      "sha256": "c8ed514e1cff868de9edfe727bc8a16281a9a77a53a7b79a4e2699f58f386805"
+    },
+    {
+      "path": "docs/engineering/seedream-storage.md",
+      "sha256": "900c3729f09eab7c65c68a74281a3032abb4c5991e77ba02a49e5c7f836a295b"
+    },
+    {
+      "path": "cmd/setup-character-storage/main.go",
+      "sha256": "8abed6746c4a4a67130a292347d028a4f593486f4a1824f1fd972f182bde2039"
+    },
+    {
+      "path": "cmd/setup-character-storage/main_test.go",
+      "sha256": "6255864a5f21806baa1ba023ae9b4129df86a16dab8b9eb4a04893bb84178955"
+    }
+  ],
+  "excluded": "Local .env credentials omitted; only ARK_IMAGE_MODEL and STORAGE_IMAGE_BUCKET changed by coordinator.",
+  "gates": {
+    "build": "PASS",
+    "vet": "PASS",
+    "race_tests": "PASS",
+    "log": "/tmp/seedream-implementation-tests-final.log"
+  }
+}

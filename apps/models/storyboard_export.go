@@ -3,6 +3,7 @@ package models
 import (
 	"time"
 
+	"github.com/google/uuid"
 	"gorm.io/datatypes"
 )
 
@@ -24,7 +25,11 @@ func (s ExportStatus) IsTerminal() bool {
 type StoryboardExport struct {
 	Base
 
-	UserID string `gorm:"type:uuid;not null;index"`
+	UserID         string     `gorm:"type:uuid;not null;index"`
+	ProjectID      *uuid.UUID `gorm:"type:uuid"`
+	IdempotencyKey *string    `gorm:"type:uuid"`
+	RequestHash    *string
+	OutputConfig   datatypes.JSON `gorm:"type:jsonb"`
 
 	// Ordered scene IDs (JSON array of UUID strings). Kept populated for download/listing.
 	SceneIDs datatypes.JSON `gorm:"type:jsonb;not null"`
@@ -34,7 +39,7 @@ type StoryboardExport struct {
 
 	// Optional background audio (references an Upload record's storage key)
 	AudioStorageKey *string
-	AudioVolume     float64 `gorm:"not null;default:1.0"`
+	AudioVolume     float64 `gorm:"not null"`
 
 	// Optional per-scene text overlays (JSON array of StoredTextLayer)
 	TextLayers datatypes.JSON `gorm:"type:jsonb"`
@@ -55,9 +60,12 @@ func (StoryboardExport) TableName() string { return "storyboard_exports" }
 
 // StoredClip is the JSON shape persisted in the clips column.
 type StoredClip struct {
-	SceneID   string  `json:"sceneId"`
-	TrimStart float64 `json:"trimStart"` // seconds from clip start; 0 = from start
-	TrimEnd   float64 `json:"trimEnd"`   // seconds from clip start; 0 = full duration
+	SceneID    string  `json:"sceneId"`
+	JobID      string  `json:"jobId,omitempty"`
+	StorageKey string  `json:"storageKey,omitempty"`
+	DurationMs int64   `json:"durationMs,omitempty"`
+	TrimStart  float64 `json:"trimStart"` // seconds from clip start; 0 = from start
+	TrimEnd    float64 `json:"trimEnd"`   // seconds from clip start; 0 = full duration
 }
 
 // StoredTextLayer is the JSON shape persisted in the text_layers column.

@@ -7,40 +7,45 @@ package modelark
 type ContentRole string
 
 const (
-	RoleFirstFrame      ContentRole = "first_frame"
-	RoleLastFrame       ContentRole = "last_frame"
-	RoleReferenceImage  ContentRole = "reference_image"
-	RoleReferenceVideo  ContentRole = "reference_video"
+	RoleFirstFrame     ContentRole = "first_frame"
+	RoleLastFrame      ContentRole = "last_frame"
+	RoleReferenceImage ContentRole = "reference_image"
+	RoleReferenceVideo ContentRole = "reference_video"
 )
 
 type ContentItemType string
 
 const (
-	ContentTypeText     ContentItemType = "text"
-	ContentTypeImageURL ContentItemType = "image_url"
-	ContentTypeVideoURL ContentItemType = "video_url"
+	ContentTypeText      ContentItemType = "text"
+	ContentTypeImageURL  ContentItemType = "image_url"
+	ContentTypeVideoURL  ContentItemType = "video_url"
+	ContentTypeDraftTask ContentItemType = "draft_task"
 )
 
 type ContentItem struct {
-	Type ContentItemType
-	Text string   // set when Type == "text"
-	URL  string   // set when Type == "image_url" or "video_url"
-	Role ContentRole
+	Type        ContentItemType
+	DraftTaskID string
+	Text        string // set when Type == "text"
+	URL         string // set when Type == "image_url" or "video_url"
+	Role        ContentRole
 }
 
 // CreateTaskRequest is the application-domain representation of a generation request.
 // All fields are validated before reaching this point.
 type CreateTaskRequest struct {
-	Model          string
-	Content        []ContentItem
-	Ratio          string
-	DurationSeconds int64
-	Resolution     string
-	OptimizePrompt bool
-	GenerateAudio  bool
-	Watermark      bool
-	ReturnLastFrame bool
+	Model               string
+	Content             []ContentItem
+	Ratio               string
+	DurationSeconds     int64
+	Resolution          string
+	OptimizePrompt      bool
+	GenerateAudio       bool
+	Watermark           bool
+	ReturnLastFrame     bool
 	ExpiresAfterSeconds int64
+	// Draft requests a faster, lower-quality preview render.
+	// Only supported by dreamina-seedance-2-5-260628 (violet-realism).
+	Draft bool
 }
 
 // TaskResult is the application-domain result of a completed task poll.
@@ -51,9 +56,10 @@ type TaskResult struct {
 	VideoURL     string // ephemeral — must be downloaded immediately
 	LastFrameURL string // ephemeral — thumbnail
 
-	RevisedPrompt  string
-	ErrorCode      string
-	ErrorMessage   string
+	RevisedPrompt     string
+	ErrorCode         string
+	ErrorMessage      string
+	FailureDiagnostic GenerationFailureDiagnostic
 
 	DurationSeconds int64
 	Resolution      string
@@ -70,3 +76,9 @@ const (
 	ProviderStatusFailed    ProviderStatus = "failed"
 	ProviderStatusCancelled ProviderStatus = "cancelled"
 )
+
+// GenerationFailureDiagnostic is the bounded detail retained after a terminal task failure.
+type GenerationFailureDiagnostic struct {
+	Phase        string `json:"phase"`
+	ProviderCode string `json:"providerCode,omitempty"`
+}

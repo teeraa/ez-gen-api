@@ -1,12 +1,17 @@
 package dto_open_api
 
+import "github.com/ez-gen/ez-gen-api/apps/models"
+
 // ExportDTO is the response shape for a storyboard export job.
 type ExportDTO struct {
-	ExportID    string  `json:"exportId"`
-	Status      string  `json:"status"`
-	CreatedAt   string  `json:"createdAt"`
-	CompletedAt *string `json:"completedAt"`
-	Error       *string `json:"error"`
+	ProjectID        *string             `json:"projectId"`
+	Output           models.ExportOutput `json:"output"`
+	OutputDurationMs *int64              `json:"outputDurationMs"`
+	ExportID         string              `json:"exportId"`
+	Status           string              `json:"status"`
+	CreatedAt        string              `json:"createdAt"`
+	CompletedAt      *string             `json:"completedAt"`
+	Error            *string             `json:"error"`
 }
 
 // ExportListDTO is the paginated list response.

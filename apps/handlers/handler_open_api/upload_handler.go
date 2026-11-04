@@ -2,6 +2,7 @@ package handler_open_api
 
 import (
 	"errors"
+	"io"
 
 	"github.com/ez-gen/ez-gen-api/apps/facades/facade_open_api"
 	"github.com/ez-gen/ez-gen-api/apps/utils"
@@ -38,6 +39,10 @@ func (h *UploadHandler) CreateUpload(c *fiber.Ctx) error {
 		return utils.Error(c, fiber.StatusBadRequest, "VALIDATION_ERROR", "multipart field 'file' is required", nil)
 	}
 
+	if file.Size < 0 || file.Size > 50<<20 {
+		return utils.Error(c, fiber.StatusRequestEntityTooLarge, "FILE_TOO_LARGE", "file exceeds size limit", nil)
+	}
+
 	f, err := file.Open()
 	if err != nil {
 		return utils.Error(c, fiber.StatusInternalServerError, "INTERNAL_ERROR", "failed to read file", nil)
@@ -45,7 +50,7 @@ func (h *UploadHandler) CreateUpload(c *fiber.Ctx) error {
 	defer f.Close()
 
 	data := make([]byte, file.Size)
-	if _, err := f.Read(data); err != nil {
+	if _, err := io.ReadFull(f, data); err != nil {
 		return utils.Error(c, fiber.StatusInternalServerError, "INTERNAL_ERROR", "failed to read file", nil)
 	}
 

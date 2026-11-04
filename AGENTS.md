@@ -3,6 +3,20 @@
 > This file is maintained by Agent A (Coordinator).
 > See `CLAUDE.md` for development rules and environment setup.
 
+## Codex Subagents and Independent Audit
+
+Agent A coordinates Codex through `.codex/agents/README.md`. Read that workflow
+before delegation; it defines eight project roles, file ownership, acceptance
+gates and the evidence contract. Use relevant specialists rather than every role.
+For completed implementation tasks, delegate review to a fresh
+`independent-auditor` invocation separate from the author before acceptance.
+Agent A owns `.codex/agents/` and `docs/engineering/audits/`.
+
+The preparation status below is historical: actual implementation files,
+migrations and `go.sum` now exist. Inspect current source and run relevant checks
+before claiming readiness; this note does not waive outstanding prerequisites.
+Initial agent audit: `docs/engineering/audits/2026-10-15-subagents.md`.
+
 ## Agent Roster
 
 | Agent | Role | Primary Files |

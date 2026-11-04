@@ -42,3 +42,8 @@ func ExtForContentType(contentType, fallback string) string {
 		return fallback
 	}
 }
+
+// KeyForCharacter reserves a namespace for images in the private character bucket.
+func KeyForCharacter(userID, jobID, ext string) string {
+	return fmt.Sprintf("characters/%s/%s/character.%s", userID, jobID, ext)
+}

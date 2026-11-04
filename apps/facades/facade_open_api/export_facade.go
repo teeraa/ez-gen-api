@@ -23,6 +23,7 @@ import (
 
 // ExportFacade handles storyboard export creation, status, and processing.
 type ExportFacade interface {
+	RetryExport(context.Context, string, string) (*dto_open_api.ExportDTO, error)
 	CreateExport(ctx context.Context, userID string, in CreateExportInput) (*dto_open_api.ExportDTO, error)
 	GetExport(ctx context.Context, id, userID string) (*dto_open_api.ExportDTO, error)
 	ListExports(ctx context.Context, userID string, page, limit int) (*dto_open_api.ExportListDTO, error)
@@ -33,14 +34,18 @@ type ExportFacade interface {
 
 // CreateExportInput is the validated payload for export creation.
 type CreateExportInput struct {
-	Clips         []ExportClip
-	AudioUploadID *string
-	AudioVolume   float64 // 0 → default 1.0
-	TextLayers    []ExportTextLayer
+	ProjectID      *string
+	IdempotencyKey *string
+	Output         *models.ExportOutput
+	Clips          []ExportClip
+	AudioUploadID  *string
+	AudioVolume    float64 // 0 → default 1.0
+	TextLayers     []ExportTextLayer
 }
 
 // ExportClip is one scene clip with an optional trim window (seconds from clip start).
 type ExportClip struct {
+	JobID     *string
 	SceneID   string
 	TrimStart float64
 	TrimEnd   float64
@@ -63,13 +68,14 @@ type ExportTextLayer struct {
 }
 
 type exportFacade struct {
-	exports   repository_open_api.ExportRepository
-	jobs      repository_open_api.JobRepository
-	uploads   repository_open_api.UploadRepository
-	scenes    repository_open_api.SceneRepository
-	storage   exportStorage
-	processor videoprocessing.VideoProcessor
-	http      *http.Client
+	exports    repository_open_api.ExportRepository
+	jobs       repository_open_api.JobRepository
+	uploads    repository_open_api.UploadRepository
+	scenes     repository_open_api.SceneRepository
+	storage    exportStorage
+	processor  videoprocessing.VideoProcessor
+	http       *http.Client
+	production *repository_open_api.ProductionRepository
 }
 
 type exportStorage interface {
@@ -83,7 +89,7 @@ func NewExportFacade(
 	jobs repository_open_api.JobRepository,
 	uploads repository_open_api.UploadRepository,
 	scenes repository_open_api.SceneRepository,
-	stor *storage.SupabaseClient,
+	stor exportStorage,
 	processor videoprocessing.VideoProcessor,
 ) ExportFacade {
 	return &exportFacade{
@@ -98,44 +104,30 @@ func NewExportFacade(
 }
 
 func (f *exportFacade) CreateExport(ctx context.Context, userID string, in CreateExportInput) (*dto_open_api.ExportDTO, error) {
-	// Resolve to 2–20 clips, each a distinct scene.
-	if len(in.Clips) < 2 || len(in.Clips) > 20 {
+	hash, err := exportRequestHash(in)
+	if err != nil {
 		return nil, ErrValidation
 	}
-	seen := make(map[string]struct{}, len(in.Clips))
-	sceneIDs := make([]string, 0, len(in.Clips))
-	for _, c := range in.Clips {
-		if _, err := uuid.Parse(c.SceneID); err != nil {
-			return nil, ErrValidation
+	if in.IdempotencyKey != nil {
+		existing, e := f.exports.FindByIdempotencyKey(ctx, *in.IdempotencyKey, userID)
+		if e != nil && !errors.Is(e, repository_open_api.ErrNotFound) {
+			return nil, e
 		}
-		if _, dup := seen[c.SceneID]; dup {
-			return nil, ErrValidation
-		}
-		seen[c.SceneID] = struct{}{}
-		if c.TrimEnd > 0 && c.TrimEnd <= c.TrimStart {
-			return nil, ErrValidation
-		}
-		sceneIDs = append(sceneIDs, c.SceneID)
-	}
-
-	// Each scene must have a selected job with succeeded output.
-	for _, sid := range sceneIDs {
-		scene, err := f.scenes.FindByID(ctx, sid, userID)
-		if err != nil {
-			if errors.Is(err, repository_open_api.ErrNotFound) {
-				return nil, ErrNotFound
+		if existing != nil {
+			if existing.RequestHash == nil || *existing.RequestHash != hash {
+				return nil, ErrConflict
 			}
-			return nil, fmt.Errorf("find scene %s: %w", sid, err)
-		}
-		if scene.SelectedJobID == nil {
-			return nil, ErrSceneHasNoOutput
-		}
-		job, err := f.jobs.FindByID(ctx, scene.SelectedJobID.String(), userID)
-		if err != nil || job.Status != models.JobStatusSucceeded || job.OutputMediaKey == nil {
-			return nil, ErrSceneHasNoOutput
+			return mapExportDTO(existing), nil
 		}
 	}
-
+	storedClips, output, err := f.snapshotClips(ctx, userID, in)
+	if err != nil {
+		return nil, err
+	}
+	sceneIDs := make([]string, len(storedClips))
+	for i, c := range storedClips {
+		sceneIDs[i] = c.SceneID
+	}
 	// Validate audio upload if provided.
 	var audioStorageKey *string
 	if in.AudioUploadID != nil {
@@ -146,6 +138,9 @@ func (f *exportFacade) CreateExport(ctx context.Context, userID string, in Creat
 			}
 			return nil, fmt.Errorf("find audio upload: %w", err)
 		}
+		if time.Now().After(upload.ExpiresAt) {
+			return nil, ErrImageExpired
+		}
 		if !strings.HasPrefix(upload.MimeType, "audio/") {
 			return nil, ErrInvalidFileType
 		}
@@ -153,8 +148,8 @@ func (f *exportFacade) CreateExport(ctx context.Context, userID string, in Creat
 	}
 
 	vol := in.AudioVolume
-	if vol <= 0 {
-		vol = 1.0
+	if vol < 0 || vol > 2 {
+		return nil, ErrValidation
 	}
 
 	sceneIDsJSON, err := json.Marshal(sceneIDs)
@@ -162,14 +157,6 @@ func (f *exportFacade) CreateExport(ctx context.Context, userID string, in Creat
 		return nil, fmt.Errorf("marshal scene ids: %w", err)
 	}
 
-	storedClips := make([]models.StoredClip, len(in.Clips))
-	for i, c := range in.Clips {
-		storedClips[i] = models.StoredClip{
-			SceneID:   c.SceneID,
-			TrimStart: c.TrimStart,
-			TrimEnd:   c.TrimEnd,
-		}
-	}
 	clipsJSON, err := json.Marshal(storedClips)
 	if err != nil {
 		return nil, fmt.Errorf("marshal clips: %w", err)
@@ -182,8 +169,17 @@ func (f *exportFacade) CreateExport(ctx context.Context, userID string, in Creat
 		AudioStorageKey: audioStorageKey,
 		AudioVolume:     vol,
 		Status:          models.ExportStatusQueued,
+		IdempotencyKey:  in.IdempotencyKey, RequestHash: &hash,
 	}
 
+	if in.ProjectID != nil {
+		pid, _ := uuid.Parse(*in.ProjectID)
+		export.ProjectID = &pid
+	}
+	export.OutputConfig, _ = json.Marshal(output)
+	if e := validateExportText(in.TextLayers, sceneIDs); e != nil {
+		return nil, e
+	}
 	if len(in.TextLayers) > 0 {
 		stored := make([]models.StoredTextLayer, len(in.TextLayers))
 		for i, tl := range in.TextLayers {
@@ -209,6 +205,13 @@ func (f *exportFacade) CreateExport(ctx context.Context, userID string, in Creat
 	}
 
 	if err := f.exports.Create(ctx, export); err != nil {
+		if errors.Is(err, repository_open_api.ErrConflict) && in.IdempotencyKey != nil {
+			existing, e := f.exports.FindByIdempotencyKey(ctx, *in.IdempotencyKey, userID)
+			if e == nil && existing.RequestHash != nil && *existing.RequestHash == hash {
+				return mapExportDTO(existing), nil
+			}
+			return nil, ErrConflict
+		}
 		return nil, fmt.Errorf("create export: %w", err)
 	}
 	return mapExportDTO(export), nil
@@ -276,8 +279,10 @@ func (f *exportFacade) ProcessExport(ctx context.Context, export *models.Storybo
 
 	if err := f.doProcess(ctx, export); err != nil {
 		msg := sanitizeExportError(err)
-		log.Printf("[export] export=%s failed: %v", export.ID, err)
-		_ = f.exports.UpdateStatus(ctx, export.ID.String(), models.ExportStatusFailed, map[string]any{
+		log.Printf("[export] export=%s processing failed", export.ID)
+		cleanup, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = f.exports.Finish(cleanup, export.ID.String(), export.LastPickedAt, models.ExportStatusFailed, map[string]any{
 			"failure_message": msg,
 			"completed_at":    time.Now(),
 		})
@@ -303,15 +308,19 @@ func (f *exportFacade) doProcess(ctx context.Context, export *models.StoryboardE
 	procClips := make([]videoprocessing.Clip, len(clips))
 	for i, c := range clips {
 		sceneIDs[i] = c.SceneID
-		scene, err := f.scenes.FindByID(ctx, c.SceneID, export.UserID)
-		if err != nil || scene.SelectedJobID == nil {
-			return fmt.Errorf("scene %s has no selected job", c.SceneID)
+		key := c.StorageKey
+		if key == "" { // Legacy exports resolve selection only until rewritten by a new request.
+			scene, err := f.scenes.FindByID(ctx, c.SceneID, export.UserID)
+			if err != nil || scene.SelectedJobID == nil {
+				return ErrSceneHasNoOutput
+			}
+			job, err := f.jobs.FindByID(ctx, scene.SelectedJobID.String(), export.UserID)
+			if err != nil || !isSceneVideo(job, scene.ID) {
+				return ErrSceneHasNoOutput
+			}
+			key = *job.OutputMediaKey
 		}
-		job, err := f.jobs.FindByID(ctx, scene.SelectedJobID.String(), export.UserID)
-		if err != nil || job.OutputMediaKey == nil {
-			return fmt.Errorf("scene %s job has no output", c.SceneID)
-		}
-		signedURL, _, err := f.storage.SignedURL(ctx, *job.OutputMediaKey, 30*time.Minute)
+		signedURL, _, err := f.storage.SignedURL(ctx, key, 30*time.Minute)
 		if err != nil {
 			return fmt.Errorf("sign clip url scene=%s: %w", c.SceneID, err)
 		}
@@ -346,8 +355,11 @@ func (f *exportFacade) doProcess(ctx context.Context, export *models.StoryboardE
 		return fmt.Errorf("resolve text layers: %w", err)
 	}
 
+	output := defaultExportOutput()
+	_ = json.Unmarshal(export.OutputConfig, &output)
 	videoBytes, err := f.processor.Merge(ctx, videoprocessing.MergeRequest{
-		Clips:       procClips,
+		Clips:            procClips,
+		OutputResolution: output.Resolution, OutputAspectRatio: output.AspectRatio,
 		AudioPath:   audioPath,
 		AudioVolume: export.AudioVolume,
 		TextLayers:  textLayers,
@@ -356,13 +368,27 @@ func (f *exportFacade) doProcess(ctx context.Context, export *models.StoryboardE
 		return fmt.Errorf("video merge: %w", err)
 	}
 
+	validated, err := os.CreateTemp(tmpDir, "validated-*.mp4")
+	if err != nil {
+		return err
+	}
+	if _, err = validated.Write(videoBytes); err != nil {
+		validated.Close()
+		return err
+	}
+	validated.Close()
+	durationMs, err := videoprocessing.ProbeVideo(ctx, validated.Name())
+	if err != nil {
+		return fmt.Errorf("invalid export output: %w", err)
+	}
 	outputKey := storage.KeyForExport(export.UserID, export.ID.String(), "mp4")
 	if err := f.storage.Upload(ctx, outputKey, videoBytes, "video/mp4"); err != nil {
 		return fmt.Errorf("upload export: %w", err)
 	}
 
-	return f.exports.UpdateStatus(ctx, export.ID.String(), models.ExportStatusSucceeded, map[string]any{
+	return f.exports.Finish(ctx, export.ID.String(), export.LastPickedAt, models.ExportStatusSucceeded, map[string]any{
 		"output_storage_key": outputKey,
+		"output_duration_ms": durationMs,
 		"completed_at":       time.Now(),
 	})
 }
@@ -451,15 +477,19 @@ func (f *exportFacade) downloadToFile(ctx context.Context, url, dest string) err
 }
 
 func sanitizeExportError(err error) string {
-	msg := err.Error()
-	if len(msg) > 200 {
-		msg = msg[:200]
-	}
-	return msg
+	return "ไม่สามารถส่งออกวิดีโอได้ โปรดตรวจคลิปต้นฉบับและลองอีกครั้ง"
 }
 
 func mapExportDTO(e *models.StoryboardExport) *dto_open_api.ExportDTO {
+	output := defaultExportOutput()
+	_ = json.Unmarshal(e.OutputConfig, &output)
+	var pid *string
+	if e.ProjectID != nil {
+		x := e.ProjectID.String()
+		pid = &x
+	}
 	dto := &dto_open_api.ExportDTO{
+		ProjectID: pid, Output: output, OutputDurationMs: e.OutputDurationMs,
 		ExportID:  e.ID.String(),
 		Status:    string(e.Status),
 		CreatedAt: e.CreatedAt.UTC().Format(time.RFC3339),

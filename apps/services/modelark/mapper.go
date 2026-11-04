@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/ez-gen/ez-gen-api/apps/models"
 )
@@ -71,7 +72,7 @@ var providerModels = map[string]ModelConfig{
 		SupportedRatios:  []string{"16:9", "9:16", "1:1", "4:3", "3:4"},
 		MinDuration:      4,
 		MaxDuration:      15,
-		SupportsAudio:    false,
+		SupportsAudio:    true,
 		SupportsImgVideo: true,
 		SupportsRefImage: true,
 	},
@@ -80,7 +81,7 @@ var providerModels = map[string]ModelConfig{
 		SupportedRatios:  []string{"16:9", "9:16", "1:1", "4:3", "21:9"},
 		MinDuration:      4,
 		MaxDuration:      15,
-		SupportsAudio:    false,
+		SupportsAudio:    true,
 		SupportsImgVideo: true,
 		SupportsRefImage: true,
 	},
@@ -170,4 +171,33 @@ func QualityToResolution(quality string) string {
 		return "1080p"
 	}
 	return "720p"
+}
+
+// SupportsDraft follows the resolved provider, including account model overrides.
+func (m ModelConfig) SupportsDraft() bool {
+	return m.ProviderModelID == "dreamina-seedance-2-5-260628"
+}
+
+func (m ModelConfig) PublicLabel() string {
+	switch m.ProviderModelID {
+	case "seedance-1-0-pro-250528":
+		return "Seedance 1.0 Pro"
+	case "dreamina-seedance-2-0-fast-260128":
+		return "Seedance 2.0 Fast"
+	case "dreamina-seedance-2-0-260128":
+		return "Seedance 2.0"
+	case "dreamina-seedance-2-5-260628":
+		return "Seedance 2.5"
+	default:
+		return "โมเดลที่กำหนดไว้"
+	}
+}
+
+// DraftExpiresAt follows the provider's task-created-at retention boundary.
+func DraftExpiresAt(createdAt time.Time) time.Time {
+	lifetime := 7 * 24 * time.Hour
+	if !createdAt.Before(time.Date(2026, 10, 28, 2, 0, 0, 0, time.UTC)) {
+		lifetime = 14 * 24 * time.Hour
+	}
+	return createdAt.Add(lifetime)
 }

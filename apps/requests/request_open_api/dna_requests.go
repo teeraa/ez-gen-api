@@ -1,5 +1,7 @@
 package request_open_api
 
+import "github.com/ez-gen/ez-gen-api/apps/models"
+
 // ── Tags ───────────────────────────────────────────────────────────────────────
 
 type ListTagsQuery struct {
@@ -76,9 +78,11 @@ type CreateSceneRequest struct {
 }
 
 type UpdateSceneRequest struct {
-	Title              *string `json:"title"              validate:"omitempty,max=200"`
-	Description        *string `json:"description"        validate:"omitempty,max=2000"`
-	CharacterProfileID *string `json:"characterProfileId" validate:"omitempty,uuid4"`
+	ReferenceAssetID   *string               `json:"referenceAssetId" validate:"omitempty,uuid4"`
+	VideoSettings      *models.VideoSettings `json:"videoSettings"`
+	Title              *string               `json:"title"              validate:"omitempty,max=200"`
+	Description        *string               `json:"description"        validate:"omitempty,max=2000"`
+	CharacterProfileID *string               `json:"characterProfileId" validate:"omitempty,uuid4"`
 	// CharacterProfileIDs replaces the scene's characters when present; [] clears them.
 	CharacterProfileIDs []string `json:"characterProfileIds" validate:"omitempty,max=3,unique,dive,uuid4"`
 	StyleProfileID      *string  `json:"styleProfileId"     validate:"omitempty,uuid4"`

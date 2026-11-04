@@ -30,8 +30,8 @@ func NewExportWorker(
 		exports:        exports,
 		facade:         facade,
 		interval:       interval,
-		batch:          batch,
-		processTimeout: 10 * time.Minute,
+		batch:          1,
+		processTimeout: 25 * time.Minute,
 	}
 }
 

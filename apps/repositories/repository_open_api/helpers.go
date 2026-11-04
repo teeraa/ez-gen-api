@@ -8,6 +8,9 @@ import (
 )
 
 func wrapErr(op string, err error) error {
+	if err == nil {
+		return nil
+	}
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return ErrNotFound
 	}

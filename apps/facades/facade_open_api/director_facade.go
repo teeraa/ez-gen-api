@@ -1,0 +1,844 @@
+package facade_open_api
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	dto "github.com/ez-gen/ez-gen-api/apps/dto/dto_open_api"
+	"github.com/ez-gen/ez-gen-api/apps/models"
+	repo "github.com/ez-gen/ez-gen-api/apps/repositories/repository_open_api"
+	req "github.com/ez-gen/ez-gen-api/apps/requests/request_open_api"
+	"github.com/ez-gen/ez-gen-api/apps/services/modelark"
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+	"sort"
+	"strings"
+	"time"
+	"unicode/utf8"
+)
+
+type DirectorError struct {
+	Status          int
+	Code            string
+	Message         string
+	CurrentRevision *int
+}
+
+func (e *DirectorError) Error() string { return e.Message }
+func directorError(status int, code string) error {
+	return &DirectorError{Status: status, Code: code, Message: "ไม่สามารถดำเนินการได้ในสถานะนี้ กรุณาโหลดข้อมูลล่าสุดแล้วลองใหม่"}
+}
+func directorInvalid(field string) error {
+	return &StoryFlowValidationError{Field: field, Message: "กรุณาตรวจข้อมูลในช่องนี้ให้ถูกต้องและไม่เกินขีดจำกัด"}
+}
+func directorPointer[T any](v T) *T { return &v }
+func directorBusy(s string) bool    { return s == "queued" || s == "processing" || s == "pending" }
+
+type directorStore interface {
+	Create(context.Context, *models.DirectorProject, string, string) (*models.DirectorProject, error)
+	Get(context.Context, string, string) (*models.DirectorProject, error)
+	List(context.Context, string, int, int, string) ([]models.DirectorProject, int64, error)
+	Change(context.Context, string, string, string, string, func(*models.DirectorProject, func(string) (*models.LibraryAsset, error)) ([]models.DirectorJob, error)) (*models.DirectorProject, error)
+	Claim(context.Context) (*models.DirectorJob, error)
+	Complete(context.Context, *models.DirectorJob, string, bool, func(*models.DirectorProject) error) error
+	Progress(context.Context, *models.DirectorJob, func(*models.DirectorProject) error) error
+	RecordOutput(context.Context, *models.DirectorJob, []byte) error
+}
+type DirectorOptions struct {
+	Enabled       bool
+	AnalysisModel string
+	ImageModel    string
+	StoryPoints   int
+	ImagePoints   int
+	VideoPoints   int
+	SampleBaseURL string
+}
+type DirectorFacade struct {
+	store    directorStore
+	assets   storyFlowAssets
+	storage  mediaStorage
+	analyzer modelark.StoryFlowAnalyzer
+	images   modelark.ImageGenerator
+	registry *modelark.Registry
+	options  DirectorOptions
+}
+
+func NewDirectorFacade(s directorStore, a storyFlowAssets, st mediaStorage, n modelark.StoryFlowAnalyzer, i modelark.ImageGenerator, r *modelark.Registry, o DirectorOptions) *DirectorFacade {
+	return &DirectorFacade{s, a, st, n, i, r, o}
+}
+
+// The public response never includes this private aggregate metadata.
+type directorDocument struct {
+	Project     dto.DirectorProject `json:"project"`
+	Keys        map[string]string   `json:"keys"`
+	Generations map[string]string   `json:"generations"`
+}
+type directorJobInput struct {
+	Project     dto.DirectorProject `json:"project"`
+	Generation  string              `json:"generation"`
+	Description string              `json:"description"`
+	Camera      string              `json:"camera"`
+	Instruction string              `json:"instruction"`
+	Model       string              `json:"model"`
+	ImageModel  string              `json:"imageModel"`
+	Characters  []directorCharacter `json:"characters"`
+	CoverKey    string              `json:"coverKey"`
+}
+type directorCharacter struct {
+	ID          string `json:"id"`
+	Description string `json:"description"`
+	Key         string `json:"key"`
+}
+
+func directorDecode(p *models.DirectorProject) (directorDocument, error) {
+	var d directorDocument
+	e := json.Unmarshal(p.Document, &d)
+	return d, e
+}
+func directorEncode(p *models.DirectorProject, d *directorDocument) error {
+	p.Name = d.Project.Name
+	d.Project.UpdatedAt = time.Now().UTC()
+	b, e := json.Marshal(d)
+	p.Document = b
+	return e
+}
+func (f *DirectorFacade) Capabilities() dto.DirectorCapabilities {
+	c := dto.DirectorCapabilities{Enabled: f.options.Enabled && f.options.AnalysisModel != "" && f.options.ImageModel != "" && f.options.SampleBaseURL != "" && f.options.StoryPoints > 0 && f.options.ImagePoints > 0 && f.options.VideoPoints >= 0, AspectRatios: []dto.DirectorOption{}, Resolutions: []dto.DirectorResolution{}, Styles: []dto.DirectorStyle{}, Genres: []dto.DirectorOption{}, Moods: []string{"อบอุ่น", "ตื่นเต้น", "ลึกลับ", "มีความหวัง", "เศร้า", "ฮึกเหิม", "ตลกขบขัน", "น่ากลัว", "สงบ", "โรแมนติก"}, Cameras: []string{"มุมกว้าง", "มุมกลาง", "โคลสอัพ", "มุมสูง", "มุมต่ำ", "มุมข้ามไหล่"}, Limits: dto.DirectorLimits{IdeaMaxLength: 1000, NameMaxLength: 80, MinScenes: 1, MaxScenes: 10, MinShotsPerScene: 1, MaxShotsPerScene: 6, MaxShotsPerSceneAfterEdit: 8, MaxTotalShots: 40, MaxCast: 4, MaxMoods: 3, SceneSummaryMaxLength: 1200, ShotDescriptionMaxLength: 600}, Models: dto.DirectorModels{Story: []dto.DirectorModel{}, Image: []dto.DirectorModel{}, Video: []dto.DirectorModel{}}}
+	for _, s := range []string{"16:9", "9:16", "1:1", "4:5"} {
+		c.AspectRatios = append(c.AspectRatios, dto.DirectorOption{Value: s, Label: s, Hint: "สัดส่วนภาพ"})
+	}
+	for _, s := range []string{"720p", "1080p", "4k"} {
+		c.Resolutions = append(c.Resolutions, dto.DirectorResolution{DirectorOption: dto.DirectorOption{Value: s, Label: s, Hint: "ความละเอียดวิดีโอในระยะถัดไป"}, Available: s != "4k"})
+	}
+	names := []string{"ซีเนมาติก", "อนิเมะ", "3D การ์ตูน", "สีน้ำ", "ดินปั้น", "สมจริง"}
+	for i, s := range []string{"cinematic", "anime", "3d", "watercolor", "clay", "realistic"} {
+		c.Styles = append(c.Styles, dto.DirectorStyle{DirectorOption: dto.DirectorOption{Value: s, Label: names[i], Hint: names[i]}, SampleImageURL: strings.TrimRight(f.options.SampleBaseURL, "/") + "/" + s + ".jpg"})
+	}
+	labels := []string{"ผจญภัย", "ดราม่า", "แฟนตาซี", "ตลก", "ระทึกขวัญ", "ไซไฟ", "โรแมนติก", "โฆษณา"}
+	for i, s := range []string{"adventure", "drama", "fantasy", "comedy", "thriller", "scifi", "romance", "ad"} {
+		c.Genres = append(c.Genres, dto.DirectorOption{Value: s, Label: labels[i], Hint: labels[i]})
+	}
+	if f.options.AnalysisModel != "" {
+		c.Models.Story = append(c.Models.Story, dto.DirectorModel{ID: "director-story", Name: "มาตรฐาน", Note: "เขียนเรื่องและวางแผนฉาก", PointsPerUnit: f.options.StoryPoints, Default: true})
+	}
+	if f.options.ImageModel != "" {
+		c.Models.Image = append(c.Models.Image, dto.DirectorModel{ID: "director-image", Name: "มาตรฐาน", Note: "สร้างภาพจากคำบรรยายและตัวละคร", PointsPerUnit: f.options.ImagePoints, SupportsCharacterReference: true, Default: true})
+	}
+	if f.registry != nil {
+		ids := []string{}
+		for id := range f.registry.Routes() {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			m, _ := f.registry.Lookup(id)
+			if m.SupportsImgVideo {
+				c.Models.Video = append(c.Models.Video, dto.DirectorModel{ID: id, Name: "วิดีโอ " + fmt.Sprint(len(c.Models.Video)+1), Note: "เตรียมสำหรับระยะถัดไป", PointsPerUnit: f.options.VideoPoints, SupportsCharacterReference: true, Default: len(c.Models.Video) == 0})
+			}
+		}
+	}
+	if !c.Enabled {
+		c.UnavailableReason = directorPointer("ผู้กำกับยังไม่พร้อมใช้งาน กรุณาติดต่อผู้ดูแลระบบเพื่อตั้งค่าโมเดล ภาพตัวอย่าง และบริการจัดเก็บ")
+	}
+	return c
+}
+func directorBound(s string, min, max int) bool {
+	return utf8.ValidString(s) && utf8.RuneCountInString(strings.TrimSpace(s)) >= min && utf8.RuneCountInString(s) <= max
+}
+func directorContains(a []string, s string) bool {
+	for _, x := range a {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+func directorOption(a []dto.DirectorOption, s string) bool {
+	for _, x := range a {
+		if x.Value == s {
+			return true
+		}
+	}
+	return false
+}
+func directorModel(a []dto.DirectorModel, s string) bool {
+	for _, x := range a {
+		if x.ID == s {
+			return true
+		}
+	}
+	return false
+}
+func (f *DirectorFacade) settings(p *dto.DirectorProject) error {
+	c := f.Capabilities()
+	if !directorBound(p.Name, 1, 80) {
+		return directorInvalid("name")
+	}
+	if !directorOption(c.AspectRatios, p.AspectRatio) {
+		return directorInvalid("aspectRatio")
+	}
+	style := false
+	for _, s := range c.Styles {
+		style = style || s.Value == p.Style
+	}
+	if !style {
+		return directorInvalid("style")
+	}
+	valid := false
+	for _, r := range c.Resolutions {
+		valid = valid || (r.Value == p.Resolution && r.Available)
+	}
+	if !valid {
+		return directorInvalid("resolution")
+	}
+	return nil
+}
+func (f *DirectorFacade) validateIdea(in dto.DirectorIdea, generate bool, loadAsset func(string) (*models.LibraryAsset, error)) error {
+	cap := f.Capabilities()
+	min := 0
+	if generate {
+		min = 10
+	}
+	if !directorBound(in.Prompt, min, 1000) {
+		return directorInvalid("prompt")
+	}
+	if !directorOption(cap.Genres, in.Genre) {
+		return directorInvalid("genre")
+	}
+	if in.SceneCount < 1 || in.SceneCount > 10 {
+		return directorInvalid("sceneCount")
+	}
+	if len(in.Moods) > 3 || (generate && len(in.Moods) == 0) {
+		return directorInvalid("moods")
+	}
+	seen := map[string]bool{}
+	for _, m := range in.Moods {
+		if seen[m] || !directorContains(cap.Moods, m) {
+			return directorInvalid("moods")
+		}
+		seen[m] = true
+	}
+	if !directorModel(cap.Models.Story, in.StoryModelID) {
+		return directorInvalid("storyModelId")
+	}
+	if len(in.CharacterAssetIDs) > 4 {
+		return directorInvalid("characterAssetIds")
+	}
+	seen = map[string]bool{}
+	for _, id := range in.CharacterAssetIDs {
+		if _, e := uuid.Parse(id); e != nil || seen[id] {
+			return directorInvalid("characterAssetIds")
+		}
+		seen[id] = true
+		a, e := loadAsset(id)
+		if e != nil || a.AssetType != "character" || a.StorageKey == nil {
+			return directorInvalid("characterAssetIds")
+		}
+	}
+	return nil
+}
+func (f *DirectorFacade) estimates(p *dto.DirectorProject) {
+	n := 0
+	for _, s := range p.Scenes {
+		n += s.ShotCount
+	}
+	if len(p.Scenes) == 0 {
+		n = p.Idea.SceneCount * 3
+	}
+	p.Estimates = dto.DirectorEstimates{Story: f.options.StoryPoints, Cover: f.options.ImagePoints, Storyboard: n * f.options.ImagePoints, Video: directorTotal(p) * f.options.VideoPoints}
+}
+func (f *DirectorFacade) present(c context.Context, m *models.DirectorProject) (dto.DirectorProject, error) {
+	d, e := directorDecode(m)
+	if e != nil {
+		return dto.DirectorProject{}, e
+	}
+	p := d.Project
+	f.estimates(&p)
+	sign := func(key string) (*string, *time.Time, error) {
+		if key == "" {
+			return nil, nil, nil
+		}
+		u, t, e := f.storage.SignedURL(c, key, time.Hour)
+		if e != nil {
+			return nil, nil, e
+		}
+		return &u, &t, nil
+	}
+	if p.Cover != nil {
+		p.Cover.ImageURL, p.Cover.ExpiresAt, e = sign(d.Keys[p.Cover.ID])
+		if e != nil {
+			return p, e
+		}
+	}
+	var first *dto.DirectorShot
+	for i := range p.Scenes {
+		for j := range p.Scenes[i].Shots {
+			s := &p.Scenes[i].Shots[j]
+			s.Image.URL, s.Image.ExpiresAt, e = sign(d.Keys[s.ID])
+			if e != nil {
+				return p, e
+			}
+			if first == nil && s.Image.Status == "succeeded" {
+				first = s
+			}
+		}
+	}
+	p.CoverImageURL = nil
+	p.CoverImageExpiresAt = nil
+	if p.Cover != nil && p.Cover.Status == "succeeded" {
+		p.CoverImageURL = p.Cover.ImageURL
+		p.CoverImageExpiresAt = p.Cover.ExpiresAt
+	} else if first != nil {
+		p.CoverImageURL = first.Image.URL
+		p.CoverImageExpiresAt = first.Image.ExpiresAt
+	}
+	return p, nil
+}
+func (f *DirectorFacade) Get(c context.Context, id, user string) (dto.DirectorProject, string, error) {
+	if _, e := uuid.Parse(id); e != nil {
+		return dto.DirectorProject{}, "", repo.ErrNotFound
+	}
+	m, e := f.store.Get(c, id, user)
+	if e != nil {
+		return dto.DirectorProject{}, "", e
+	}
+	p, e := f.present(c, m)
+	return p, fmt.Sprintf("W/\"%d-%d\"", p.Revision, m.WorkVersion), e
+}
+func (f *DirectorFacade) List(c context.Context, user string, page, limit int, search string) (dto.DirectorList, error) {
+	out := dto.DirectorList{Items: []dto.DirectorSummary{}, Page: page, Limit: limit}
+	if page < 1 || limit < 1 || limit > 50 || !directorBound(search, 0, 80) {
+		return out, directorInvalid("pagination")
+	}
+	rows, n, e := f.store.List(c, user, page, limit, search)
+	out.Total = n
+	if e != nil {
+		return out, e
+	}
+	for i := range rows {
+		p, e := f.present(c, &rows[i])
+		if e != nil {
+			return out, e
+		}
+		out.Items = append(out.Items, dto.DirectorSummary{ID: p.ID, Name: p.Name, AspectRatio: p.AspectRatio, Style: p.Style, Resolution: p.Resolution, Step: p.Step, StoryStatus: p.Story.Status, StoryboardStatus: p.Storyboard.Status, SceneCount: p.Idea.SceneCount, TotalShots: p.Storyboard.TotalShots, CompletedImages: p.Storyboard.CompletedImages, CoverImageURL: p.CoverImageURL, CoverImageExpiresAt: p.CoverImageExpiresAt, UpdatedAt: p.UpdatedAt})
+	}
+	return out, nil
+}
+func (f *DirectorFacade) Create(c context.Context, user string, in req.DirectorRequest) (dto.DirectorProject, error) {
+	if _, e := uuid.Parse(in.IdempotencyKey); e != nil {
+		return dto.DirectorProject{}, directorInvalid("idempotencyKey")
+	}
+	if in.Name == nil || in.AspectRatio == nil || in.Style == nil || in.Resolution == nil {
+		return dto.DirectorProject{}, directorInvalid("request")
+	}
+	now := time.Now().UTC()
+	p := dto.DirectorProject{ID: uuid.NewString(), Revision: 1, Name: *in.Name, AspectRatio: *in.AspectRatio, Style: *in.Style, Resolution: *in.Resolution, Step: "idea", CreatedAt: now, UpdatedAt: now, Scenes: []dto.DirectorScene{}, Idea: dto.DirectorIdea{Genre: "adventure", SceneCount: 3, Moods: []string{}, CharacterAssetIDs: []string{}, StoryModelID: "director-story"}, Story: dto.DirectorStory{Status: "idle"}, Storyboard: dto.DirectorStoryboard{Status: "idle", ImageModelID: "director-image", StyleReference: "style"}}
+	cap := f.Capabilities()
+	if len(cap.Models.Video) > 0 {
+		p.Storyboard.VideoModelID = cap.Models.Video[0].ID
+	}
+	if e := f.settings(&p); e != nil {
+		return p, e
+	}
+	id, e := uuid.Parse(user)
+	if e != nil {
+		return p, repo.ErrNotFound
+	}
+	m := models.DirectorProject{Base: models.Base{ID: uuid.MustParse(p.ID), CreatedAt: now, UpdatedAt: now}, UserID: id, WorkVersion: 1}
+	d := directorDocument{Project: p, Keys: map[string]string{}, Generations: map[string]string{}}
+	if e = directorEncode(&m, &d); e != nil {
+		return p, e
+	}
+	row, e := f.store.Create(c, &m, in.IdempotencyKey, storyHash(struct {
+		Action string
+		Input  req.DirectorRequest
+	}{"create", in}))
+	if e != nil {
+		return p, e
+	}
+	return f.present(c, row)
+}
+func directorFindScene(p *dto.DirectorProject, id string) *dto.DirectorScene {
+	for i := range p.Scenes {
+		if p.Scenes[i].ID == id {
+			return &p.Scenes[i]
+		}
+	}
+	return nil
+}
+func directorFindShot(p *dto.DirectorProject, id string) *dto.DirectorShot {
+	for i := range p.Scenes {
+		for j := range p.Scenes[i].Shots {
+			if p.Scenes[i].Shots[j].ID == id {
+				return &p.Scenes[i].Shots[j]
+			}
+		}
+	}
+	return nil
+}
+func directorAnyWriting(p *dto.DirectorProject) bool {
+	for _, s := range p.Scenes {
+		if s.Status == "writing" {
+			return true
+		}
+	}
+	return false
+}
+func directorTotal(p *dto.DirectorProject) int {
+	n := 0
+	for _, s := range p.Scenes {
+		n += len(s.Shots)
+	}
+	return n
+}
+func directorRecount(p *dto.DirectorProject) {
+	n, done, active, bad := 0, 0, false, false
+	for _, sc := range p.Scenes {
+		for _, s := range sc.Shots {
+			n++
+			if s.Image.Status == "succeeded" {
+				done++
+			}
+			active = active || directorBusy(s.Image.Status)
+			bad = bad || s.Image.Status == "failed" || s.Image.Status == "needs_attention"
+		}
+	}
+	p.Storyboard.TotalShots = n
+	p.Storyboard.CompletedImages = done
+	if n > 0 {
+		p.Storyboard.Status = "succeeded"
+		if bad {
+			p.Storyboard.Status = "needs_attention"
+		}
+		if active {
+			p.Storyboard.Status = "processing"
+		}
+	}
+}
+func (f *DirectorFacade) job(d *directorDocument, kind, target string, cost int, in req.DirectorRequest, loadAsset func(string) (*models.LibraryAsset, error)) (models.DirectorJob, error) {
+	snapshot := directorJobInput{Project: d.Project, Generation: uuid.NewString(), Model: f.options.ImageModel, ImageModel: f.options.ImageModel}
+	if kind == "story" || kind == "rewrite" || kind == "plan" || kind == "add" {
+		snapshot.Model = f.options.AnalysisModel
+	}
+	if in.Instruction != nil {
+		snapshot.Instruction = *in.Instruction
+	}
+	if sh := directorFindShot(&d.Project, target); sh != nil {
+		snapshot.Description = sh.Description
+		snapshot.Camera = sh.Camera
+	}
+	for _, id := range d.Project.Idea.CharacterAssetIDs {
+		a, e := loadAsset(id)
+		if e != nil || a.StorageKey == nil {
+			return models.DirectorJob{}, directorInvalid("characterAssetIds")
+		}
+		snapshot.Characters = append(snapshot.Characters, directorCharacter{ID: id, Description: a.Description, Key: *a.StorageKey})
+	}
+	if d.Project.Cover != nil && d.Project.Cover.Source == "generated" && d.Project.Cover.Status == "succeeded" {
+		snapshot.CoverKey = d.Keys[d.Project.Cover.ID]
+	}
+	d.Generations[target] = snapshot.Generation
+	b, e := json.Marshal(snapshot)
+	return models.DirectorJob{Base: models.Base{ID: uuid.New()}, Kind: kind, TargetID: target, Status: "queued", Snapshot: b, Cost: cost}, e
+}
+func (f *DirectorFacade) Mutate(c context.Context, id, user, action, target string, in req.DirectorRequest) (dto.DirectorProject, error) {
+	if _, e := uuid.Parse(id); e != nil {
+		return dto.DirectorProject{}, repo.ErrNotFound
+	}
+	ai := directorContains([]string{"cover-generate", "story", "rewrite", "storyboard", "regenerate", "retry", "add"}, action)
+	if ai {
+		if _, e := uuid.Parse(in.IdempotencyKey); e != nil {
+			return dto.DirectorProject{}, directorInvalid("idempotencyKey")
+		}
+	}
+	if in.Revision == nil {
+		return dto.DirectorProject{}, directorInvalid("revision")
+	}
+	key := ""
+	if ai {
+		key = in.IdempotencyKey
+	}
+	hash := storyHash(struct {
+		Action, Project, Target string
+		Input                   req.DirectorRequest
+	}{action, id, target, in})
+	row, e := f.store.Change(c, id, user, key, hash, func(m *models.DirectorProject, loadAsset func(string) (*models.LibraryAsset, error)) ([]models.DirectorJob, error) {
+		d, e := directorDecode(m)
+		if e != nil {
+			return nil, e
+		}
+		p := &d.Project
+		if *in.Revision != p.Revision {
+			return nil, &DirectorError{Status: 409, Code: "REVISION_CONFLICT", Message: "มีการแก้ไขจากอีกแท็บ กรุณาโหลดข้อมูลล่าสุด", CurrentRevision: directorPointer(p.Revision)}
+		}
+		if ai && !f.Capabilities().Enabled {
+			return nil, directorError(503, "DIRECTOR_UNAVAILABLE")
+		}
+		jobs := []models.DirectorJob{}
+		enqueue := func(kind, t string, cost int) error {
+			j, e := f.job(&d, kind, t, cost, in, loadAsset)
+			if e == nil {
+				jobs = append(jobs, j)
+			}
+			return e
+		}
+		changed := true
+		switch action {
+		case "project":
+			changed = false
+			if in.Name != nil {
+				p.Name = *in.Name
+				changed = true
+			}
+			if in.AspectRatio != nil || in.Style != nil || in.Resolution != nil {
+				if p.Storyboard.Status != "idle" {
+					return nil, directorError(409, "DIRECTOR_STATE_CONFLICT")
+				}
+				changed = true
+			}
+			if in.AspectRatio != nil {
+				p.AspectRatio = *in.AspectRatio
+			}
+			if in.Resolution != nil {
+				p.Resolution = *in.Resolution
+			}
+			if in.Style != nil {
+				if p.Style != *in.Style && p.Cover != nil && p.Cover.Source == "generated" {
+					delete(d.Generations, p.Cover.ID)
+					p.Cover = nil
+				}
+				p.Style = *in.Style
+			}
+			if e = f.settings(p); e != nil {
+				return nil, e
+			}
+			if in.Step != nil {
+				if *in.Step != "idea" && (*in.Step != "plot" || p.Story.Status == "idle") && (*in.Step != "storyboard" || p.Storyboard.Status == "idle") {
+					return nil, directorError(409, "DIRECTOR_STATE_CONFLICT")
+				}
+				p.Step = *in.Step
+			}
+		case "delete":
+			m.DeletedAt = gorm.DeletedAt{Time: time.Now(), Valid: true}
+			changed = false
+		case "idea":
+			if directorBusy(p.Story.Status) {
+				return nil, directorError(409, "DIRECTOR_STATE_CONFLICT")
+			}
+			if in.Prompt == nil || in.Genre == nil || in.Moods == nil || in.SceneCount == nil || in.CharacterAssetIDs == nil || in.StoryModelID == nil {
+				return nil, directorInvalid("idea")
+			}
+			idea := dto.DirectorIdea{Prompt: *in.Prompt, Genre: *in.Genre, Moods: *in.Moods, SceneCount: *in.SceneCount, CharacterAssetIDs: *in.CharacterAssetIDs, StoryModelID: *in.StoryModelID}
+			if e = f.validateIdea(idea, false, loadAsset); e != nil {
+				return nil, e
+			}
+			p.Idea = idea
+		case "cover-generate":
+			changed = false
+			if !directorBound(p.Idea.Prompt, 10, 1000) {
+				return nil, directorInvalid("prompt")
+			}
+			if p.Cover != nil && directorBusy(p.Cover.Status) {
+				return nil, directorError(409, "COVER_IN_PROGRESS")
+			}
+			model := p.Storyboard.ImageModelID
+			if in.ImageModelID != nil {
+				model = *in.ImageModelID
+			}
+			if !directorModel(f.Capabilities().Models.Image, model) {
+				return nil, directorInvalid("imageModelId")
+			}
+			p.Cover = &dto.DirectorCover{ID: uuid.NewString(), Status: "queued", Source: "generated", ImageModelID: &model, PointsCharged: directorPointer(f.options.ImagePoints)}
+			if e = enqueue("cover", p.Cover.ID, f.options.ImagePoints); e != nil {
+				return nil, e
+			}
+		case "cover-shot":
+			if p.Cover != nil && directorBusy(p.Cover.Status) {
+				return nil, directorError(409, "COVER_IN_PROGRESS")
+			}
+			if in.ShotID == nil {
+				return nil, directorInvalid("shotId")
+			}
+			sh := directorFindShot(p, *in.ShotID)
+			if sh == nil {
+				return nil, directorError(404, "SHOT_NOT_FOUND")
+			}
+			if sh.Image.Status != "succeeded" {
+				return nil, directorError(409, "DIRECTOR_STATE_CONFLICT")
+			}
+			cover := &dto.DirectorCover{ID: uuid.NewString(), Source: "shot", ShotID: directorPointer(sh.ID), Status: "succeeded", Progress: 100}
+			d.Keys[cover.ID] = d.Keys[sh.ID]
+			p.Cover = cover
+		case "cover-delete":
+			if p.Cover != nil && directorBusy(p.Cover.Status) {
+				return nil, directorError(409, "COVER_IN_PROGRESS")
+			}
+			if p.Cover != nil {
+				delete(d.Generations, p.Cover.ID)
+			}
+			p.Cover = nil
+		case "story":
+			if directorBusy(p.Story.Status) || directorBusy(p.Storyboard.Status) || directorAnyWriting(p) {
+				return nil, directorError(409, "DIRECTOR_STATE_CONFLICT")
+			}
+			if p.Story.Status != "idle" && !in.Replace {
+				return nil, directorError(409, "STORY_EXISTS")
+			}
+			if e = f.validateIdea(p.Idea, true, loadAsset); e != nil {
+				return nil, e
+			}
+			// Replacing the story invalidates all old scene/shot generation tokens.
+			for _, sc := range p.Scenes {
+				delete(d.Generations, sc.ID)
+				for _, sh := range sc.Shots {
+					delete(d.Generations, sh.ID)
+				}
+			}
+			p.Scenes = []dto.DirectorScene{}
+			for i := 0; i < p.Idea.SceneCount; i++ {
+				p.Scenes = append(p.Scenes, dto.DirectorScene{ID: uuid.NewString(), Index: i + 1, Status: "pending", ShotCount: 3, CharacterAssetIDs: []string{}, Shots: []dto.DirectorShot{}})
+			}
+			p.Story = dto.DirectorStory{Status: "queued", Phase: directorPointer("analyzing"), StoryModelID: directorPointer(p.Idea.StoryModelID), TotalScenes: p.Idea.SceneCount, PointsCharged: f.options.StoryPoints}
+			p.Storyboard.Status = "idle"
+			p.Storyboard.TotalShots = 0
+			p.Storyboard.CompletedImages = 0
+			p.Step = "plot"
+			if e = enqueue("story", "story", f.options.StoryPoints); e != nil {
+				return nil, e
+			}
+		case "scene", "rewrite":
+			sc := directorFindScene(p, target)
+			if sc == nil {
+				return nil, directorError(404, "SCENE_NOT_FOUND")
+			}
+			if action == "rewrite" && directorAnyWriting(p) {
+				return nil, directorError(409, "SCENE_BUSY")
+			}
+			retryableScene := action == "rewrite" && sc.Status == "failed" && sc.CanRetry
+			if (sc.Status != "ready" && !retryableScene) || directorBusy(p.Storyboard.Status) {
+				return nil, directorError(409, "DIRECTOR_STATE_CONFLICT")
+			}
+			if action == "rewrite" {
+				if directorAnyWriting(p) {
+					return nil, directorError(409, "SCENE_BUSY")
+				}
+				if in.Instruction != nil && !directorBound(*in.Instruction, 0, 300) {
+					return nil, directorInvalid("instruction")
+				}
+				sc.Status = "writing"
+				sc.DirectorFailure = dto.DirectorFailure{}
+				if e = enqueue("rewrite", sc.ID, (f.options.StoryPoints+len(p.Scenes)-1)/len(p.Scenes)); e != nil {
+					return nil, e
+				}
+			} else {
+				if in.Title != nil {
+					if !directorBound(*in.Title, 1, 80) {
+						return nil, directorInvalid("title")
+					}
+					sc.Title = *in.Title
+				}
+				if in.Summary != nil {
+					if !directorBound(*in.Summary, 1, 1200) {
+						return nil, directorInvalid("summary")
+					}
+					sc.Summary = *in.Summary
+				}
+				if in.ShotCount != nil {
+					if *in.ShotCount < 1 || *in.ShotCount > 6 {
+						return nil, directorInvalid("shotCount")
+					}
+					sc.ShotCount = *in.ShotCount
+				}
+				total := 0
+				for _, s := range p.Scenes {
+					total += s.ShotCount
+				}
+				if total > 40 {
+					return nil, directorError(409, "SHOT_LIMIT")
+				}
+			}
+		case "settings":
+			if directorBusy(p.Storyboard.Status) {
+				return nil, directorError(409, "DIRECTOR_STATE_CONFLICT")
+			}
+			cap := f.Capabilities()
+			if in.ImageModelID != nil {
+				if !directorModel(cap.Models.Image, *in.ImageModelID) {
+					return nil, directorInvalid("imageModelId")
+				}
+				p.Storyboard.ImageModelID = *in.ImageModelID
+			}
+			if in.VideoModelID != nil {
+				if !directorModel(cap.Models.Video, *in.VideoModelID) {
+					return nil, directorInvalid("videoModelId")
+				}
+				p.Storyboard.VideoModelID = *in.VideoModelID
+			}
+		case "storyboard":
+			if p.Story.Status != "succeeded" || directorBusy(p.Storyboard.Status) {
+				return nil, directorError(409, "DIRECTOR_STATE_CONFLICT")
+			}
+			if directorTotal(p) > 0 && !in.Replace {
+				return nil, directorError(409, "STORYBOARD_EXISTS")
+			}
+			n := 0
+			for _, sc := range p.Scenes {
+				if sc.Status != "ready" {
+					return nil, directorError(409, "DIRECTOR_STATE_CONFLICT")
+				}
+				n += sc.ShotCount
+			}
+			if n > 40 {
+				return nil, directorError(409, "SHOT_LIMIT")
+			}
+			if p.Cover != nil && p.Cover.Source == "shot" {
+				p.Cover = nil
+			}
+			for i := range p.Scenes {
+				sc := &p.Scenes[i]
+				for _, sh := range sc.Shots {
+					delete(d.Generations, sh.ID)
+				}
+				sc.Shots = []dto.DirectorShot{}
+				for j := 0; j < sc.ShotCount; j++ {
+					sc.Shots = append(sc.Shots, dto.DirectorShot{ID: uuid.NewString(), SceneID: sc.ID, Index: j + 1, Camera: f.Capabilities().Cameras[0], CharacterAssetIDs: append([]string{}, sc.CharacterAssetIDs...), Image: dto.DirectorImage{Status: "pending"}, PointsCharged: directorPointer(f.options.ImagePoints)})
+				}
+			}
+			p.Storyboard.Status = "queued"
+			p.Storyboard.TotalShots = n
+			p.Storyboard.CompletedImages = 0
+			p.Storyboard.StyleReference = "style"
+			if p.Cover != nil && p.Cover.Source == "generated" && p.Cover.Status == "succeeded" && len(p.Idea.CharacterAssetIDs) == 0 {
+				p.Storyboard.StyleReference = "cover"
+			}
+			p.Step = "storyboard"
+			if e = enqueue("plan", "storyboard", 0); e != nil {
+				return nil, e
+			}
+			for _, sc := range p.Scenes {
+				for _, sh := range sc.Shots {
+					if e = enqueue("image", sh.ID, f.options.ImagePoints); e != nil {
+						return nil, e
+					}
+				}
+			}
+		case "shot", "regenerate", "retry", "shot-delete":
+			sh := directorFindShot(p, target)
+			if sh == nil {
+				return nil, directorError(404, "SHOT_NOT_FOUND")
+			}
+			switch action {
+			case "shot":
+				if in.Description != nil {
+					if !directorBound(*in.Description, 1, 600) {
+						return nil, directorInvalid("description")
+					}
+					sh.Description = *in.Description
+				}
+				if in.Camera != nil {
+					if !directorContains(f.Capabilities().Cameras, *in.Camera) {
+						return nil, directorInvalid("camera")
+					}
+					sh.Camera = *in.Camera
+				}
+				if sh.Image.Status == "succeeded" || d.Keys[sh.ID] != "" {
+					sh.Image.Stale = true
+				}
+			case "shot-delete":
+				sc := directorFindScene(p, sh.SceneID)
+				if len(sc.Shots) < 2 {
+					return nil, directorError(409, "LAST_SHOT")
+				}
+				next := []dto.DirectorShot{}
+				for _, s := range sc.Shots {
+					if s.ID != target {
+						s.Index = len(next) + 1
+						next = append(next, s)
+					}
+				}
+				sc.Shots = next
+				delete(d.Generations, target)
+				if p.Cover != nil && p.Cover.ShotID != nil && *p.Cover.ShotID == target {
+					p.Cover = nil
+				}
+				directorRecount(p)
+			default:
+				if directorBusy(sh.Image.Status) {
+					return nil, directorError(409, "SHOT_BUSY")
+				}
+				if action == "retry" && !sh.Image.CanRetry {
+					return nil, directorError(409, "DIRECTOR_STATE_CONFLICT")
+				}
+				sh.Image.Status = "queued"
+				sh.Image.Progress = 0
+				sh.Image.Stale = false
+				sh.Image.DirectorFailure = dto.DirectorFailure{}
+				sh.PointsCharged = directorPointer(f.options.ImagePoints)
+				sh.PointsRefunded = 0
+				if e = enqueue("image", sh.ID, f.options.ImagePoints); e != nil {
+					return nil, e
+				}
+				directorRecount(p)
+			}
+		case "add":
+			sc := directorFindScene(p, target)
+			if sc == nil {
+				return nil, directorError(404, "SCENE_NOT_FOUND")
+			}
+			if sc.Status != "ready" || directorBusy(p.Storyboard.Status) || p.Storyboard.Status == "idle" {
+				return nil, directorError(409, "DIRECTOR_STATE_CONFLICT")
+			}
+			if len(sc.Shots) >= 8 || directorTotal(p) >= 40 {
+				return nil, directorError(409, "SHOT_LIMIT")
+			}
+			pos := len(sc.Shots)
+			if in.AfterShotID != nil {
+				pos = -1
+				for i, s := range sc.Shots {
+					if s.ID == *in.AfterShotID {
+						pos = i + 1
+					}
+				}
+				if pos < 0 {
+					return nil, directorInvalid("afterShotId")
+				}
+			}
+			sh := dto.DirectorShot{ID: uuid.NewString(), SceneID: sc.ID, Camera: f.Capabilities().Cameras[0], CharacterAssetIDs: append([]string{}, sc.CharacterAssetIDs...), Image: dto.DirectorImage{Status: "pending"}, PointsCharged: directorPointer(f.options.ImagePoints)}
+			sc.Shots = append(sc.Shots, dto.DirectorShot{})
+			copy(sc.Shots[pos+1:], sc.Shots[pos:])
+			sc.Shots[pos] = sh
+			for i := range sc.Shots {
+				sc.Shots[i].Index = i + 1
+			}
+			if e = enqueue("add", sh.ID, f.options.ImagePoints); e != nil {
+				return nil, e
+			}
+			directorRecount(p)
+		case "video":
+			return nil, directorError(501, "NOT_IMPLEMENTED")
+		default:
+			return nil, directorInvalid("action")
+		}
+		if changed {
+			p.Revision++
+		}
+		f.estimates(p)
+		if e = directorEncode(m, &d); e != nil {
+			return nil, e
+		}
+		return jobs, nil
+	})
+	if e != nil {
+		return dto.DirectorProject{}, e
+	}
+	return f.present(c, row)
+}
+
+// HTTP consumers classify domain failures without importing persistence packages.
+type DirectorInsufficientPoints = repo.DirectorInsufficient
+
+var (
+	ErrDirectorProjectNotFound     = repo.ErrNotFound
+	ErrDirectorAdmissionLimit      = repo.ErrConflict
+	ErrDirectorIdempotencyConflict = repo.ErrDirectorIdempotency
+)

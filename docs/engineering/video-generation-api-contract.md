@@ -486,3 +486,134 @@ For local development: `http://localhost:3000`.
 | Exact BytePlus status strings | Drives status mapper | Agent D |
 | Project vs Job distinction | Are they the same entity? | Agent C + E |
 | CORS exact origins (production) | Affects browser access | Agent F |
+
+## Phase-one Character Studio extension (2026-10-15)
+
+See [character-studio-api-contract.md](character-studio-api-contract.md) for the
+additive authentication, image generation and personal asset library contract.
+Image generation uses its dedicated endpoint; existing video `image_image` mode
+is a video reference input mode and must not be presented as image generation.
+
+## Project production extension (2026-10-15)
+
+The implemented project workspace, persisted editor, scene versions/library references,
+configured video capabilities and snapshot-safe export additions are specified in
+[video-production-api-contract.md](video-production-api-contract.md).
+That additive contract governs those new routes and fields; legacy DNA/job routes remain.
+Exports now accept 1–20 clips, with immutable source snapshots, optional idempotency,
+and explicit retry. Video percentages/ETA are indeterminate until completion.
+
+## Accepted video submission persistence
+
+After a provider returns a task ID, the API attempts to persist it up to three times
+within an independent five-second deadline, even if the caller cancels. It never
+repeats the provider POST. If persistence remains unavailable, creation returns the
+existing application job ID with `status: "queued"`; replay the same idempotency
+key rather than starting another paid request. The poller marks queued video jobs
+without a provider task ID after two minutes as failed with job error code
+`SUBMISSION_INTERRUPTED`. This means acceptance/billing is uncertain: do not blindly
+resubmit; inspect provider history or contact an administrator. There is no automatic
+provider reconciliation. A process crash before task-ID durability remains a manual
+recovery case; these retries reduce the gap without eliminating it.
+
+## Reference images and scene backgrounds
+
+For new video jobs, image assets keep their submitted order and roles. Prompt
+labels `Image 1`, `Image 2`, etc. count image items in that same order; text and
+video items do not consume image numbers. A `reference_image` uses subject
+appearance without borrowing its source backdrop. The existing scene description
+and explicit scene setting override determine the environment. If neither names
+an environment, no specific replacement environment is prescribed; the server
+does not invent a white/studio background.
+
+`first_frame` and `last_frame` retain the complete supplied frame, composition and
+background as the requested video start/end. They do not receive subject-only
+background replacement instructions. Existing scenes keep their saved mode;
+background replacement intent requires choosing reference-image mode rather than
+silently changing first-frame semantics. These are prompt instructions, not
+actual image segmentation or a guarantee of generated background separation.
+
+Scene camera/setting overrides are sent even without a style profile, and scene
+camera overrides retain precedence over style camera settings. Negative DNA tags
+are included in the actual text content under `Constraints:`; no unsupported
+provider negative-prompt field is added. Role/background controls, scene overrides
+and negative constraints precede the creative brief within the existing
+2,000-rune prompt budget. Normal-sized controls survive long briefs; control text
+that alone exceeds the budget can still be truncated. Character DNA and
+consistency notes remain part of the creative input under existing limits.
+
+Only newly compiled submissions use these instructions. Replaying an existing
+job with the same request and idempotency key returns that stored job without
+changing its original compiled prompt/snapshot or submitting another provider POST.
+No face-identity guarantee, model-policy bypass or new request field is introduced.
+
+### Character reference image generation (2026-10-22)
+
+The authoritative character endpoint extension is documented in
+[character-studio-api-contract.md](character-studio-api-contract.md#character-reference-image-to-image-2026-10-22).
+Image capabilities expose `supportsCharacterReferenceImage`, `characterReferenceMode:
+"image_to_image"`, and nullable `characterReferenceUnavailableReason`.
+Character reference readiness requires an image model, without a vision analyzer.
+New character jobs use compiler `character-design-v2`: supplied `referenceImageId`
+is sent directly to Seedream with a synthetic-character prompt preserving visible
+structure except explicit edits. Without a reference, generation remains text-only.
+Missing image model returns HTTP 503 `IMAGE_UNAVAILABLE`.
+Queued descriptive-reference jobs and idempotent replays preserve frozen legacy
+behavior. Product behavior and POST request shape are unchanged. Existing Seedance
+first-frame video input remains available; image-conditioned prompts
+add natural motion, coherent anatomy, physical lighting/material response and temporal
+stability while retaining referenced structure and selected visual style. Text-only
+video prompts are unchanged. There is no live-action override or acceptance guarantee.
+
+## One-click photo → synthetic character → realistic video
+
+See [studio-pipeline-api-contract.md](studio-pipeline-api-contract.md) for durable server-owned orchestration, exact spoken dialogue, owned Library assets, capabilities and safe retry rules. Requires separately applied migration 019; no browser child-job orchestration.
+
+Studio pipeline character sources: `referenceImageId` upload, mutually exclusive `characterAssetId` owned generated Library character, or neither for text-to-image. `characterPrompt` optional only for Library reuse; scene always required. Responses add `sourceMode: upload|text|library`; capabilities add `textEnabled`, `libraryEnabled`, `libraryAspectRatios`, `libraryDurations`. Library skips image generation. See the authoritative [pipeline contract](studio-pipeline-api-contract.md) for validation, replay and compatibility.
+
+Pipeline validation feedback adds safe `details: [{field,reason,message}]` on facade HTTP400 `VALIDATION_ERROR`. Reasons and combined scene/dialogue prompt-budget semantics are defined in [studio-pipeline-api-contract.md](studio-pipeline-api-contract.md#actionable-pipeline-validation). Existing request hashes, provider budgets and source selection are unchanged.
+
+## Story Flow (isolated additive domain)
+
+See [Story Flow API](story-flow-api-contract.md). Requires migration020; no legacy scenes/jobs/pipelines/exports are repurposed.
+
+## Director (editable successor, phase 1)
+
+The separate `/open/v1/director` domain follows the
+[Director contract](director-api-contract.md). It preserves Story Flow projects and
+routes. Its browser caller remains the Director prototype until the Web client is
+connected; see the implementation addendum for billing and adapter constraints.
+
+## Independent footage video editor
+
+The phase-one footage editor uses `/open/v1/video-editor` and its own projects,
+assets and immutable export snapshots. See [video-editor-api-contract.md](video-editor-api-contract.md)
+for the authoritative routes, revision/idempotency semantics, upload constraints
+and segment identity. Editor capabilities add `textTransforms`; optional text-layer
+`scaleX`/`scaleY` preserve independent stage resizing through save and export.
+Existing generation/project/storyboard APIs remain unchanged.
+
+## AI editor phase 2
+
+See [video-editor AI contract](video-editor-ai-api-contract.md) for additive local transcription, Gemini analysis, reviewed draft and revision-guarded apply endpoints. Optional `autoCompose` ranks
+and plans the recommended concept, composes grounded caption/title layers and an
+owned optional low-volume audio bed, and applies them while preserving manual tracks.
+
+### Studio pipeline draft/final extension (2026-11-02)
+
+The authoritative pipeline fields and endpoint are specified in
+[Studio pipeline contract](studio-pipeline-api-contract.md#draft-and-final-rendering-2026-11-02).
+`draft` now survives pipeline request persistence and child submission; resolved
+model capabilities control support. Pipeline DTOs expose durable `isDraft`,
+`canCreateFinal`, model/settings metadata, nullable `draftExpiresAt`,
+`finalUnavailableReason` and `sourceDraftId`. `POST /studio-pipelines/:id/finalize`
+with only `idempotencyKey` creates an idempotent separate final render from the
+owned succeeded draft; original draft and character remain intact. A final uses
+the stored provider draft at 1080p. Expired sources return 409 `DRAFT_EXPIRED`.
+
+
+Studio pipeline Library compatibility: `characterAssetId` accepts a canonical
+UUID of any version, including deterministic UUIDv5 IDs returned by pipeline
+asset creation. Ownership/provenance validation remains server-side. Upload
+`referenceImageId` and create/finalize `idempotencyKey` remain UUIDv4-only; see
+[Studio pipeline contract](studio-pipeline-api-contract.md#library-asset-uuid-compatibility-2026-11-02).

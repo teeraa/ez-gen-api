@@ -49,6 +49,7 @@ func (h *JobHandler) CreateJob(c *fiber.Ctx) error {
 		DurationSeconds:     req.Duration,
 		Quality:             req.Quality,
 		EnhancePrompt:       req.EnhancePrompt,
+		Draft:               req.Draft,
 		UploadID:            req.ReferenceImageID,
 		SceneID:             req.SceneID,
 		CharacterProfileID:  req.CharacterProfileID,

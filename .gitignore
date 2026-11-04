@@ -30,3 +30,9 @@ coverage.html
 
 # Migration state
 *.lock
+
+# Local Python runtime and downloaded speech models
+/venv/
+/models/
+__pycache__/
+*.py[cod]

@@ -4,20 +4,26 @@
 package promptcompiler
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/ez-gen/ez-gen-api/apps/models"
+	"github.com/ez-gen/ez-gen-api/apps/services/characterdesign"
 	"github.com/ez-gen/ez-gen-api/apps/services/modelark"
 )
+
+var ErrPromptBudget = errors.New("dialogue exceeds prompt budget")
 
 // Result is returned by Compile and contains everything needed to
 // (a) submit a generation job and (b) store an immutable effective-inputs snapshot.
 type Result struct {
 	// CompiledPrompt is the final text prompt sent to the provider.
 	CompiledPrompt string
-	// NegativeInstructions holds tokens from negative_constraint tags (appended separately).
+	// NegativeInstructions mirrors negative tags also included in the provider text.
 	NegativeInstructions string
 	// ContentItems is the ordered list ready for the ModelArk CreateTaskRequest.
 	ContentItems []modelark.ContentItem
@@ -35,6 +41,8 @@ type Result struct {
 // video_generation_jobs.effective_inputs (JSONB). Editing profiles after
 // submission does not change this record.
 type EffectiveInputsSnapshot struct {
+	PipelineRenderingVersion string `json:"pipelineRenderingVersion,omitempty"`
+	Dialogue                 string `json:"dialogue,omitempty"`
 	// CharacterProfileID/Version mirror Characters[0] for rows written before
 	// multi-character scenes.
 	CharacterProfileID      string              `json:"characterProfileId,omitempty"`
@@ -73,6 +81,9 @@ type SnapshotAsset struct {
 // It does not make network calls or read from the database.
 func Compile(in Inputs, model modelark.ModelConfig) (*Result, error) {
 
+	if utf8.RuneCountInString(in.Dialogue) > 1000 || (in.Dialogue != "" && !model.SupportsAudio) {
+		return nil, errors.New("dialogue is not supported")
+	}
 	// ── 1. Validate asset support ──────────────────────────────────────────────
 	mode, err := resolveMode(in.Assets)
 	if err != nil {
@@ -83,63 +94,19 @@ func Compile(in Inputs, model modelark.ModelConfig) (*Result, error) {
 	}
 
 	// ── 2. Compile text prompt sections ──────────────────────────────────────
-	var sections []string
+	controls, sections, negativeInstructions := assemblePrompt(in)
 
-	// 2a. Scene description / action (most specific — goes first)
-	if in.Scene != nil {
-		if in.Scene.ActionOverride != "" {
-			sections = append(sections, in.Scene.ActionOverride)
-		} else if in.Scene.Description != "" {
-			sections = append(sections, in.Scene.Description)
+	// Protect normal-sized role, environment and negative controls from a long creative brief.
+	// The overall rune budget still applies when control text alone exceeds it.
+	compiledPrompt := truncateRunes(strings.Join(append(controls, sections...), ". "), maxPromptRunes)
+	if in.Dialogue != "" {
+		speech := spokenDialogue(in.Dialogue, model.ProviderModelID)
+		budget := maxPromptRunes - utf8.RuneCountInString(speech) - 2
+		if budget < 0 || utf8.RuneCountInString(strings.Join(append(controls, sections...), ". ")) > budget {
+			return nil, ErrPromptBudget
 		}
+		compiledPrompt = speech + ". " + truncateRunes(strings.Join(append(controls, sections...), ". "), budget)
 	}
-
-	// 2b. Character appearance. Each description is labelled with the character's
-	// name so the model can tell who is who, and capped so one verbose profile
-	// cannot crowd the others out of the prompt limit.
-	characterBudget := maxCharacterSectionRunes
-	if n := len(in.Characters); n > 1 {
-		characterBudget = maxCharacterSectionRunes / n
-	}
-	for i := range in.Characters {
-		if desc := labelledCharacter(&in.Characters[i], buildCharacterDescription(&in.Characters[i])); desc != "" {
-			sections = append(sections, truncateRunes(desc, characterBudget))
-		}
-	}
-
-	// 2c. Style attributes — camera uses scene override when present
-	if in.Style != nil {
-		styleDesc := buildStyleDescription(in.Style, in.Scene)
-		if styleDesc != "" {
-			sections = append(sections, styleDesc)
-		}
-	}
-
-	// 2d. Non-negative tags contribute prompt tokens
-	var positiveTagTokens []string
-	var negativeTagTokens []string
-	for _, tag := range in.Tags {
-		if tag.Category == models.TagCategoryNegativeConstraint {
-			negativeTagTokens = append(negativeTagTokens, tag.Name)
-		} else {
-			positiveTagTokens = append(positiveTagTokens, tag.Name)
-		}
-	}
-	if len(positiveTagTokens) > 0 {
-		sections = append(sections, strings.Join(positiveTagTokens, ", "))
-	}
-
-	// 2e. Consistency notes appended at the end of the character section
-	for i := range in.Characters {
-		if notes := in.Characters[i].ConsistencyNotes; notes != "" {
-			sections = append(sections, truncateRunes(labelledCharacter(&in.Characters[i], notes), characterBudget))
-		}
-	}
-
-	// Truncating by rune keeps Thai and other multi-byte text valid UTF-8.
-	compiledPrompt := truncateRunes(strings.Join(sections, ". "), maxPromptRunes)
-
-	negativeInstructions := strings.Join(negativeTagTokens, ", ")
 
 	// ── 3. Build content items (text first, then images in role order) ─────────
 	items := []modelark.ContentItem{
@@ -162,8 +129,10 @@ func Compile(in Inputs, model modelark.ModelConfig) (*Result, error) {
 
 	// ── 4. Build snapshot ─────────────────────────────────────────────────────
 	snap := EffectiveInputsSnapshot{
-		ModelID:    in.ModelID,
-		Resolution: resolution,
+		PipelineRenderingVersion: in.PipelineRenderingVersion,
+		Dialogue:                 in.Dialogue,
+		ModelID:                  in.ModelID,
+		Resolution:               resolution,
 	}
 	for i := range in.Characters {
 		c := &in.Characters[i]
@@ -208,12 +177,166 @@ func Compile(in Inputs, model modelark.ModelConfig) (*Result, error) {
 		ContentItems:         items,
 		ProviderModelID:      model.ProviderModelID,
 		Resolution:           resolution,
-		GenerateAudio:        model.SupportsAudio,
+		GenerateAudio:        model.SupportsAudio && (in.Dialogue != "" || (model.ProviderModelID != "dreamina-seedance-2-0-fast-260128" && model.ProviderModelID != "dreamina-seedance-2-0-260128")),
 		Snapshot:             snap,
 	}, nil
 }
 
 // ─── private helpers ─────────────────────────────────────────────────────────
+
+// assemblePrompt builds the control and content sections of the text prompt. Compile and
+// PromptUsage both use it, so a preflight budget always matches what Compile enforces.
+func assemblePrompt(in Inputs) (controls, sections []string, negativeInstructions string) {
+	controls = referenceControls(in.Assets, in.PipelineRenderingVersion)
+	if in.Scene != nil {
+		if in.Scene.SettingOverride != "" {
+			controls = append(controls, "Scene environment: "+in.Scene.SettingOverride)
+		}
+		if in.Scene.CameraOverride != "" {
+			controls = append(controls, "Scene camera: "+in.Scene.CameraOverride)
+		}
+	}
+
+	// 2a. Scene description / action (most specific — goes first)
+	if in.Scene != nil {
+		if in.Scene.ActionOverride != "" {
+			sections = append(sections, in.Scene.ActionOverride)
+		} else if in.Scene.Description != "" {
+			sections = append(sections, in.Scene.Description)
+		}
+	}
+
+	// 2b. Character appearance. Each description is labelled with the character's
+	// name so the model can tell who is who, and capped so one verbose profile
+	// cannot crowd the others out of the prompt limit.
+	characterBudget := maxCharacterSectionRunes
+	if n := len(in.Characters); n > 1 {
+		characterBudget = maxCharacterSectionRunes / n
+	}
+	for i := range in.Characters {
+		if desc := labelledCharacter(&in.Characters[i], buildCharacterDescription(&in.Characters[i])); desc != "" {
+			sections = append(sections, truncateRunes(desc, characterBudget))
+		}
+	}
+
+	// 2c. Style attributes — camera uses scene override when present
+	if in.Style != nil {
+		style := *in.Style
+		if in.Scene != nil && in.Scene.CameraOverride != "" {
+			style.CameraLanguage = ""
+		}
+		styleDesc := buildStyleDescription(&style, nil)
+		if styleDesc != "" {
+			sections = append(sections, styleDesc)
+		}
+	}
+
+	// 2d. Non-negative tags contribute prompt tokens
+	var positiveTagTokens []string
+	var negativeTagTokens []string
+	for _, tag := range in.Tags {
+		if tag.Category == models.TagCategoryNegativeConstraint {
+			negativeTagTokens = append(negativeTagTokens, tag.Name)
+		} else {
+			positiveTagTokens = append(positiveTagTokens, tag.Name)
+		}
+	}
+	if len(positiveTagTokens) > 0 {
+		sections = append(sections, strings.Join(positiveTagTokens, ", "))
+	}
+
+	// 2e. Consistency notes appended at the end of the character section
+	for i := range in.Characters {
+		if notes := in.Characters[i].ConsistencyNotes; notes != "" {
+			sections = append(sections, truncateRunes(labelledCharacter(&in.Characters[i], notes), characterBudget))
+		}
+	}
+
+	negativeInstructions = strings.Join(negativeTagTokens, ", ")
+	if negativeInstructions != "" {
+		controls = append(controls, "Constraints: "+negativeInstructions)
+	}
+	return controls, sections, negativeInstructions
+}
+
+// PromptUsage reports the runes the compiled prompt needs (controls, scene, characters and
+// the spoken-dialogue instruction) against the provider limit. Without dialogue Compile
+// truncates an overlong prompt; with dialogue it rejects it with ErrPromptBudget.
+func PromptUsage(in Inputs, model modelark.ModelConfig) (used, limit int) {
+	controls, sections, _ := assemblePrompt(in)
+	used = utf8.RuneCountInString(strings.Join(append(controls, sections...), ". "))
+	if in.Dialogue != "" {
+		used += utf8.RuneCountInString(spokenDialogue(in.Dialogue, model.ProviderModelID)) + 2
+	}
+	return used, maxPromptRunes
+}
+
+func spokenDialogue(dialogue, providerModelID string) string {
+	quoted, _ := json.Marshal(dialogue)
+	if providerModelID == "dreamina-seedance-2-5-260628" && predominantlyThaiDialogue(dialogue) {
+		// Seedance 2.5 distinguishes dialogue with braces and a language prefix.
+		return "Spoken dialogue, say these exact words with natural lip sync and native audio, not subtitles; clear native Thai pronunciation, natural unhurried pace: {Thai: " + string(quoted) + "}"
+	}
+	return "Spoken dialogue, say these exact words with natural lip sync and native audio, not subtitles: " + string(quoted)
+}
+
+// A language hint is conservative: brands or short Thai fragments inside another
+// language must not relabel the whole utterance. Marks and repetition signs do not
+// contribute to the majority, and every spoken word remains untouched.
+func predominantlyThaiDialogue(text string) bool {
+	thai, other := 0, 0
+	for _, r := range text {
+		if !unicode.IsLetter(r) {
+			continue
+		}
+		if unicode.Is(unicode.Thai, r) {
+			if r != 'ฯ' && r != 'ๆ' {
+				thai++
+			}
+		} else {
+			other++
+		}
+	}
+	return thai > other
+}
+
+func referenceControls(assets []AssetRef, pipelineRenderingVersion string) []string {
+	var controls []string
+	imageIndex := 0
+	hasImageSubject := false
+	for _, asset := range assets {
+		if strings.HasPrefix(asset.MimeType, "video/") {
+			continue
+		}
+		imageIndex++
+		switch toContentRole(asset.Role) {
+		case modelark.RoleFirstFrame:
+			hasImageSubject = true
+			controls = append(controls, fmt.Sprintf("Image %d: preserve the complete supplied starting frame, including its composition and background, as the video start", imageIndex))
+		case modelark.RoleLastFrame:
+			controls = append(controls, fmt.Sprintf("Image %d: preserve the complete supplied ending frame, including its composition and background, as the video end", imageIndex))
+		case modelark.RoleReferenceImage:
+			hasImageSubject = true
+			if pipelineRenderingVersion == PipelineFilmedHumanVideoVersion {
+				controls = append(controls, fmt.Sprintf("Image %d: casting/design guide for face/body geometry, haircut and outfit only; no beautification or identity drift. Exclude its shading, CG materials, drawn skin, pose and background. Not a texture/style/start frame; follow scene setting, action and camera.", imageIndex))
+			} else {
+				controls = append(controls, fmt.Sprintf("Image %d: use only the subject appearance as a visual reference; exclude its source background. Do not infer the scene environment from this reference. Use the existing scene description and any explicit scene environment override; when neither specifies an environment, no specific replacement environment is prescribed", imageIndex))
+			}
+		}
+	}
+	if hasImageSubject && pipelineRenderingVersion == PipelineFilmedHumanVideoVersion {
+		controls = append(controls, "Filmed live-action human actor look: anatomically plausible skin with subtle texture and translucency, individual hair and real cloth. Natural eyes, blinks, expressions, spoken lip sync and grounded motion. Motivated practical lighting, natural shadows, optical depth and subtle shutter motion blur. Preserve designed identity as a filmed person, not CG/cartoon/plastic/doll; follow scene framing.")
+	} else if hasImageSubject && pipelineRenderingVersion == PipelineCinematicVideoVersion {
+		controls = append(controls, "Reference face/body/hair/clothes identity only, not style. Photoreal live-action film humans: skin microtexture/imperfections, hair/fabric; grounded weight/motion, expressions, blinks, natural lip sync. Turn matte CG to human materials. Motivated lighting, natural shadows, optical depth, subtle motion blur. No CG/cartoon/plastic/doll; follow scene camera/framing.")
+	} else if hasImageSubject && (pipelineRenderingVersion == characterdesign.PipelineRealisticCompilerVersion || pipelineRenderingVersion == characterdesign.PipelineSoftRealisticCompilerVersion || pipelineRenderingVersion == characterdesign.PipelineSemiRealisticCompilerVersion || pipelineRenderingVersion == characterdesign.PipelinePolished3DCompilerVersion || pipelineRenderingVersion == characterdesign.PipelineStylized3DCompilerVersion) {
+		controls = append(controls, "Render the fictional character as a photorealistic live-action human: realistic skin texture, hair, fabric, natural motion and cinematic lighting. Preserve similar facial structure, body proportions, hairstyle and clothing with stable identity and coherent anatomy. Replace digital reference rendering with live-action realism; avoid cartoon or plastic CG appearance.")
+	} else if hasImageSubject && pipelineRenderingVersion == characterdesign.PipelineCompilerVersion {
+		controls = append(controls, "Render the fictional character with realistic cinematic CG lighting, material response and natural motion, coherent anatomy and stable facial identity. Preserve the designed face, proportions, hair and clothing; add believable physical detail without replacing the character with a real person. Retain explicit anime, illustration or clay styling while making motion and lighting physically convincing")
+	} else if hasImageSubject {
+		controls = append(controls, "Maintain referenced character facial structure, proportions, hair and clothing across frames unless explicitly changed. Animate with natural believable motion, coherent anatomy, physically plausible lighting and material response, and temporal stability without facial drift or flicker. Preserve the selected visual style, including stylized animation; do not reinterpret it as live action")
+	}
+	return controls
+}
 
 func resolveMode(assets []AssetRef) (string, error) {
 	for _, a := range assets {

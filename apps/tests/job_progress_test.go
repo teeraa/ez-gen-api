@@ -30,105 +30,39 @@ func getProgress(t *testing.T, repo *fakeJobRepo, job *models.VideoGenerationJob
 	return dto.Progress, step, dto.EstimatedSecondsRemaining
 }
 
-func TestProgress_UsesModelAverageFromHistory(t *testing.T) {
-	t.Parallel()
-	job := progressJob(models.JobStatusProcessing, 20*time.Second)
-	repo := newFakeJobRepo(job)
-	repo.averages = map[string][2]float64{"violet-motion-2": {40, 5}}
-
-	progress, step, remaining := getProgress(t, repo, job)
-	if step != facade_open_api.StepGenerating {
-		t.Errorf("step = %q", step)
-	}
-	if progress < 43 || progress > 46 {
-		t.Errorf("progress = %d, want ~45 at half the 40s average", progress)
-	}
-	if remaining == nil || *remaining < 18 || *remaining > 21 {
-		t.Errorf("remaining = %v, want ~20", remaining)
-	}
-}
-
-func TestProgress_FallsBackToAnyModelThenDefault(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name     string
-		averages map[string][2]float64
-		expected float64
-	}{
-		{"too few samples for model", map[string][2]float64{"violet-motion-2": {10, 2}, "": {100, 8}}, 100},
-		{"no history", nil, 60},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			job := progressJob(models.JobStatusSubmitted, 0)
-			repo := newFakeJobRepo(job)
-			repo.averages = tc.averages
-			_, _, remaining := getProgress(t, repo, job)
-			if remaining == nil || float64(*remaining) < tc.expected-2 || float64(*remaining) > tc.expected {
-				t.Errorf("remaining = %v, want ~%v", remaining, tc.expected)
-			}
-		})
-	}
-}
-
-func TestProgress_OverrunStaysBelowNinety(t *testing.T) {
-	t.Parallel()
-	job := progressJob(models.JobStatusProcessing, 10*time.Minute)
-	repo := newFakeJobRepo(job)
-	repo.averages = map[string][2]float64{"violet-motion-2": {40, 5}}
-
-	progress, _, remaining := getProgress(t, repo, job)
-	if progress < 85 || progress >= 90 {
-		t.Errorf("progress = %d, want in [85, 90)", progress)
-	}
-	if remaining == nil || *remaining != 0 {
-		t.Errorf("remaining = %v, want 0", remaining)
-	}
-}
-
-func TestProgress_StepsByStatus(t *testing.T) {
-	t.Parallel()
-	saving := facade_open_api.StepSaving
-	cases := []struct {
-		name         string
-		status       models.JobStatus
-		currentStep  *string
-		wantProgress int
-		wantStep     string
-		wantETA      bool
-	}{
-		{"queued", models.JobStatusQueued, nil, 2, facade_open_api.StepQueued, true},
-		{"saving", models.JobStatusProcessing, &saving, 95, facade_open_api.StepSaving, false},
-		{"succeeded", models.JobStatusSucceeded, &saving, 100, facade_open_api.StepDone, false},
-		{"failed", models.JobStatusFailed, nil, 0, facade_open_api.StepFailed, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			job := progressJob(tc.status, time.Minute)
-			job.CurrentStep = tc.currentStep
-			progress, step, remaining := getProgress(t, newFakeJobRepo(job), job)
-			if progress != tc.wantProgress || step != tc.wantStep || (remaining != nil) != tc.wantETA {
-				t.Errorf("got progress=%d step=%q eta=%v", progress, step, remaining)
-			}
-		})
-	}
-}
-
-func TestProgress_CachesAverage(t *testing.T) {
-	t.Parallel()
-	job := progressJob(models.JobStatusProcessing, 5*time.Second)
-	repo := newFakeJobRepo(job)
-	repo.averages = map[string][2]float64{"violet-motion-2": {40, 5}}
-	f := newOutputFacade(repo, modelark.NewMockClient(), storage.NewMemoryClient(), &fakeFetcher{})
-
-	for range 5 {
-		if _, err := f.GetJob(t.Context(), job.ID.String(), job.UserID.String()); err != nil {
-			t.Fatal(err)
+func TestProgress_IsIndeterminateRegardlessOfHistory(t *testing.T) {
+	for _, elapsed := range []time.Duration{0, 20 * time.Second, 10 * time.Minute} {
+		job := progressJob(models.JobStatusProcessing, elapsed)
+		repo := newFakeJobRepo(job)
+		repo.averages = map[string][2]float64{"violet-motion-2": {40, 5}}
+		p, step, eta := getProgress(t, repo, job)
+		if p != 0 || step != facade_open_api.StepGenerating || eta != nil {
+			t.Fatalf("fabricated progress %d %s %v", p, step, eta)
+		}
+		if repo.averageCalls != 0 {
+			t.Fatal("provider-independent estimates must not be queried")
 		}
 	}
-	if repo.averageCalls != 1 {
-		t.Errorf("expected 1 average query across polls, got %d", repo.averageCalls)
+}
+func TestProgress_StepsByStatus(t *testing.T) {
+	saving := facade_open_api.StepSaving
+	for _, tc := range []struct {
+		status   models.JobStatus
+		current  *string
+		progress int
+		step     string
+	}{
+		{models.JobStatusQueued, nil, 0, facade_open_api.StepQueued},
+		{models.JobStatusProcessing, &saving, 0, facade_open_api.StepSaving},
+		{models.JobStatusSucceeded, nil, 100, facade_open_api.StepDone},
+		{models.JobStatusFailed, nil, 0, facade_open_api.StepFailed},
+		{models.JobStatusCancelled, nil, 0, facade_open_api.StepCancelled},
+	} {
+		job := progressJob(tc.status, time.Minute)
+		job.CurrentStep = tc.current
+		p, step, eta := getProgress(t, newFakeJobRepo(job), job)
+		if p != tc.progress || step != tc.step || eta != nil {
+			t.Fatalf("status %s: %d %s %v", tc.status, p, step, eta)
+		}
 	}
 }

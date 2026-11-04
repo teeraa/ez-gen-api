@@ -1,8 +1,13 @@
 package request_open_api
 
+import "github.com/ez-gen/ez-gen-api/apps/models"
+
 // CreateExportRequest is the body for POST /open/v1/exports.
 // Either sceneIds or clips must resolve to 2–20 scenes; clips supersedes sceneIds.
 type CreateExportRequest struct {
+	ProjectID      *string              `json:"projectId" validate:"omitempty,uuid4"`
+	IdempotencyKey *string              `json:"idempotencyKey" validate:"omitempty,uuid4"`
+	Output         *models.ExportOutput `json:"output"`
 	// SceneIDs is the legacy ordered scene list (no trim).
 	SceneIDs []string `json:"sceneIds" validate:"omitempty,max=20,dive,uuid4"`
 	// Clips supersedes sceneIds and adds per-clip trim.
@@ -16,6 +21,7 @@ type CreateExportRequest struct {
 
 // ClipInput is one scene clip with an optional trim window (seconds from clip start).
 type ClipInput struct {
+	JobID     *string  `json:"jobId" validate:"omitempty,uuid4"`
 	SceneID   string   `json:"sceneId"   validate:"required,uuid4"`
 	TrimStart *float64 `json:"trimStart" validate:"omitempty,min=0"`
 	TrimEnd   *float64 `json:"trimEnd"   validate:"omitempty,min=0"`

@@ -115,14 +115,19 @@ func (r *jobRepository) UpdateStatus(ctx context.Context, id string, status mode
 	}
 	updates["status"] = status
 
-	result := r.db.WithContext(ctx).
-		Model(&models.VideoGenerationJob{}).
-		Where("id = ? AND deleted_at IS NULL", id).
-		Updates(updates)
+	q := r.db.WithContext(ctx).Model(&models.VideoGenerationJob{}).Where("id = ? AND deleted_at IS NULL", id)
+	q = q.Where("mode = 'text_image' OR status NOT IN ?", []models.JobStatus{models.JobStatusSucceeded, models.JobStatusFailed, models.JobStatusCancelled})
+	if status == models.JobStatusCancelled {
+		q = q.Where("mode <> 'text_image' OR status = ?", models.JobStatusQueued)
+	}
+	result := q.Updates(updates)
 	if result.Error != nil {
 		return wrapErr("update job status", result.Error)
 	}
 	if result.RowsAffected == 0 {
+		if status == models.JobStatusCancelled {
+			return ErrConflict
+		}
 		return ErrNotFound
 	}
 	return nil
@@ -141,8 +146,12 @@ func (r *jobRepository) UpdatePolled(ctx context.Context, id string, now time.Ti
 
 func (r *jobRepository) ListPendingPoll(ctx context.Context, limit int) ([]models.VideoGenerationJob, error) {
 	var jobs []models.VideoGenerationJob
+	// A crash after a paid POST must never trigger another automatic submission.
+	if e := r.db.WithContext(ctx).Model(&models.VideoGenerationJob{}).Where("mode <> 'text_image' AND status=? AND provider_task_id IS NULL AND created_at < ?", models.JobStatusQueued, time.Now().Add(-2*time.Minute)).Updates(map[string]any{"status": models.JobStatusFailed, "failure_code": "SUBMISSION_INTERRUPTED", "failure_message": "ยืนยันการส่งงานไม่ได้ ผู้ให้บริการอาจรับงานและคิดค่าบริการแล้ว อย่าส่งงานซ้ำ กรุณาตรวจประวัติผู้ให้บริการหรือติดต่อผู้ดูแลระบบ", "completed_at": time.Now()}).Error; e != nil {
+		return nil, e
+	}
 	result := r.db.WithContext(ctx).
-		Where("status IN ? AND deleted_at IS NULL",
+		Where("mode <> 'text_image' AND status IN ? AND deleted_at IS NULL",
 			[]models.JobStatus{models.JobStatusSubmitted, models.JobStatusProcessing},
 		).
 		Order("last_polled_at ASC NULLS FIRST").
@@ -252,7 +261,7 @@ func (r *jobRepository) LatestSucceededByScenes(ctx context.Context, sceneIDs []
 	result := r.db.WithContext(ctx).
 		Raw(`SELECT DISTINCT ON (scene_id) *
 FROM video_generation_jobs
-WHERE scene_id IN ? AND user_id = ? AND status = ? AND output_media_key IS NOT NULL AND deleted_at IS NULL
+WHERE mode <> 'text_image' AND scene_id IN ? AND user_id = ? AND status = ? AND output_media_key IS NOT NULL AND deleted_at IS NULL
 ORDER BY scene_id, completed_at DESC NULLS LAST`, sceneIDs, userID, models.JobStatusSucceeded).
 		Scan(&jobs)
 	if result.Error != nil {

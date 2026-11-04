@@ -2,8 +2,11 @@ package facade_open_api
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"github.com/ez-gen/ez-gen-api/apps/services/videoprocessing"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -14,6 +17,8 @@ import (
 )
 
 // BytePlus signs output URLs for 24h; past that a download can never succeed.
+var errInvalidVideoOutput = errors.New("invalid provider video output")
+
 const providerOutputLifetime = 24 * time.Hour
 
 const signedURLTTL = time.Hour
@@ -43,6 +48,22 @@ func (f *jobFacade) persistOutputs(ctx context.Context, job *models.VideoGenerat
 	if err != nil {
 		return "", nil, fmt.Errorf("download video: %w", err)
 	}
+	tmp, e := os.CreateTemp("", "violet-provider-video-*.mp4")
+	if e != nil {
+		return "", nil, e
+	}
+	defer os.Remove(tmp.Name())
+	if _, e = tmp.Write(data); e != nil {
+		tmp.Close()
+		return "", nil, e
+	}
+	tmp.Close()
+	durationMs, e := videoprocessing.ProbeVideo(ctx, tmp.Name())
+	if e != nil {
+		return "", nil, fmt.Errorf("%w: %v", errInvalidVideoOutput, e)
+	}
+	duration := int(durationMs)
+	job.OutputDurationMs = &duration
 	if !strings.HasPrefix(contentType, "video/") {
 		contentType = "video/mp4"
 	}

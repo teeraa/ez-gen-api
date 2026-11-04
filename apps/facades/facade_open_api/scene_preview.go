@@ -73,7 +73,7 @@ func (f *dnaFacade) previewJobs(ctx context.Context, userID string, scenes []mod
 	var missing []uuid.UUID
 	for _, s := range scenes {
 		if s.SelectedJobID != nil {
-			if j, ok := byID[*s.SelectedJobID]; ok && hasPreview(&j) {
+			if j, ok := byID[*s.SelectedJobID]; ok && hasPreview(&j) && j.SceneID != nil && *j.SceneID == s.ID {
 				out[s.ID] = previewJob{job: j, selected: true}
 				continue
 			}
@@ -94,7 +94,7 @@ func (f *dnaFacade) previewJobs(ctx context.Context, userID string, scenes []mod
 }
 
 func hasPreview(j *models.VideoGenerationJob) bool {
-	return j.Status == models.JobStatusSucceeded && j.OutputMediaKey != nil
+	return j.Mode != "text_image" && j.Status == models.JobStatusSucceeded && j.OutputMediaKey != nil && (j.OutputMediaType == nil || *j.OutputMediaType == "video")
 }
 
 func (f *dnaFacade) signPreview(ctx context.Context, p previewJob) *dto_open_api.ScenePreviewDTO {

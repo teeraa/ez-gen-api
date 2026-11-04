@@ -6,7 +6,7 @@ type CreateJobRequest struct {
 	Mode               string  `json:"mode"               validate:"required,oneof=text image_video image_image"`
 	Model              string  `json:"model"              validate:"required"`
 	AspectRatio        string  `json:"aspectRatio"        validate:"required,oneof=16:9 9:16 1:1 4:3 3:4 21:9"`
-	Duration           int     `json:"duration"           validate:"required,min=4,max=30"`
+	Duration           int     `json:"duration"           validate:"required,min=2,max=30"`
 	Quality            string  `json:"quality"            validate:"required,oneof=standard high"`
 	EnhancePrompt      bool    `json:"enhancePrompt"`
 	ReferenceImageID   *string `json:"referenceImageId"   validate:"omitempty,uuid4"`
@@ -17,6 +17,9 @@ type CreateJobRequest struct {
 	StyleProfileID      *string  `json:"styleProfileId"     validate:"omitempty,uuid4"`
 	TagIDs              []string `json:"tagIds"             validate:"omitempty,dive,uuid4"`
 	IdempotencyKey      *string  `json:"idempotencyKey"     validate:"omitempty,uuid4"`
+	// Draft enables draft-quality preview rendering.
+	// Only accepted when model == "violet-realism"; any other model returns 400.
+	Draft bool `json:"draft"`
 }
 
 // ContinueSceneRequest is the body for POST /open/v1/dna/scenes/:id/continue.
@@ -26,8 +29,8 @@ type ContinueSceneRequest struct {
 	CameraOverride  string  `json:"cameraOverride"  validate:"max=200"`
 	SettingOverride string  `json:"settingOverride" validate:"max=300"`
 	Model           string  `json:"model"           validate:"required"`
-	AspectRatio     string  `json:"aspectRatio"     validate:"required,oneof=16:9 9:16 1:1 4:3 21:9"`
-	Duration        int     `json:"duration"        validate:"required,min=4,max=30"`
+	AspectRatio     string  `json:"aspectRatio"     validate:"required,oneof=16:9 9:16 1:1 4:3 3:4 21:9"`
+	Duration        int     `json:"duration"        validate:"required,min=2,max=30"`
 	Quality         string  `json:"quality"         validate:"required,oneof=standard high"`
 	UseLastFrame    bool    `json:"useLastFrame"`
 	IdempotencyKey  *string `json:"idempotencyKey"  validate:"omitempty,uuid4"`

@@ -2,9 +2,14 @@ package promptcompiler
 
 import "github.com/ez-gen/ez-gen-api/apps/models"
 
+const PipelineCinematicVideoVersion = "pipeline-cinematic-live-action-v7"
+const PipelineFilmedHumanVideoVersion = "pipeline-filmed-human-v8"
+
 // Inputs holds all creative sources passed into the compiler.
 // Every field is optional; the compiler degrades gracefully when absent.
 type Inputs struct {
+	PipelineRenderingVersion string
+	Dialogue                 string
 	// Characters featured in the scene, in billing order (at most 3).
 	Characters []CharacterInputs
 	// Style profile to draw visual/tone tokens from.

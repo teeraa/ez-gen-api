@@ -1,11 +1,27 @@
 package dto_open_api
 
 // JobDTO is the API response for a single generation job.
+type CharacterDesignDTO struct {
+	VisualStyle  string `json:"visualStyle"`
+	Mood         string `json:"mood"`
+	DesignFormat string `json:"designFormat"`
+}
+
+type ProductDesignDTO struct {
+	VisualStyle string `json:"visualStyle"`
+	Mood        string `json:"mood"`
+}
+
 type JobDTO struct {
-	JobID       string  `json:"jobId"`
-	Status      string  `json:"status"`
-	Progress    int     `json:"progress"`
-	CurrentStep *string `json:"currentStep"`
+	ImageCategory    string              `json:"imageCategory,omitempty"`
+	ProductDesign    *ProductDesignDTO   `json:"productDesign,omitempty"`
+	OutputDurationMs *int                `json:"outputDurationMs"`
+	RawPrompt        string              `json:"rawPrompt,omitempty"`
+	CharacterDesign  *CharacterDesignDTO `json:"characterDesign,omitempty"`
+	JobID            string              `json:"jobId"`
+	Status           string              `json:"status"`
+	Progress         int                 `json:"progress"`
+	CurrentStep      *string             `json:"currentStep"`
 	// EstimatedSecondsRemaining is null when the job is terminal or the remaining time is unknown.
 	EstimatedSecondsRemaining *int       `json:"estimatedSecondsRemaining"`
 	Model                     string     `json:"model"`
@@ -19,6 +35,7 @@ type JobDTO struct {
 	CharacterProfileID        *string    `json:"characterProfileId"`
 	StyleProfileID            *string    `json:"styleProfileId"`
 	CompiledPrompt            *string    `json:"compiledPrompt"`
+	IsDraft                   bool       `json:"isDraft"`
 	CreatedAt                 string     `json:"createdAt"`
 	UpdatedAt                 string     `json:"updatedAt"`
 	CompletedAt               *string    `json:"completedAt"`

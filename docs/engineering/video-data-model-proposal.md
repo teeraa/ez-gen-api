@@ -311,3 +311,32 @@ Cleanup cron jobs are out of scope for the preparation phase but must be planned
 | Credit system design | No | `credit_ledger` is prepared; logic TBD |
 | Whether `model_configs` is DB or code | No | Could be a Go constant map initially |
 | Whether soft-delete is needed on `uploads` | No | Hard-delete on expiry may be simpler |
+
+## Phase-one Character Studio additive schema (2026-10-15)
+
+Migration 014 adds nullable users.password_hash and role default user, plus a
+casefolded unique email index (preflight existing case variants). New
+library_assets belongs to users and optionally references an owned generation job
+or upload, snapshots the durable storage key/type, and soft deletes metadata.
+Personal scope only. Foreign keys retain source records; deleting library
+metadata never removes job/upload objects used elsewhere. User/job unique index
+prevents accidental duplicate saves. No schema changes to scenes or exports.
+
+## Reference upload schema repair (migration 015)
+
+Clean installations through migration 014 lack uploads.updated_at, although Upload
+embeds Base and GORM writes this field. Migration 015 adds the missing TIMESTAMPTZ
+NOT NULL column with NOW() default; existing records and all other upload columns
+are preserved. The remaining embedded fields (id, created_at, deleted_at) and
+Upload-specific fields already match migration 002. Existing migration history is
+unchanged. Apply 015 after 014 through the normal migration runner.
+
+## Phase-one footage editor (migration 021)
+
+`video_editor_projects`, `video_editor_assets` and `video_editor_exports` are
+independent of scene generation. Composite `(project_id,user_id)` references
+prevent cross-tenant asset/export relationships. Unique upload client IDs and
+request IDs support idempotency; lease/attempt tokens fence upload and render
+completion. Project segments and export snapshots are JSONB; only server-owned
+immutable source keys enter snapshots, never signed URLs. Migration is applied
+separately, not by production startup. See [video-editor-api-contract.md](video-editor-api-contract.md).

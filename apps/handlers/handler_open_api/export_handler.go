@@ -21,6 +21,7 @@ func (h *ExportHandler) RegisterRoutes(r fiber.Router) {
 	r.Get("/exports", h.ListExports)
 	r.Get("/exports/:exportId", h.GetExport)
 	r.Get("/exports/:exportId/download", h.GetExportDownload)
+	r.Post("/exports/:exportId/retry", h.Retry)
 }
 
 // CreateExport queues a new storyboard export.
@@ -36,7 +37,8 @@ func (h *ExportHandler) CreateExport(c *fiber.Ctx) error {
 	}
 
 	in := facade_open_api.CreateExportInput{
-		AudioUploadID: req.AudioUploadID,
+		AudioUploadID: req.AudioUploadID, AudioVolume: 1,
+		ProjectID: req.ProjectID, IdempotencyKey: req.IdempotencyKey, Output: req.Output,
 	}
 	if req.AudioVolume != nil {
 		in.AudioVolume = *req.AudioVolume
@@ -45,7 +47,7 @@ func (h *ExportHandler) CreateExport(c *fiber.Ctx) error {
 	// clips supersedes sceneIds; otherwise build untrimmed clips from sceneIds.
 	if len(req.Clips) > 0 {
 		for _, c := range req.Clips {
-			clip := facade_open_api.ExportClip{SceneID: c.SceneID}
+			clip := facade_open_api.ExportClip{SceneID: c.SceneID, JobID: c.JobID}
 			if c.TrimStart != nil {
 				clip.TrimStart = *c.TrimStart
 			}
@@ -123,4 +125,12 @@ func (h *ExportHandler) GetExportDownload(c *fiber.Ctx) error {
 		return mapFacadeError(c, err)
 	}
 	return utils.Success(c, fiber.StatusOK, dto)
+}
+
+func (h *ExportHandler) Retry(c *fiber.Ctx) error {
+	d, e := h.facade.RetryExport(c.Context(), c.Params("exportId"), c.Locals("userID").(string))
+	if e != nil {
+		return mapFacadeError(c, e)
+	}
+	return utils.Success(c, 200, d)
 }

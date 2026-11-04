@@ -46,6 +46,7 @@ func (r *sceneRepository) FindByID(ctx context.Context, id, userID string) (*mod
 		Preload("StyleProfile").
 		Preload("StyleProfile.Tags").
 		Where("id = ? AND user_id = ? AND deleted_at IS NULL", id, userID).
+		Where("project_id IS NULL OR EXISTS (SELECT 1 FROM production_projects p WHERE p.id=scenes.project_id AND p.deleted_at IS NULL AND p.user_id=scenes.user_id)").
 		First(&s)
 	if result.Error != nil {
 		return nil, wrapErr("find scene", result.Error)
@@ -58,7 +59,7 @@ func (r *sceneRepository) List(ctx context.Context, userID string, page, limit i
 	var total int64
 
 	base := r.db.WithContext(ctx).Model(&models.Scene{}).
-		Where("user_id = ? AND deleted_at IS NULL", userID)
+		Where("user_id = ? AND deleted_at IS NULL", userID).Where("project_id IS NULL OR EXISTS (SELECT 1 FROM production_projects p WHERE p.id=scenes.project_id AND p.deleted_at IS NULL)")
 
 	if err := base.Count(&total).Error; err != nil {
 		return nil, 0, wrapErr("count scenes", err)
@@ -69,7 +70,7 @@ func (r *sceneRepository) List(ctx context.Context, userID string, page, limit i
 		Preload("Tags").
 		Preload("Characters", func(db *gorm.DB) *gorm.DB { return db.Order("sort_order ASC") }).
 		Preload("Characters.CharacterProfile").
-		Where("user_id = ? AND deleted_at IS NULL", userID).
+		Where("user_id = ? AND deleted_at IS NULL", userID).Where("project_id IS NULL OR EXISTS (SELECT 1 FROM production_projects p WHERE p.id=scenes.project_id AND p.deleted_at IS NULL)").
 		Order("scene_order ASC, created_at DESC").
 		Limit(limit).Offset(offset).
 		Find(&scenes)
@@ -98,7 +99,7 @@ func (r *sceneRepository) Update(ctx context.Context, scene *models.Scene) error
 
 func (r *sceneRepository) Delete(ctx context.Context, id, userID string) error {
 	result := r.db.WithContext(ctx).
-		Where("id = ? AND user_id = ? AND deleted_at IS NULL", id, userID).
+		Where("id = ? AND user_id = ? AND deleted_at IS NULL", id, userID).Where("project_id IS NULL OR EXISTS (SELECT 1 FROM production_projects p WHERE p.id=scenes.project_id AND p.deleted_at IS NULL)").
 		Delete(&models.Scene{})
 	if result.Error != nil {
 		return wrapErr("delete scene", result.Error)

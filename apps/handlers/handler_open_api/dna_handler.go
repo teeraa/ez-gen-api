@@ -1,6 +1,7 @@
 package handler_open_api
 
 import (
+	"encoding/json"
 	"errors"
 
 	"github.com/ez-gen/ez-gen-api/apps/facades/facade_open_api"
@@ -292,7 +293,11 @@ func (h *DNAHandler) UpdateScene(c *fiber.Ctx) error {
 	if errs := validateRequest(req); errs != nil {
 		return utils.Error(c, fiber.StatusBadRequest, "VALIDATION_ERROR", "validation failed", errs)
 	}
+	var raw map[string]json.RawMessage
+	_ = json.Unmarshal(c.Body(), &raw)
+	_, referencePresent := raw["referenceAssetId"]
 	in := facade_open_api.UpdateSceneInput{
+		ReferenceAssetID: req.ReferenceAssetID, ReferenceAssetPresent: referencePresent, VideoSettings: req.VideoSettings,
 		Title:               req.Title,
 		Description:         req.Description,
 		CharacterProfileID:  req.CharacterProfileID,
@@ -350,6 +355,10 @@ func mapFacadeError(c *fiber.Ctx, err error) error {
 	case errors.Is(err, facade_open_api.ErrNotShareable):
 		return utils.Error(c, fiber.StatusConflict, "JOB_NOT_SHAREABLE", "job has no finished video to share yet", nil)
 	case errors.Is(err, facade_open_api.ErrProviderError):
+		var failure *facade_open_api.ProviderSubmissionError
+		if errors.As(err, &failure) {
+			return utils.Error(c, fiber.StatusBadGateway, "PROVIDER_ERROR", failure.Message(), nil)
+		}
 		return utils.Error(c, fiber.StatusBadGateway, "PROVIDER_ERROR", "generation provider returned an error", nil)
 	case errors.Is(err, facade_open_api.ErrValidation):
 		return utils.Error(c, fiber.StatusBadRequest, "VALIDATION_ERROR", "invalid input", nil)

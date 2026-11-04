@@ -2,19 +2,42 @@ package facade_open_api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/ez-gen/ez-gen-api/apps/dto/dto_open_api"
 	"github.com/ez-gen/ez-gen-api/apps/models"
 	"github.com/ez-gen/ez-gen-api/apps/repositories/repository_open_api"
+	"github.com/ez-gen/ez-gen-api/apps/services/characterdesign"
 	"github.com/ez-gen/ez-gen-api/apps/services/modelark"
 	"github.com/ez-gen/ez-gen-api/apps/services/promptcompiler"
 	"github.com/google/uuid"
+	"gorm.io/datatypes"
 )
+
+var ErrDraftExpired = errors.New("draft task expired")
+
+// ProviderSubmissionError carries only the sanitized diagnostic across the facade boundary.
+type ProviderSubmissionError struct {
+	code    string
+	message string
+}
+
+func NewProviderSubmissionError(err error) *ProviderSubmissionError {
+	code, message := modelark.VideoFailure(err)
+	return &ProviderSubmissionError{code: code, message: message}
+}
+
+func (e *ProviderSubmissionError) Error() string   { return e.message }
+func (e *ProviderSubmissionError) Unwrap() error   { return ErrProviderError }
+func (e *ProviderSubmissionError) Code() string    { return e.code }
+func (e *ProviderSubmissionError) Message() string { return e.message }
 
 // JobFacade handles generation job creation, status, cancellation, and Continue Scene.
 type JobFacade interface {
@@ -31,22 +54,30 @@ type JobFacade interface {
 
 // CreateJobInput is the validated payload for job creation.
 type CreateJobInput struct {
-	Prompt             string
-	Mode               string
-	ModelID            string
-	AspectRatio        string
-	DurationSeconds    int
-	Quality            string
-	EnhancePrompt      bool
-	UploadID           *string
-	SceneID            *string
-	CharacterProfileID *string
+	pipelineRenderingVersion string
+	draftSourceJobID         string
+	PinnedModel              *modelark.ModelConfig
+	Dialogue                 string
+	ReferenceAssetID         *string
+	Prompt                   string
+	Mode                     string
+	ModelID                  string
+	AspectRatio              string
+	DurationSeconds          int
+	Quality                  string
+	EnhancePrompt            bool
+	UploadID                 *string
+	SceneID                  *string
+	CharacterProfileID       *string
 	// CharacterProfileIDs takes precedence over CharacterProfileID. When both are empty
 	// and SceneID is set, the scene's own characters are used.
 	CharacterProfileIDs []string
 	StyleProfileID      *string
 	TagIDs              []string
 	IdempotencyKey      *string
+
+	// Draft requests preview-quality rendering when the resolved provider supports it.
+	Draft bool
 
 	// firstFrameKey is a storage key (or legacy provider URL) of a frame produced by an
 	// earlier job. Unexported so only ContinueScene can set it, never request input.
@@ -67,19 +98,23 @@ type ContinueSceneInput struct {
 	IdempotencyKey  *string
 }
 
+type pipelineAssetReader interface {
+	Asset(context.Context, string, string) (*models.LibraryAsset, error)
+}
 type jobFacade struct {
-	jobs       repository_open_api.JobRepository
-	uploads    repository_open_api.UploadRepository
-	characters repository_open_api.CharacterProfileRepository
-	styles     repository_open_api.StyleProfileRepository
-	scenes     repository_open_api.SceneRepository
-	tags       repository_open_api.TagRepository
-	ark        modelark.Client
-	models     modelRegistry
-	storage    mediaStorage
-	fetcher    mediaFetcher
-	estimator  *generationEstimator
-	maxActive  int
+	pipelineAssets pipelineAssetReader
+	jobs           repository_open_api.JobRepository
+	uploads        repository_open_api.UploadRepository
+	characters     repository_open_api.CharacterProfileRepository
+	styles         repository_open_api.StyleProfileRepository
+	scenes         repository_open_api.SceneRepository
+	tags           repository_open_api.TagRepository
+	ark            modelark.Client
+	models         modelRegistry
+	storage        mediaStorage
+	fetcher        mediaFetcher
+	maxActive      int
+	production     *ProductionFacade
 }
 
 func NewJobFacade(
@@ -106,12 +141,44 @@ func NewJobFacade(
 		models:     modelRegistry,
 		storage:    storage,
 		fetcher:    fetcher,
-		estimator:  newGenerationEstimator(jobs),
 		maxActive:  maxConcurrentJobsPerUser,
 	}
 }
 
+func ConfigureJobPipeline(j JobFacade, a pipelineAssetReader) {
+	if f, ok := j.(*jobFacade); ok {
+		f.pipelineAssets = a
+	}
+}
+
+func ConfigureJobProduction(j JobFacade, p *ProductionFacade) {
+	if f, ok := j.(*jobFacade); ok {
+		f.production = p
+	}
+}
+
 func (f *jobFacade) CreateJob(ctx context.Context, userID string, in CreateJobInput) (*dto_open_api.CreateJobResponseDTO, error) {
+	requestBytes, _ := json.Marshal(struct {
+		Input                    CreateJobInput
+		FirstFrame               string
+		PipelineRenderingVersion string `json:",omitempty"`
+		DraftSourceJobID         string `json:",omitempty"`
+	}{in, in.firstFrameKey, in.pipelineRenderingVersion, in.draftSourceJobID})
+	requestSum := sha256.Sum256(requestBytes)
+	requestHash := hex.EncodeToString(requestSum[:])
+	var scene *models.Scene
+	if in.SceneID != nil {
+		var e error
+		scene, e = f.scenes.FindByID(ctx, *in.SceneID, userID)
+		if e != nil {
+			return nil, mapRepoErr(e)
+		}
+		if f.production != nil {
+			if e = f.production.repo.ProjectForScene(ctx, scene, userID); e != nil {
+				return nil, mapRepoErr(e)
+			}
+		}
+	}
 	// Idempotency check
 	if in.IdempotencyKey != nil && *in.IdempotencyKey != "" {
 		existing, err := f.jobs.FindByIdempotencyKey(ctx, *in.IdempotencyKey, userID)
@@ -119,6 +186,12 @@ func (f *jobFacade) CreateJob(ctx context.Context, userID string, in CreateJobIn
 			return nil, fmt.Errorf("check idempotency: %w", err)
 		}
 		if existing != nil {
+			if existing.RequestHash != nil && *existing.RequestHash != requestHash {
+				return nil, ErrConflict
+			}
+			if existing.Mode != in.Mode || existing.Prompt != in.Prompt || existing.ModelID != in.ModelID || existing.AspectRatio != in.AspectRatio || existing.DurationSeconds != in.DurationSeconds || existing.Quality != in.Quality || existing.EnhancePrompt != in.EnhancePrompt || !sameOptionalUUID(existing.SceneID, in.SceneID) || !sameOptionalUUID(existing.UploadID, in.UploadID) {
+				return nil, ErrConflict
+			}
 			return mapCreateJobResponse(existing), nil
 		}
 	}
@@ -133,8 +206,39 @@ func (f *jobFacade) CreateJob(ctx context.Context, userID string, in CreateJobIn
 	}
 
 	// Validate upload when required by mode
+	refining := in.draftSourceJobID != ""
 	var upload *models.Upload
-	if (in.Mode == "image_video" || in.Mode == "image_image") && in.firstFrameKey == "" {
+	var libraryKey string
+	var libraryID string
+	if !refining && in.ReferenceAssetID != nil {
+		if f.pipelineAssets == nil || in.UploadID != nil || in.SceneID != nil || in.firstFrameKey != "" || in.Mode != "image_image" {
+			return nil, ErrValidation
+		}
+		a, e := f.pipelineAssets.Asset(ctx, *in.ReferenceAssetID, userID)
+		if e != nil {
+			return nil, mapRepoErr(e)
+		}
+		if e := validatePipelineCharacter(ctx, a, userID, f.jobs); e != nil {
+			return nil, e
+		}
+		libraryKey = *a.StorageKey
+		libraryID = a.ID.String()
+	}
+	if !refining && scene != nil && scene.ReferenceAssetID != nil && f.production != nil {
+		a, e := f.production.repo.Asset(ctx, scene.ReferenceAssetID.String(), userID)
+		if e != nil {
+			return nil, mapRepoErr(e)
+		}
+		if a.StorageKey == nil || a.MediaType == nil || (*a.MediaType != "image" && !strings.HasPrefix(*a.MediaType, "image/")) {
+			return nil, ErrInvalidFileType
+		}
+		if in.Mode == "text" {
+			return nil, ErrImageRequired
+		}
+		libraryKey = *a.StorageKey
+		libraryID = a.ID.String()
+	}
+	if !refining && (in.Mode == "image_video" || in.Mode == "image_image") && in.firstFrameKey == "" && libraryKey == "" {
 		if in.UploadID == nil || *in.UploadID == "" {
 			return nil, ErrImageRequired
 		}
@@ -152,6 +256,10 @@ func (f *jobFacade) CreateJob(ctx context.Context, userID string, in CreateJobIn
 
 	// Validate model
 	modelCfg, ok := f.models.Lookup(in.ModelID)
+	if in.PinnedModel != nil {
+		modelCfg = *in.PinnedModel
+		ok = modelCfg.InternalID == in.ModelID
+	}
 	if !ok {
 		return nil, ErrModelInvalid
 	}
@@ -161,35 +269,91 @@ func (f *jobFacade) CreateJob(ctx context.Context, userID string, in CreateJobIn
 	if in.Mode == "image_image" && !modelCfg.SupportsRefImage {
 		return nil, ErrModelInvalid
 	}
+	if in.Dialogue != "" && !modelCfg.SupportsAudio {
+		return nil, ErrModelInvalid
+	}
 	if !modelCfg.SupportsOutput(in.AspectRatio, in.DurationSeconds) {
 		return nil, ErrModelInvalid
 	}
 
-	// Compile prompt
-	compilerIn, err := f.buildCompilerInputs(ctx, userID, in, upload)
-	if err != nil {
-		return nil, err
+	if e := ValidateVideoSettings(models.VideoSettings{Model: in.ModelID, Mode: in.Mode, AspectRatio: in.AspectRatio, Duration: in.DurationSeconds, Quality: in.Quality}, modelCfg); e != nil {
+		return nil, e
 	}
-	compiled, err := promptcompiler.Compile(compilerIn, modelCfg)
-	if err != nil {
-		return nil, fmt.Errorf("compile prompt: %w", err)
-	}
-	// BytePlus downloads reference media itself, so it needs a URL it can reach,
-	// not our private storage key.
-	for i := range compiled.ContentItems {
-		item := &compiled.ContentItems[i]
-		if item.URL == "" {
-			continue
-		}
-		signed, _, err := f.resolveMediaURL(ctx, item.URL)
-		if err != nil {
-			return nil, fmt.Errorf("sign reference media: %w", err)
-		}
-		item.URL = signed
+	// Account overrides can change the provider behind an internal model.
+	if in.Draft && !modelCfg.SupportsDraft() {
+		return nil, ErrValidation
 	}
 
-	// Snapshot
-	snapJSON, err := json.Marshal(compiled.Snapshot)
+	var compilerIn promptcompiler.Inputs
+	var compiled *promptcompiler.Result
+	var snapJSON []byte
+	if refining {
+		source, e := f.jobs.FindByID(ctx, in.draftSourceJobID, userID)
+		if e != nil {
+			return nil, mapRepoErr(e)
+		}
+		if source.UserID.String() != userID || !source.IsDraft || source.Status != models.JobStatusSucceeded || source.ProviderTaskID == nil || *source.ProviderTaskID == "" || in.Draft || !modelCfg.SupportsDraft() || in.UploadID != nil || in.ReferenceAssetID != nil || in.SceneID != nil || in.firstFrameKey != "" || in.Quality != "high" {
+			return nil, ErrValidation
+		}
+		if !time.Now().Before(modelark.DraftExpiresAt(source.CreatedAt)) {
+			return nil, ErrDraftExpired
+		}
+		var snapshot struct {
+			ProviderModelID string `json:"providerModelId"`
+		}
+		if json.Unmarshal(source.EffectiveInputs, &snapshot) != nil || snapshot.ProviderModelID != modelCfg.ProviderModelID || source.ModelID != in.ModelID || source.Mode != in.Mode || source.Prompt != in.Prompt || source.AspectRatio != in.AspectRatio || source.DurationSeconds != in.DurationSeconds {
+			return nil, ErrValidation
+		}
+		compiled = &promptcompiler.Result{ProviderModelID: modelCfg.ProviderModelID, Resolution: "1080p", ContentItems: []modelark.ContentItem{{Type: modelark.ContentTypeDraftTask, DraftTaskID: *source.ProviderTaskID}}}
+		if source.CompiledPrompt != nil {
+			compiled.CompiledPrompt = *source.CompiledPrompt
+		}
+		var frozen map[string]json.RawMessage
+		if json.Unmarshal(source.EffectiveInputs, &frozen) != nil {
+			return nil, ErrValidation
+		}
+		frozen["sourceDraftJobId"], _ = json.Marshal(source.ID.String())
+		frozen["resolution"], _ = json.Marshal("1080p")
+		snapJSON, err = json.Marshal(frozen)
+	} else {
+		compilerIn, err = f.buildCompilerInputs(ctx, userID, in, upload)
+		if err != nil {
+			return nil, err
+		}
+		if libraryKey != "" {
+			role := "first_frame"
+			if in.Mode == "image_image" {
+				role = "reference"
+			}
+			compilerIn.Assets = append(compilerIn.Assets, promptcompiler.AssetRef{UploadID: libraryID, StorageKey: libraryKey, Role: role, MimeType: "image/png"})
+		}
+		compiled, err = promptcompiler.Compile(compilerIn, modelCfg)
+		if err != nil {
+			return nil, fmt.Errorf("compile prompt: %w", err)
+		}
+		// BytePlus downloads reference media itself, so it needs a URL it can reach,
+		// not our private storage key.
+		for i := range compiled.ContentItems {
+			item := &compiled.ContentItems[i]
+			if item.URL == "" {
+				continue
+			}
+			signed, _, err := f.resolveMediaURL(ctx, item.URL)
+			if err != nil {
+				return nil, fmt.Errorf("sign reference media: %w", err)
+			}
+			item.URL = signed
+		}
+
+		if in.Draft {
+			compiled.Resolution = "480p"
+			compiled.Snapshot.Resolution = "480p"
+		}
+		snapJSON, err = json.Marshal(struct {
+			promptcompiler.EffectiveInputsSnapshot
+			ProviderModelID string `json:"providerModelId"`
+		}{compiled.Snapshot, compiled.ProviderModelID})
+	}
 	if err != nil {
 		return nil, fmt.Errorf("marshal snapshot: %w", err)
 	}
@@ -206,8 +370,10 @@ func (f *jobFacade) CreateJob(ctx context.Context, userID string, in CreateJobIn
 		DurationSeconds: in.DurationSeconds,
 		Quality:         in.Quality,
 		EnhancePrompt:   in.EnhancePrompt,
+		IsDraft:         in.Draft,
 		CompiledPrompt:  &compiled.CompiledPrompt,
 		IdempotencyKey:  in.IdempotencyKey,
+		RequestHash:     &requestHash,
 	}
 	job.EffectiveInputs = snapJSON
 
@@ -232,7 +398,18 @@ func (f *jobFacade) CreateJob(ctx context.Context, userID string, in CreateJobIn
 		}
 	}
 
-	if err := f.jobs.Create(ctx, job); err != nil {
+	if f.production != nil {
+		stored, created, e := f.production.repo.EnqueueVideo(ctx, job, f.maxActive)
+		if e != nil {
+			return nil, mapRepoErr(e)
+		}
+		if !created {
+			if stored.RequestHash == nil || *stored.RequestHash != requestHash {
+				return nil, ErrConflict
+			}
+			return mapCreateJobResponse(stored), nil
+		}
+	} else if err := f.jobs.Create(ctx, job); err != nil {
 		return nil, fmt.Errorf("persist job: %w", err)
 	}
 
@@ -248,31 +425,87 @@ func (f *jobFacade) CreateJob(ctx context.Context, userID string, in CreateJobIn
 		Watermark:           false,
 		ReturnLastFrame:     true,
 		ExpiresAfterSeconds: 3600,
+		// Draft eligibility follows the pinned provider.
+		Draft: in.Draft && modelCfg.SupportsDraft(),
 	}
 
-	log.Printf("[ark] submit job=%s model=%s ratio=%s duration=%ds resolution=%s prompt=%q",
-		job.ID, arkReq.Model, arkReq.Ratio, arkReq.DurationSeconds, arkReq.Resolution,
-		truncate(compiled.CompiledPrompt, 120))
+	if refining {
+		arkReq = modelark.CreateTaskRequest{Model: compiled.ProviderModelID, Content: compiled.ContentItems, Resolution: "1080p", ReturnLastFrame: true, ExpiresAfterSeconds: 3600}
+	}
 
-	providerTaskID, err := f.ark.CreateTask(ctx, arkReq)
+	log.Printf("[ark] submit job=%s model=%s", job.ID, arkReq.Model)
+
+	providerTaskID, err := f.ark.CreateTask(modelark.WithUsageOwner(ctx, job.UserID, job.ID), arkReq)
 	if err != nil {
-		log.Printf("[ark] create task failed job=%s: %v", job.ID, err)
+		failure := NewProviderSubmissionError(err)
+		code, message := failure.Code(), failure.Message()
+		diagnostic := modelark.VideoFailureDiagnostic(err)
+		var texts, images, videos, firstFrames, lastFrames, references, otherRoles int
+		for _, item := range arkReq.Content {
+			switch item.Type {
+			case modelark.ContentTypeText:
+				texts++
+			case modelark.ContentTypeImageURL:
+				images++
+			case modelark.ContentTypeVideoURL:
+				videos++
+			}
+			if item.Type == modelark.ContentTypeText {
+				continue
+			}
+			switch item.Role {
+			case modelark.RoleFirstFrame:
+				firstFrames++
+			case modelark.RoleLastFrame:
+				lastFrames++
+			case modelark.RoleReferenceImage:
+				references++
+			default:
+				otherRoles++
+			}
+		}
+		log.Printf("[ark] create task failed job=%s code=%s provider_status=%d provider_code=%q param=%q model=%s resolution=%s duration=%d ratio=%s audio=%t optimize_prompt=%t text_count=%d image_count=%d video_count=%d first_frame_count=%d last_frame_count=%d reference_count=%d other_role_count=%d", job.ID, code, diagnostic.HTTPStatus, diagnostic.ProviderCode, diagnostic.Param, arkReq.Model, arkReq.Resolution, arkReq.DurationSeconds, arkReq.Ratio, arkReq.GenerateAudio, arkReq.OptimizePrompt, texts, images, videos, firstFrames, lastFrames, references, otherRoles)
 		now := time.Now()
 		_ = f.jobs.UpdateStatus(ctx, job.ID.String(), models.JobStatusFailed, map[string]any{
-			"failure_code":    "PROVIDER_ERROR",
-			"failure_message": "Failed to submit generation task",
+			"failure_code":    code,
+			"failure_message": message,
 			"completed_at":    now,
 		})
-		return nil, fmt.Errorf("%w: %v", ErrProviderError, err)
+		return nil, failure
 	}
 	log.Printf("[ark] task created job=%s providerTaskID=%s", job.ID, providerTaskID)
 
 	// Update job with provider task ID → submitted
 	now := time.Now()
-	_ = f.jobs.UpdateStatus(ctx, job.ID.String(), models.JobStatusSubmitted, map[string]any{
-		"provider_task_id": providerTaskID,
-		"submitted_at":     now,
-	})
+	// Once accepted, caller cancellation must not discard the only provider task ID.
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	for attempt := 0; attempt < 3; attempt++ {
+		err = f.jobs.UpdateStatus(persistCtx, job.ID.String(), models.JobStatusSubmitted, map[string]any{
+			"provider_task_id": providerTaskID,
+			"submitted_at":     now,
+		})
+		if err == nil || errors.Is(err, repository_open_api.ErrNotFound) || errors.Is(err, repository_open_api.ErrConflict) {
+			break
+		}
+		if attempt < 2 {
+			timer := time.NewTimer(100 * time.Millisecond)
+			select {
+			case <-persistCtx.Done():
+				timer.Stop()
+			case <-timer.C:
+			}
+		}
+		if persistCtx.Err() != nil {
+			break
+		}
+	}
+	if err != nil {
+		// Keep the durable identity so a replay cannot create another billed task.
+		// The poller marks an unconfirmed submission explicitly; it never resubmits.
+		log.Printf("[ark] accepted task persistence unconfirmed job=%s", job.ID)
+		return mapCreateJobResponse(job), nil
+	}
 	job.Status = models.JobStatusSubmitted
 
 	return mapCreateJobResponse(job), nil
@@ -322,19 +555,25 @@ func (f *jobFacade) CancelJob(ctx context.Context, id, userID string) (*dto_open
 		return nil, fmt.Errorf("find job: %w", err)
 	}
 
+	if job.Mode == "text_image" && job.Status != models.JobStatusQueued {
+		return nil, ErrConflict
+	}
 	if job.Status.IsTerminal() {
 		return nil, ErrConflict
 	}
 
 	// Attempt provider-level cancel only when task has been submitted and is still queued
 	if job.ProviderTaskID != nil && (job.Status == models.JobStatusSubmitted) {
-		_ = f.ark.CancelTask(ctx, *job.ProviderTaskID)
+		_ = f.ark.CancelTask(modelark.WithUsageOwner(ctx, job.UserID, job.ID), *job.ProviderTaskID)
 	}
 
 	now := time.Now()
 	if err := f.jobs.UpdateStatus(ctx, id, models.JobStatusCancelled, map[string]any{
 		"completed_at": now,
 	}); err != nil {
+		if errors.Is(err, repository_open_api.ErrConflict) {
+			return nil, ErrConflict
+		}
 		return nil, fmt.Errorf("cancel job: %w", err)
 	}
 
@@ -424,7 +663,7 @@ func (f *jobFacade) PollAndUpdate(ctx context.Context, job *models.VideoGenerati
 		return nil
 	}
 
-	result, err := f.ark.GetTask(ctx, *job.ProviderTaskID)
+	result, err := f.ark.GetTask(modelark.WithUsageOwner(ctx, job.UserID, job.ID), *job.ProviderTaskID)
 	if err != nil {
 		return fmt.Errorf("poll job %s: %w", job.ID, err)
 	}
@@ -452,6 +691,12 @@ func (f *jobFacade) PollAndUpdate(ctx context.Context, job *models.VideoGenerati
 		}
 		mediaKey, thumbKey, err := f.persistOutputs(ctx, job, result.VideoURL, result.LastFrameURL)
 		if err != nil {
+			if errors.Is(err, errInvalidVideoOutput) {
+				appStatus = models.JobStatusFailed
+				updates["failure_code"] = "INVALID_OUTPUT"
+				updates["failure_message"] = "ผู้ให้บริการส่งไฟล์วิดีโอที่ไม่สมบูรณ์ โปรดลองสร้างใหม่"
+				break
+			}
 			if job.SubmittedAt != nil && time.Since(*job.SubmittedAt) > providerOutputLifetime {
 				log.Printf("[storage] job=%s output expired before it could be stored: %v", job.ID, err)
 				appStatus = models.JobStatusFailed
@@ -462,6 +707,7 @@ func (f *jobFacade) PollAndUpdate(ctx context.Context, job *models.VideoGenerati
 			// Leaving the job in processing makes the poller retry on its next tick.
 			return fmt.Errorf("persist outputs for job %s: %w", job.ID, err)
 		}
+		updates["output_duration_ms"] = job.OutputDurationMs
 		updates["output_media_key"] = mediaKey
 		updates["output_thumb_key"] = thumbKey
 		updates["output_media_type"] = "video"
@@ -469,6 +715,11 @@ func (f *jobFacade) PollAndUpdate(ctx context.Context, job *models.VideoGenerati
 	case models.JobStatusFailed:
 		updates["failure_code"] = result.ErrorCode
 		updates["failure_message"] = result.ErrorMessage // sanitized provider message
+		diagnostic, e := json.Marshal(modelark.GenerationFailureDetails(result.FailureDiagnostic.ProviderCode))
+		if e != nil {
+			return fmt.Errorf("marshal generation failure diagnostic: %w", e)
+		}
+		updates["provider_error"] = datatypes.JSON(diagnostic)
 	}
 
 	return f.jobs.UpdateStatus(ctx, job.ID.String(), appStatus, updates)
@@ -478,8 +729,10 @@ func (f *jobFacade) PollAndUpdate(ctx context.Context, job *models.VideoGenerati
 
 func (f *jobFacade) buildCompilerInputs(ctx context.Context, userID string, in CreateJobInput, upload *models.Upload) (promptcompiler.Inputs, error) {
 	inputs := promptcompiler.Inputs{
-		ModelID: in.ModelID,
-		Quality: in.Quality,
+		PipelineRenderingVersion: in.pipelineRenderingVersion,
+		Dialogue:                 in.Dialogue,
+		ModelID:                  in.ModelID,
+		Quality:                  in.Quality,
 	}
 
 	var scene *models.Scene
@@ -581,18 +834,39 @@ func mapCreateJobResponse(job *models.VideoGenerationJob) *dto_open_api.CreateJo
 
 func mapJobDTO(job *models.VideoGenerationJob) *dto_open_api.JobDTO {
 	dto := &dto_open_api.JobDTO{
-		JobID:          job.ID.String(),
-		Status:         string(job.Status),
-		Progress:       job.Progress,
-		CurrentStep:    job.CurrentStep,
-		Model:          job.ModelID,
-		AspectRatio:    job.AspectRatio,
-		Duration:       job.DurationSeconds,
-		Quality:        job.Quality,
-		CreditsCharged: job.ChargedCredits,
-		CompiledPrompt: job.CompiledPrompt,
-		CreatedAt:      job.CreatedAt.UTC().Format(time.RFC3339),
-		UpdatedAt:      job.UpdatedAt.UTC().Format(time.RFC3339),
+		OutputDurationMs: job.OutputDurationMs,
+		JobID:            job.ID.String(),
+		Status:           string(job.Status),
+		Progress:         job.Progress,
+		CurrentStep:      job.CurrentStep,
+		Model:            job.ModelID,
+		AspectRatio:      job.AspectRatio,
+		Duration:         job.DurationSeconds,
+		Quality:          job.Quality,
+		CreditsCharged:   job.ChargedCredits,
+		CompiledPrompt:   job.CompiledPrompt,
+		IsDraft:          job.IsDraft,
+		CreatedAt:        job.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:        job.UpdatedAt.UTC().Format(time.RFC3339),
+	}
+	if job.Mode == "text_image" {
+		dto.RawPrompt = job.Prompt
+		dto.ImageCategory = "character"
+		var snapshot struct {
+			Category        string                         `json:"category"`
+			ProductDesign   *dto_open_api.ProductDesignDTO `json:"productDesign"`
+			CharacterDesign *characterdesign.Options       `json:"characterDesign"`
+		}
+		if json.Unmarshal(job.EffectiveInputs, &snapshot) == nil {
+			if snapshot.Category == "product" {
+				dto.ImageCategory = "product"
+				dto.ProductDesign = snapshot.ProductDesign
+			} else if snapshot.CharacterDesign != nil {
+				if options, err := characterdesign.Normalize(*snapshot.CharacterDesign); err == nil {
+					dto.CharacterDesign = &dto_open_api.CharacterDesignDTO{VisualStyle: options.VisualStyle, Mood: options.Mood, DesignFormat: options.DesignFormat}
+				}
+			}
+		}
 	}
 	if job.SceneID != nil {
 		v := job.SceneID.String()
@@ -651,4 +925,29 @@ func (f *jobFacade) resolveJobCharacters(ctx context.Context, userID string, in 
 		return nil, fmt.Errorf("load scene characters: %w", err)
 	}
 	return profiles, nil
+}
+
+func sameOptionalUUID(a *uuid.UUID, b *string) bool {
+	if a == nil {
+		return b == nil || *b == ""
+	}
+	return b != nil && a.String() == *b
+}
+
+// The same provenance boundary applies before pipeline acceptance and video submission.
+func validatePipelineCharacter(ctx context.Context, a *models.LibraryAsset, userID string, jobs pipelineJobReader) error {
+	if a.UserID.String() != userID || a.JobID == nil || a.UploadID != nil || a.AssetType != "character" || a.StorageKey == nil || !durableKey(*a.StorageKey) || a.MediaType == nil || *a.MediaType != "image" {
+		return ErrAssetSource
+	}
+	j, e := jobs.FindByID(ctx, a.JobID.String(), userID)
+	if e != nil {
+		return mapRepoErr(e)
+	}
+	var snap struct {
+		Category string `json:"category"`
+	}
+	if j.UserID.String() != userID || j.Status != models.JobStatusSucceeded || j.Mode != "text_image" || j.OutputMediaKey == nil || *j.OutputMediaKey != *a.StorageKey || json.Unmarshal(j.EffectiveInputs, &snap) != nil || snap.Category != "character" {
+		return ErrAssetSource
+	}
+	return nil
 }
