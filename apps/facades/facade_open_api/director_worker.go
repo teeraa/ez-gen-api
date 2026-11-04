@@ -473,10 +473,10 @@ func (f *DirectorFacade) directorImage(c context.Context, j *models.DirectorJob,
 		if e != nil {
 			known, definitive := storyDefinitiveImageError(e)
 			code, message := "IMAGE_PROVIDER_ERROR", ""
-			if known != nil {
-				code, message = known.Code, known.Message
-			}
 			d := modelark.ImageFailureDiagnostic(e)
+			if known != nil {
+				code, message = known.Code, known.Message+directorProviderHint(d.HTTPStatus, d.ProviderCode)
+			}
 			return f.failWith(c, j, in, definitive, code, message, fmt.Errorf("image provider http=%d code=%s model=%s size=%s ref=%t: %w", d.HTTPStatus, d.ProviderCode, in.ImageModel, directorImageSize(in.Project.AspectRatio), ref != "", e))
 		}
 		if !storyValidImage(data) {
@@ -762,4 +762,18 @@ var directorAnalysisMessages = map[string]string{
 	"ANALYSIS_UNAVAILABLE":    "บริการ AI ไม่ตอบสนอง กรุณาลองใหม่อีกครั้ง",
 	"ANALYSIS_NOT_CONFIGURED": "ยังไม่ได้ตั้งค่าโมเดลเขียนเนื้อเรื่อง กรุณาติดต่อผู้ดูแลระบบ",
 	"ANALYSIS_INVALID_OUTPUT": "AI ตอบกลับในรูปแบบที่ใช้ไม่ได้ กรุณาลองใหม่อีกครั้ง",
+}
+
+// The provider code is allowlisted by the modelark adapter, so it is safe to show and lets
+// testers report the exact provider reason without server log access.
+func directorProviderHint(status int, code string) string {
+	switch {
+	case status > 0 && code != "":
+		return fmt.Sprintf(" (HTTP %d · %s)", status, code)
+	case status > 0:
+		return fmt.Sprintf(" (HTTP %d)", status)
+	case code != "":
+		return " (" + code + ")"
+	}
+	return ""
 }

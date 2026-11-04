@@ -59,3 +59,23 @@ func TestImageClientRetainsSafeHTTPAndEmbeddedDiagnostics(t *testing.T) {
 		})
 	}
 }
+
+func TestImageFailureModelHintIsNotConfigurationFault(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		code   string
+		status int
+		want   string
+	}{
+		{"UnknownModelRuntimeError", 0, "PROVIDER_ERROR"},
+		{"InvalidParameter.ModelInput", 400, "PROVIDER_INVALID_INPUT"},
+		{"ModelNotFound", 0, "MODEL_UNAVAILABLE"},
+		{"", 404, "MODEL_UNAVAILABLE"},
+		{"ServerOverloaded", 503, "PROVIDER_UNAVAILABLE"},
+	}
+	for _, tc := range cases {
+		if got := imageFailure(tc.code, tc.status, nil).Code; got != tc.want {
+			t.Errorf("%s/%d: got %s want %s", tc.code, tc.status, got, tc.want)
+		}
+	}
+}

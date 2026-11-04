@@ -70,15 +70,20 @@ func imageFailure(code string, status int, param *string) *ImageError {
 	case status == 429:
 		e.Code = "PROVIDER_RATE_LIMIT"
 		e.Message = "บริการสร้างภาพมีคำขอจำนวนมาก กรุณารอสักครู่แล้วลองใหม่"
-	case status == 404 || strings.Contains(lower, "model"):
-		e.Code = "MODEL_UNAVAILABLE"
-		e.Message = "โมเดลสร้างภาพยังใช้งานไม่ได้ กรุณาติดต่อผู้ดูแลระบบเพื่อตรวจสอบการเปิดใช้งาน"
 	case status == 400 || family == "InvalidParameter" || family == "MissingParameter" || family == "InvalidRequest":
 		e.Code = "PROVIDER_INVALID_INPUT"
 		e.Message = "บริการสร้างภาพไม่รับข้อมูลนี้ กรุณาปรับคำอธิบาย ภาพอ้างอิง หรือการตั้งค่า"
 		if e.diagnostic.Param != "" {
 			e.Message = "บริการสร้างภาพไม่รับข้อมูลในช่อง " + e.diagnostic.Param + " กรุณาตรวจคำอธิบาย ภาพอ้างอิง หรือการตั้งค่าช่องนี้"
 		}
+	// Only model-family codes mean the model itself is unavailable; other codes merely mentioning
+	// "model" (for example provider-side generation errors) must not be reported as a configuration fault.
+	case status == 404 || strings.HasPrefix(lower, "model"):
+		e.Code = "MODEL_UNAVAILABLE"
+		e.Message = "โมเดลสร้างภาพยังใช้งานไม่ได้ กรุณาติดต่อผู้ดูแลระบบเพื่อตรวจสอบการเปิดใช้งาน"
+	case status >= 500 || family == "InternalError" || family == "InternalServiceError" || family == "ServerOverloaded":
+		e.Code = "PROVIDER_UNAVAILABLE"
+		e.Message = "บริการสร้างภาพขัดข้องชั่วคราว กรุณาลองใหม่อีกครั้ง"
 	}
 	return e
 }
