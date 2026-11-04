@@ -26,4 +26,6 @@ type DirectorRequest struct {
 	Camera            *string   `json:"camera,omitempty"`
 	AfterShotID       *string   `json:"afterShotId,omitempty"`
 	ShotIDs           *[]string `json:"shotIds,omitempty"`
+	Draft             bool      `json:"draft,omitempty"`
+	Finalize          bool      `json:"finalize,omitempty"`
 }

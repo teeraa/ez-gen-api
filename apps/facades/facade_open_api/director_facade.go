@@ -52,6 +52,7 @@ type DirectorOptions struct {
 	StoryPoints   int
 	ImagePoints   int
 	VideoPoints   int
+	DraftPoints   int
 	SampleBaseURL string
 	VideoEnabled  bool
 }
@@ -144,26 +145,42 @@ type directorDocument struct {
 	Project     dto.DirectorProject `json:"project"`
 	Keys        map[string]string   `json:"keys"`
 	Generations map[string]string   `json:"generations"`
+	// Planner-authored production context; private because it is English provider guidance.
+	Bible    string                           `json:"bible,omitempty"`
+	Settings map[string]string                `json:"settings,omitempty"`
+	Prompts  map[string]directorPlannedPrompt `json:"prompts,omitempty"`
+	// Provider draft handles stay private; they are only used to refine a draft into a final clip.
+	VideoDrafts map[string]directorVideoDraft `json:"videoDrafts,omitempty"`
+}
+type directorVideoDraft struct {
+	TaskID    string    `json:"taskId"`
+	Provider  string    `json:"provider"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 type directorJobInput struct {
-	Project     dto.DirectorProject `json:"project"`
-	Generation  string              `json:"generation"`
-	Description string              `json:"description"`
-	Camera      string              `json:"camera"`
-	Instruction string              `json:"instruction"`
-	Model       string              `json:"model"`
-	ImageModel  string              `json:"imageModel"`
-	Characters  []directorCharacter `json:"characters"`
-	CoverKey    string              `json:"coverKey"`
-	ShotID      string              `json:"shotId,omitempty"`
-	ImageKey    string              `json:"imageKey,omitempty"`
-	VideoModel  string              `json:"videoModel,omitempty"`
-	Ratio       string              `json:"ratio,omitempty"`
-	Resolution  string              `json:"resolution,omitempty"`
-	Seconds     int                 `json:"seconds,omitempty"`
+	Project      dto.DirectorProject `json:"project"`
+	Generation   string              `json:"generation"`
+	Description  string              `json:"description"`
+	Camera       string              `json:"camera"`
+	Instruction  string              `json:"instruction"`
+	Model        string              `json:"model"`
+	ImageModel   string              `json:"imageModel"`
+	Characters   []directorCharacter `json:"characters"`
+	CoverKey     string              `json:"coverKey"`
+	ShotID       string              `json:"shotId,omitempty"`
+	ImageKey     string              `json:"imageKey,omitempty"`
+	VideoModel   string              `json:"videoModel,omitempty"`
+	Ratio        string              `json:"ratio,omitempty"`
+	Resolution   string              `json:"resolution,omitempty"`
+	Seconds      int                 `json:"seconds,omitempty"`
+	NextShotID   string              `json:"nextShotId,omitempty"`
+	NextImageKey string              `json:"nextImageKey,omitempty"`
+	Draft        bool                `json:"draft,omitempty"`
+	DraftTaskID  string              `json:"draftTaskId,omitempty"`
 }
 type directorCharacter struct {
 	ID          string `json:"id"`
+	Name        string `json:"name"`
 	Description string `json:"description"`
 	Key         string `json:"key"`
 }
@@ -171,6 +188,15 @@ type directorCharacter struct {
 func directorDecode(p *models.DirectorProject) (directorDocument, error) {
 	var d directorDocument
 	e := json.Unmarshal(p.Document, &d)
+	if d.Settings == nil {
+		d.Settings = map[string]string{}
+	}
+	if d.Prompts == nil {
+		d.Prompts = map[string]directorPlannedPrompt{}
+	}
+	if d.VideoDrafts == nil {
+		d.VideoDrafts = map[string]directorVideoDraft{}
+	}
 	return d, e
 }
 func directorEncode(p *models.DirectorProject, d *directorDocument) error {
@@ -211,7 +237,13 @@ func (f *DirectorFacade) Capabilities() dto.DirectorCapabilities {
 		if !ok || !m.SupportsImgVideo {
 			continue
 		}
-		c.Models.Video = append(c.Models.Video, dto.DirectorModel{ID: entry.ID, Name: m.PublicLabel(), Note: fmt.Sprintf("ใช้ภาพสตอรี่บอร์ดเป็นเฟรมแรก · สูงสุด %s · %d–%d วินาที", m.MaxResolution, m.MinDuration, m.MaxDuration), SpeedHint: fmt.Sprintf("%d วินาทีต่อ shot", directorVideoSeconds(m)), PointsPerUnit: f.options.VideoPoints, Default: len(c.Models.Video) == 0, AspectRatios: append([]string{}, m.SupportedRatios...)})
+		model := dto.DirectorModel{ID: entry.ID, Name: m.PublicLabel(), Note: fmt.Sprintf("ภาพ shot นี้เป็นเฟรมแรก ภาพ shot ถัดไปเป็นเฟรมสุดท้าย · สูงสุด %s", m.MaxResolution), SpeedHint: fmt.Sprintf("%d วินาทีต่อ shot", directorVideoSeconds(m)), PointsPerUnit: f.options.VideoPoints, Default: len(c.Models.Video) == 0, AspectRatios: append([]string{}, m.SupportedRatios...)}
+		if m.SupportsDraft() && f.options.DraftPoints > 0 {
+			model.SupportsDraft = true
+			model.DraftPointsPerUnit = f.options.DraftPoints
+			model.Note += " · มีโหมด draft 480p"
+		}
+		c.Models.Video = append(c.Models.Video, model)
 	}
 	c.VideoEnabled = c.Enabled && f.videoAvailable() && len(c.Models.Video) > 0
 	if !c.Enabled {
@@ -371,6 +403,8 @@ func (f *DirectorFacade) present(c context.Context, m *models.DirectorProject) (
 				if e != nil {
 					return p, e
 				}
+				draft, ok := d.VideoDrafts[s.ID]
+				s.Video.CanFinalize = s.Video.Draft && s.Video.Status == "succeeded" && !s.Video.Stale && ok && time.Now().Before(modelark.DraftExpiresAt(draft.CreatedAt))
 			}
 			if first == nil && s.Image.Status == "succeeded" {
 				first = s
@@ -486,6 +520,32 @@ func directorTotal(p *dto.DirectorProject) int {
 	return n
 }
 func directorVideoTarget(shotID string) string { return "video:" + shotID }
+
+// Continuity frames stay inside a scene; morphing into another location's first shot reads as a glitch.
+func directorNextShot(p *dto.DirectorProject, sh *dto.DirectorShot) *dto.DirectorShot {
+	sc := directorFindScene(p, sh.SceneID)
+	if sc == nil {
+		return nil
+	}
+	for i := range sc.Shots {
+		if sc.Shots[i].ID == sh.ID && i+1 < len(sc.Shots) {
+			return &sc.Shots[i+1]
+		}
+	}
+	return nil
+}
+func directorPreviousShot(p *dto.DirectorProject, sh *dto.DirectorShot) *dto.DirectorShot {
+	sc := directorFindScene(p, sh.SceneID)
+	if sc == nil {
+		return nil
+	}
+	for i := range sc.Shots {
+		if sc.Shots[i].ID == sh.ID && i > 0 {
+			return &sc.Shots[i-1]
+		}
+	}
+	return nil
+}
 func directorVideoBusy(s *dto.DirectorShot) bool {
 	return s.Video != nil && directorBusy(s.Video.Status)
 }
@@ -554,13 +614,24 @@ func (f *DirectorFacade) job(d *directorDocument, kind, target string, cost int,
 		snapshot.Ratio = d.Project.AspectRatio
 		snapshot.Resolution = directorVideoResolution(d.Project.Resolution, m)
 		snapshot.Seconds = directorVideoSeconds(m)
+		if in.Finalize {
+			draft := d.VideoDrafts[sh.ID]
+			snapshot.DraftTaskID = draft.TaskID
+			snapshot.VideoModel = draft.Provider
+		} else {
+			snapshot.Draft = in.Draft
+			if next := directorNextShot(&d.Project, sh); next != nil && next.Image.Status == "succeeded" && d.Keys[next.ID] != "" {
+				snapshot.NextShotID = next.ID
+				snapshot.NextImageKey = d.Keys[next.ID]
+			}
+		}
 	}
 	for _, id := range d.Project.Idea.CharacterAssetIDs {
 		a, e := loadAsset(id)
 		if e != nil || a.StorageKey == nil {
 			return models.DirectorJob{}, directorInvalid("characterAssetIds")
 		}
-		snapshot.Characters = append(snapshot.Characters, directorCharacter{ID: id, Description: a.Description, Key: *a.StorageKey})
+		snapshot.Characters = append(snapshot.Characters, directorCharacter{ID: id, Name: a.Name, Description: a.Description, Key: *a.StorageKey})
 	}
 	if d.Project.Cover != nil && d.Project.Cover.Source == "generated" && d.Project.Cover.Status == "succeeded" {
 		snapshot.CoverKey = d.Keys[d.Project.Cover.ID]
@@ -715,6 +786,7 @@ func (f *DirectorFacade) Mutate(c context.Context, id, user, action, target stri
 			if e = f.validateIdea(p.Idea, true, loadAsset); e != nil {
 				return nil, e
 			}
+			d.Bible, d.Settings, d.Prompts = "", map[string]string{}, map[string]directorPlannedPrompt{}
 			// Replacing the story invalidates all old scene/shot generation tokens.
 			for _, sc := range p.Scenes {
 				delete(d.Generations, sc.ID)
@@ -827,6 +899,7 @@ func (f *DirectorFacade) Mutate(c context.Context, id, user, action, target stri
 				sc := &p.Scenes[i]
 				for _, sh := range sc.Shots {
 					delete(d.Generations, sh.ID)
+					delete(d.Prompts, sh.ID)
 				}
 				sc.Shots = []dto.DirectorShot{}
 				for j := 0; j < sc.ShotCount; j++ {
@@ -988,6 +1061,20 @@ func (f *DirectorFacade) enqueueVideos(d *directorDocument, in req.DirectorReque
 	if !m.SupportsOutput(p.AspectRatio, seconds) {
 		return directorError(422, "MODEL_NOT_SUPPORTED")
 	}
+	if in.Draft && in.Finalize {
+		return directorInvalid("draft")
+	}
+	if (in.Draft || in.Finalize) && (!m.SupportsDraft() || f.options.DraftPoints <= 0) {
+		return directorError(422, "DRAFT_NOT_SUPPORTED")
+	}
+	cost := f.options.VideoPoints
+	if in.Draft {
+		cost = f.options.DraftPoints
+	}
+	finalizable := func(sh *dto.DirectorShot) bool {
+		draft, ok := d.VideoDrafts[sh.ID]
+		return sh.Video != nil && sh.Video.Draft && sh.Video.Status == "succeeded" && !sh.Video.Stale && ok && time.Now().Before(modelark.DraftExpiresAt(draft.CreatedAt))
+	}
 	targets := []*dto.DirectorShot{}
 	if in.ShotIDs != nil {
 		if len(*in.ShotIDs) == 0 || len(*in.ShotIDs) > 40 {
@@ -1010,7 +1097,7 @@ func (f *DirectorFacade) enqueueVideos(d *directorDocument, in req.DirectorReque
 		for i := range p.Scenes {
 			for j := range p.Scenes[i].Shots {
 				sh := &p.Scenes[i].Shots[j]
-				if sh.Video == nil || sh.Video.Status != "succeeded" || sh.Video.Stale {
+				if in.Finalize && finalizable(sh) || !in.Finalize && (sh.Video == nil || sh.Video.Status != "succeeded" || sh.Video.Stale) {
 					targets = append(targets, sh)
 				}
 			}
@@ -1026,10 +1113,15 @@ func (f *DirectorFacade) enqueueVideos(d *directorDocument, in req.DirectorReque
 		if directorVideoBusy(sh) || directorBusy(sh.Image.Status) {
 			return directorError(409, "SHOT_BUSY")
 		}
+		if in.Finalize && !finalizable(sh) {
+			return directorError(409, "DRAFT_NOT_AVAILABLE")
+		}
 	}
 	for _, sh := range targets {
-		sh.Video = &dto.DirectorVideo{Status: "queued", ModelID: p.Storyboard.VideoModelID, DurationSeconds: seconds, PointsCharged: f.options.VideoPoints}
-		if e := enqueue("video", directorVideoTarget(sh.ID), f.options.VideoPoints); e != nil {
+		next := directorNextShot(p, sh)
+		usesLast := !in.Finalize && next != nil && next.Image.Status == "succeeded" && d.Keys[next.ID] != ""
+		sh.Video = &dto.DirectorVideo{Status: "queued", ModelID: p.Storyboard.VideoModelID, DurationSeconds: seconds, PointsCharged: cost, Draft: in.Draft, UsesLastFrame: usesLast || in.Finalize && sh.Video.UsesLastFrame}
+		if e := enqueue("video", directorVideoTarget(sh.ID), cost); e != nil {
 			return e
 		}
 	}

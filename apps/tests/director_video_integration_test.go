@@ -71,8 +71,11 @@ func TestDirectorPostgresVideoLifecycle(t *testing.T) {
 		t.Fatalf("submissions: %d", len(video.CreatedRequests))
 	}
 	r := video.CreatedRequests[0]
-	if r.Model != "dreamina-seedance-2-0-fast-260128" || r.Ratio != "16:9" || r.DurationSeconds != 5 || r.Resolution != "720p" || len(r.Content) != 2 || r.Content[1].Role != modelark.RoleFirstFrame || !strings.HasPrefix(r.Content[1].URL, "https://owned.test/") {
+	if r.Model != "dreamina-seedance-2-0-fast-260128" || r.Ratio != "16:9" || r.DurationSeconds != 5 || r.Resolution != "720p" || len(r.Content) != 3 || r.Content[1].Role != modelark.RoleFirstFrame || r.Content[2].Role != modelark.RoleLastFrame || !strings.HasPrefix(r.Content[1].URL, "https://owned.test/") || r.Content[1].URL == r.Content[2].URL || !strings.Contains(r.Content[0].Text, "last frame") {
 		t.Fatalf("video request: %+v", r)
+	}
+	if last := video.CreatedRequests[1]; len(last.Content) != 2 || last.Draft {
+		t.Fatalf("last shot of a scene must use only its first frame: %+v", last)
 	}
 	// Waiting jobs are not resubmitted while the provider is still running.
 	video.SetTask(video.NextTaskID, &modelark.TaskResult{ProviderTaskID: video.NextTaskID, Status: modelark.ProviderStatusRunning})
@@ -175,5 +178,55 @@ func TestDirectorPostgresImagesSurviveUnusableShotPlan(t *testing.T) {
 		if !strings.Contains(sh.Description, "ดาวที่หายไป") {
 			t.Fatalf("fallback description: %q", sh.Description)
 		}
+	}
+}
+
+func TestDirectorPostgresSeedance25DraftThenFinal(t *testing.T) {
+	video := modelark.NewMockClient()
+	video.NextTaskID = "cgt-director-draft"
+	d := newDirectorFixtureWith(t, video, &directorTestFetcher{})
+	p := d.board()
+	path := "/projects/" + p.ID
+	d.wantError("POST", path+"/video", map[string]any{"revision": p.Revision, "idempotencyKey": uuid.NewString(), "draft": true}, 422, "DRAFT_NOT_SUPPORTED")
+	p = d.project("PATCH", path+"/storyboard-settings", map[string]any{"revision": p.Revision, "videoModelId": "seedance-2-5"})
+	shot := d.shots(p)[0]
+	before := d.balance()
+	p = d.project("POST", path+"/video", map[string]any{"revision": p.Revision, "idempotencyKey": uuid.NewString(), "draft": true, "shotIds": []string{shot.ID}})
+	if d.balance() != before-8 || !d.shots(p)[0].Video.Draft {
+		t.Fatalf("draft admission: balance %d video %+v", d.balance(), d.shots(p)[0].Video)
+	}
+	d.tick()
+	r := video.CreatedRequests[0]
+	if r.Model != "dreamina-seedance-2-5-260628" || !r.Draft || r.Resolution != "480p" || len(r.Content) != 3 {
+		t.Fatalf("draft request: %+v", r)
+	}
+	video.SetTask(video.NextTaskID, &modelark.TaskResult{ProviderTaskID: video.NextTaskID, Status: modelark.ProviderStatusSucceeded, VideoURL: "https://provider.test/draft.mp4"})
+	d.expireWaits()
+	d.tick()
+	status, b, _ := d.http("GET", path, nil, nil)
+	if status != 200 || bytes.Contains(b, []byte("cgt-director-draft")) {
+		t.Fatalf("draft task id leaked: %s", b)
+	}
+	p = d.get(p.ID)
+	if v := d.shots(p)[0].Video; v == nil || v.Status != "succeeded" || !v.Draft || !v.CanFinalize {
+		t.Fatalf("draft result: %+v", v)
+	}
+	video.NextTaskID = "cgt-director-final"
+	before = d.balance()
+	p = d.project("POST", path+"/video", map[string]any{"revision": p.Revision, "idempotencyKey": uuid.NewString(), "finalize": true})
+	if d.balance() != before-20 {
+		t.Fatal("final refinement not charged at full price")
+	}
+	d.tick()
+	final := video.CreatedRequests[1]
+	if final.Model != "dreamina-seedance-2-5-260628" || final.Draft || final.Resolution != "1080p" || final.Ratio != "" || final.DurationSeconds != 0 || len(final.Content) != 1 || final.Content[0].Type != modelark.ContentTypeDraftTask || final.Content[0].DraftTaskID != "cgt-director-draft" {
+		t.Fatalf("final request: %+v", final)
+	}
+	video.SetTask(video.NextTaskID, &modelark.TaskResult{ProviderTaskID: video.NextTaskID, Status: modelark.ProviderStatusSucceeded, VideoURL: "https://provider.test/final.mp4"})
+	d.expireWaits()
+	d.tick()
+	p = d.get(p.ID)
+	if v := d.shots(p)[0].Video; v == nil || v.Status != "succeeded" || v.Draft || v.CanFinalize {
+		t.Fatalf("final result: %+v", v)
 	}
 }

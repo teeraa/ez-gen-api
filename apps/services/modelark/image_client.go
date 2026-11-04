@@ -17,6 +17,9 @@ type ImageRequest struct {
 	Prompt       string
 	Size         string
 	ReferenceURL string
+	// ReferenceURLs sends several references in one request (e.g. every character in a shot).
+	// The prompt refers to them as Image 1, Image 2, ... in this order.
+	ReferenceURLs []string
 }
 type ImageGenerator interface {
 	GenerateImage(context.Context, ImageRequest) ([]byte, error)
@@ -49,8 +52,16 @@ func (a *imageClient) GenerateImage(c context.Context, r ImageRequest) ([]byte, 
 	event.Status = "failed"
 	defer func() { finishUsage(c, a.recorder, event) }()
 	req := &images.CreateImageGenerationRequest{Model: model, Prompt: images.NewOptString(r.Prompt), Size: images.NewOptString(r.Size), ResponseFormat: images.NewOptResponseFormat(images.ResponseFormatB64JSON), Watermark: images.NewOptBool(false)}
-	if r.ReferenceURL != "" {
-		req.Image = images.NewOptCreateImageGenerationRequestImage(images.NewStringCreateImageGenerationRequestImage(r.ReferenceURL))
+	refs := r.ReferenceURLs
+	if len(refs) == 0 && r.ReferenceURL != "" {
+		refs = []string{r.ReferenceURL}
+	}
+	switch len(refs) {
+	case 0:
+	case 1:
+		req.Image = images.NewOptCreateImageGenerationRequestImage(images.NewStringCreateImageGenerationRequestImage(refs[0]))
+	default:
+		req.Image = images.NewOptCreateImageGenerationRequestImage(images.NewStringArrayCreateImageGenerationRequestImage(refs))
 	}
 	res, e := a.sdk.GenerateImages(c, req)
 	if e != nil {

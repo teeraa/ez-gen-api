@@ -65,6 +65,9 @@ type DirectorVideo struct {
 	Stale           bool       `json:"stale"`
 	ModelID         string     `json:"modelId"`
 	DurationSeconds int        `json:"durationSeconds"`
+	Draft           bool       `json:"draft"`
+	CanFinalize     bool       `json:"canFinalize"`
+	UsesLastFrame   bool       `json:"usesLastFrame"`
 	DirectorFailure
 	PointsCharged  int `json:"pointsCharged"`
 	PointsRefunded int `json:"pointsRefunded"`
@@ -163,6 +166,8 @@ type DirectorModel struct {
 	SupportsCharacterReference bool     `json:"supportsCharacterReference"`
 	Default                    bool     `json:"default,omitempty"`
 	AspectRatios               []string `json:"aspectRatios,omitempty"`
+	SupportsDraft              bool     `json:"supportsDraft,omitempty"`
+	DraftPointsPerUnit         int      `json:"draftPointsPerUnit,omitempty"`
 }
 type DirectorModels struct {
 	Story []DirectorModel `json:"story"`

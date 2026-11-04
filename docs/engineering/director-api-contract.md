@@ -377,7 +377,9 @@ UI แสดงแถว "อ้างอิงโทนภาพ: ภาพป�
 | POST | `/projects/:id/shots/:shotId/retry` | `{ revision, idempotencyKey }` | เฉพาะ `canRetry = true` (`failed` / `needs_attention`) |
 
 ### วิดีโอ
-- `POST /projects/:id/video` `{ revision, idempotencyKey, shotIds?: string[] }` → `DirectorProject` (revision ไม่เปลี่ยน)
+- `POST /projects/:id/video` `{ revision, idempotencyKey, shotIds?: string[], draft?: boolean, finalize?: boolean }` → `DirectorProject` (revision ไม่เปลี่ยน)
+- เฟรม: ภาพ shot นี้ = `first_frame`, ภาพ shot ถัดไปในฉากเดียวกัน (ถ้าสำเร็จแล้ว) = `last_frame` เพื่อให้คลิปต่อกันได้ (`video.usesLastFrame`); shot สุดท้ายของฉากใช้ first frame อย่างเดียว ได้ภาพ shot ถัดไปใหม่ → วิดีโอ shot ก่อนหน้า `stale`
+- `draft: true` (เฉพาะโมเดลที่ `supportsDraft`, ตอนนี้ Seedance 2.5): 480p ราคา `draftPointsPerUnit` → `video.draft = true`; `finalize: true` ทำฉบับเต็ม 1080p จาก draft ที่ยังไม่หมดอายุ (`video.canFinalize`, ไม่ส่ง `shotIds` = ทุก shot ที่ทำได้) ราคาเต็ม; โมเดลไม่รองรับ → `422 DRAFT_NOT_SUPPORTED`, ไม่มี draft ที่ใช้ได้ → `409 DRAFT_NOT_AVAILABLE`
 - ไม่ส่ง `shotIds` = ทุก shot ที่ยังไม่มีวิดีโอสำเร็จหรือวิดีโอ `stale` (ไม่มีเลย → `409 VIDEO_UP_TO_DATE`); ส่ง `shotIds` = สร้างใหม่เฉพาะ shot ที่ระบุ
 - เงื่อนไข: ภาพของทุก shot ที่จะใช้ต้อง `succeeded` (`409 STORYBOARD_INCOMPLETE`), shot ไม่มีงานค้าง (`409 SHOT_BUSY`), โมเดล `storyboard.videoModelId` รองรับสัดส่วนของโปรเจกต์ (`422 MODEL_NOT_SUPPORTED`)
 - ตัดพอยต์ `videoModel.pointsPerUnit` ต่อ shot; provider ล้มเหลวแบบชัดเจนคืนพอยต์และ `canRetry = true`
@@ -543,6 +545,13 @@ recorded separately in the workspace task report.
   Seedance 2.0 Fast / 2.5 / 2.0 entries resolved directly from provider configs,
   so the registry's `ARK_DEFAULT_MODEL` override cannot collapse them into one
   model. Stored `violet-*` IDs are mapped to their Seedance 2.x equivalents.
+- Prompt expansion: the story step also returns an English `visualBible` and a
+  per-scene `setting`; shot planning returns an English `prompt` per shot (kept
+  private with a hash of the Thai description/camera it was written for; a user
+  edit falls back to the Thai text). Image prompts combine camera term, shot
+  action, every shot character bound to reference Image N (all shot characters,
+  up to 4, are sent as references), scene setting, visual bible and a style
+  descriptor. Video prompts add camera motion, cast continuity and setting.
 - Planner output is decoded tolerantly (code fences, extra fields, renumbered shot
   IDs, near-miss camera/mood labels are normalized). If shot planning still fails,
   empty shot descriptions fall back to the scene title and summary so storyboard

@@ -87,3 +87,21 @@ func TestImageClientSerializesReferenceImage(t *testing.T) {
 		t.Fatalf("result %q err %v calls %d", result, err, calls)
 	}
 }
+
+func TestImageClientSerializesMultipleReferences(t *testing.T) {
+	refs := []string{"https://storage.test/a.png", "https://storage.test/b.png"}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Image []string `json:"image"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || len(request.Image) != 2 || request.Image[0] != refs[0] || request.Image[1] != refs[1] {
+			t.Errorf("references not sent as ordered array: %+v %v", request, err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"model":"m","created":1,"data":[{"b64_json":"Zml4dHVyZQ=="}]}`))
+	}))
+	defer server.Close()
+	if _, err := NewImageClient("fixture", server.URL, "m").GenerateImage(context.Background(), ImageRequest{Prompt: "p", Size: "2048x2048", ReferenceURLs: refs}); err != nil {
+		t.Fatal(err)
+	}
+}

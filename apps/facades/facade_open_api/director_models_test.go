@@ -1,6 +1,7 @@
 package facade_open_api
 
 import (
+	"strings"
 	"testing"
 
 	dto "github.com/ez-gen/ez-gen-api/apps/dto/dto_open_api"
@@ -68,4 +69,24 @@ func TestDirectorAlignPlannedShotsTolerantOutput(t *testing.T) {
 
 func directorTestProject() dto.DirectorProject {
 	return dto.DirectorProject{Scenes: []dto.DirectorScene{{ID: "s1", CharacterAssetIDs: []string{}, Shots: []dto.DirectorShot{{ID: "a", SceneID: "s1"}, {ID: "b", SceneID: "s1"}}}}}
+}
+
+func TestDirectorImagePromptBindsCastSettingAndStyle(t *testing.T) {
+	t.Parallel()
+	p := directorTestProject()
+	p.Style, p.AspectRatio, p.Idea.Genre = "cinematic", "16:9", "fantasy"
+	p.Scenes[0].Title, p.Scenes[0].Summary = "ลานประลอง", "สองสำนักเผชิญหน้า"
+	p.Scenes[0].Shots[0].Description, p.Scenes[0].Shots[0].Camera = "หลินและเฟิงจ้องตากัน", "โคลสอัพ"
+	d := directorDocument{Settings: map[string]string{"s1": "stone courtyard at dusk, red lanterns"}, Bible: "Song dynasty wuxia, ink-wash palette", Prompts: map[string]directorPlannedPrompt{"a": {Prompt: "Lin and Feng lock eyes", Hash: directorShotHash("หลินและเฟิงจ้องตากัน", "โคลสอัพ")}}}
+	cast := []directorCharacter{{ID: "c1", Name: "หลิน", Description: "white robe"}, {ID: "c2", Name: "เฟิง", Description: "black armor"}}
+	got := directorImagePrompt(&d, &p, &p.Scenes[0].Shots[0], cast, 2)
+	for _, want := range []string{"close-up shot", "Lin and Feng lock eyes", "หลิน", "reference Image 1", "เฟิง", "reference Image 2", "stone courtyard at dusk", "Song dynasty wuxia", "cinematic film still"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("prompt missing %q:\n%s", want, got)
+		}
+	}
+	p.Scenes[0].Shots[0].Description = "ผู้ใช้แก้คำบรรยายเอง"
+	if got = directorImagePrompt(&d, &p, &p.Scenes[0].Shots[0], cast, 2); strings.Contains(got, "Lin and Feng lock eyes") || !strings.Contains(got, "ผู้ใช้แก้คำบรรยายเอง") {
+		t.Errorf("user edit must replace the planner prompt:\n%s", got)
+	}
 }

@@ -21,13 +21,36 @@ type directorSceneOutput struct {
 	Summary           string   `json:"summary"`
 	Mood              string   `json:"mood"`
 	CharacterAssetIDs []string `json:"characterAssetIds"`
+	Setting           string   `json:"setting,omitempty"`
 }
 type directorShotOutput struct {
 	ID                string   `json:"id,omitempty"`
 	Description       string   `json:"description"`
 	Camera            string   `json:"camera"`
 	CharacterAssetIDs []string `json:"characterAssetIds"`
+	Prompt            string   `json:"prompt,omitempty"`
 }
+
+// directorPlannerInput is what the text model sees: no storage keys or job metadata.
+type directorPlannerInput struct {
+	Project     dto.DirectorProject `json:"project"`
+	Instruction string              `json:"instruction,omitempty"`
+	Characters  []directorCastBrief `json:"characters"`
+	VisualBible string              `json:"visualBible,omitempty"`
+	Settings    map[string]string   `json:"sceneSettings,omitempty"`
+}
+type directorCastBrief struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+const directorPlannerGuide = "Write for a storyboard whose images are generated one shot at a time, so every shot must be self-contained and consistent. " +
+	"Use each character's supplied name and look exactly; never invent new main characters. " +
+	"Keep each scene in one coherent location unless the story requires a move."
+const directorShotGuide = ` "prompt" is an English image-generation prompt of 60-120 words: subject and action, every visible character by name with expression and pose, ` +
+	`foreground/background composition, the scene's location and lighting from sceneSettings, and the visual bible's era, wardrobe and palette. ` +
+	`"description" is a Thai summary of the same shot for the user (1-2 sentences, names the characters). characterAssetIds lists every character visible in the shot.`
 
 func directorSubset(ids, allowed []string) bool {
 	if ids == nil {
@@ -185,12 +208,14 @@ func (f *DirectorFacade) Tick(ctx context.Context) error {
 		return lookupErr
 	}
 	valid := false
+	var doc directorDocument
 	if lookupErr == nil {
-		d, decodeErr := directorDecode(current)
+		var decodeErr error
+		doc, decodeErr = directorDecode(current)
 		if decodeErr != nil {
 			return decodeErr
 		}
-		valid = d.Generations[j.TargetID] == in.Generation
+		valid = doc.Generations[j.TargetID] == in.Generation
 	}
 	if !valid {
 		return f.finish(c, j, in, "cancelled", j.Status != "submitting" && len(j.Output) == 0, func(*directorDocument) error { return nil })
@@ -221,17 +246,21 @@ func (f *DirectorFacade) Tick(ctx context.Context) error {
 	schema := ""
 	switch j.Kind {
 	case "story":
-		schema = `{"logline":"Thai logline","scenes":[{"title":"Thai title <=80 chars","summary":"Thai summary <=1200 chars","mood":"one supplied Thai mood","characterAssetIds":[]}]}. Exactly one scene per supplied placeholder, same order.`
+		schema = `{"logline":"Thai logline","visualBible":"English, <=500 chars: era/world, architecture, costume and wardrobe rules per character, color palette, lighting language","scenes":[{"title":"Thai title <=80 chars","summary":"Thai summary <=1200 chars","mood":"one supplied Thai mood","characterAssetIds":["ids of characters in this scene"],"setting":"English, <=400 chars: exact location, time of day, weather, light sources, key props and background details shared by every shot of the scene"}]}. Exactly one scene per supplied placeholder, same order. ` + directorPlannerGuide
 	case "rewrite":
-		schema = `{"title":"Thai title <=80 chars","summary":"Thai summary <=1200 chars","mood":"one supplied Thai mood","characterAssetIds":[]}. Rewrite target scene only using neighboring scenes for continuity; preserve intended shot count.`
+		schema = `{"title":"Thai title <=80 chars","summary":"Thai summary <=1200 chars","mood":"one supplied Thai mood","characterAssetIds":["ids of characters in this scene"],"setting":"English, <=400 chars: exact location, time of day, weather, light sources, key props"}. Rewrite target scene only using neighboring scenes for continuity; preserve intended shot count and the visual bible. ` + directorPlannerGuide
 	case "plan":
-		schema = `{"shots":[{"id":"existing placeholder shot UUID","description":"Thai shot description <=600 chars","camera":"one supplied camera","characterAssetIds":[]}]}. Return exactly all placeholder IDs once in scene/shot order; character IDs must be subset of that scene.`
+		schema = `{"shots":[{"id":"existing placeholder shot UUID","description":"Thai shot description <=600 chars","camera":"one supplied camera","characterAssetIds":["subset of that scene's characters"],"prompt":"English image prompt"}]}. Return exactly all placeholder IDs once in scene/shot order. Vary cameras across a scene.` + directorShotGuide + " " + directorPlannerGuide
 	case "add":
-		schema = `{"description":"Thai shot description <=600 chars","camera":"one supplied camera","characterAssetIds":[]}. Write only the target new shot, using neighboring shots and scene for continuity. Do not return id.`
+		schema = `{"description":"Thai shot description <=600 chars","camera":"one supplied camera","characterAssetIds":["subset of that scene's characters"],"prompt":"English image prompt"}. Write only the target new shot, using neighboring shots and scene for continuity. Do not return id.` + directorShotGuide + " " + directorPlannerGuide
 	default:
 		return f.fail(c, j, in, true)
 	}
-	b, _ := json.Marshal(in)
+	brief := directorPlannerInput{Project: in.Project, Instruction: in.Instruction, Characters: []directorCastBrief{}, VisualBible: doc.Bible, Settings: doc.Settings}
+	for _, ch := range in.Characters {
+		brief.Characters = append(brief.Characters, directorCastBrief{ch.ID, ch.Name, ch.Description})
+	}
+	b, _ := json.Marshal(brief)
 	cap := f.Capabilities()
 	constraints, _ := json.Marshal(struct{ Moods, Cameras []string }{cap.Moods, cap.Cameras})
 	text, e := f.analyzer.Analyze(c, in.Model, operation+"\nReturn exactly JSON schema: "+schema+"\nTarget ID: "+j.TargetID+"\nAllowed values: "+string(constraints)+"\nProject and instruction data: "+string(b))
@@ -249,8 +278,9 @@ func (f *DirectorFacade) Tick(ctx context.Context) error {
 	switch j.Kind {
 	case "story":
 		var result struct {
-			Logline string                `json:"logline"`
-			Scenes  []directorSceneOutput `json:"scenes"`
+			Logline     string                `json:"logline"`
+			VisualBible string                `json:"visualBible"`
+			Scenes      []directorSceneOutput `json:"scenes"`
 		}
 		if e = directorDecodeJSON(text, &result); e != nil {
 			return invalid(e)
@@ -268,6 +298,7 @@ func (f *DirectorFacade) Tick(ctx context.Context) error {
 		}
 		if e = f.progress(c, j, in, func(d *directorDocument) error {
 			d.Project.Story.Logline = &result.Logline
+			d.Bible = directorTruncate(result.VisualBible, 500)
 			d.Project.Story.Phase = directorPointer("writing")
 			if len(d.Project.Scenes) > 0 {
 				d.Project.Scenes[0].Status = "writing"
@@ -287,6 +318,9 @@ func (f *DirectorFacade) Tick(ctx context.Context) error {
 				s.Mood = &sc.Mood
 				s.CharacterAssetIDs = sc.CharacterAssetIDs
 				s.Status = "ready"
+				if setting := directorTruncate(sc.Setting, 400); setting != "" {
+					d.Settings[s.ID] = setting
+				}
 				d.Project.Story.CompletedScenes = i + 1
 				if i+1 < len(d.Project.Scenes) {
 					d.Project.Scenes[i+1].Status = "writing"
@@ -321,6 +355,9 @@ func (f *DirectorFacade) Tick(ctx context.Context) error {
 			s.Mood = &sc.Mood
 			s.CharacterAssetIDs = sc.CharacterAssetIDs
 			s.Status = "ready"
+			if setting := directorTruncate(sc.Setting, 400); setting != "" {
+				d.Settings[s.ID] = setting
+			}
 			for i := range s.Shots {
 				s.Shots[i].Image.Stale = true
 			}
@@ -351,6 +388,9 @@ func (f *DirectorFacade) Tick(ctx context.Context) error {
 					sh.Camera = s.Camera
 				}
 				sh.CharacterAssetIDs = s.CharacterAssetIDs
+				if s.Prompt != "" {
+					d.Prompts[s.ID] = directorPlannedPrompt{Prompt: s.Prompt, Hash: directorShotHash(s.Description, s.Camera)}
+				}
 			}
 			for i := range d.Project.Scenes {
 				sc := &d.Project.Scenes[i]
@@ -388,6 +428,9 @@ func (f *DirectorFacade) Tick(ctx context.Context) error {
 				s.Camera = result.Camera
 			}
 			s.CharacterAssetIDs = result.CharacterAssetIDs
+			if result.Prompt != "" {
+				d.Prompts[s.ID] = directorPlannedPrompt{Prompt: result.Prompt, Hash: directorShotHash(result.Description, result.Camera)}
+			}
 			return nil
 		}); e != nil {
 			return e
@@ -398,8 +441,10 @@ func (f *DirectorFacade) Tick(ctx context.Context) error {
 }
 func (f *DirectorFacade) directorImage(c context.Context, j *models.DirectorJob, in directorJobInput) error {
 	contentHash := ""
-	prompt := in.Project.Idea.Prompt
+	prompt := ""
 	characters := in.Project.Idea.CharacterAssetIDs
+	var doc directorDocument
+	var shot *dto.DirectorShot
 	if j.Kind != "cover" {
 		m, e := f.store.Get(c, j.ProjectID.String(), j.UserID.String())
 		if e != nil {
@@ -409,14 +454,15 @@ func (f *DirectorFacade) directorImage(c context.Context, j *models.DirectorJob,
 		if e != nil {
 			return e
 		}
-		sh := directorFindShot(&d.Project, j.TargetID)
+		doc = d
+		sh := directorFindShot(&doc.Project, j.TargetID)
+		shot = sh
 		if sh == nil || d.Generations[j.TargetID] != in.Generation {
 			return f.finish(c, j, in, "cancelled", len(j.Output) == 0 && j.Status != "submitting", func(*directorDocument) error { return nil })
 		}
 		if !directorBound(sh.Description, 1, 600) {
 			return f.failWith(c, j, in, true, "SHOT_NOT_PLANNED", "shot นี้ยังไม่มีคำบรรยายภาพ กรุณาพิมพ์คำบรรยายแล้วกดลองใหม่", nil)
 		}
-		prompt = sh.Description + "\nCamera: " + sh.Camera
 		contentHash = storyHash(struct{ Description, Camera string }{sh.Description, sh.Camera})
 		characters = sh.CharacterAssetIDs
 		// Persist the exact submitted prompt hash; recovery after upload failure must not recalculate it from edited text.
@@ -447,29 +493,32 @@ func (f *DirectorFacade) directorImage(c context.Context, j *models.DirectorJob,
 		}); e != nil {
 			return e
 		}
-		prompt += "\nStyle: " + in.Project.Style + "\nGenre: " + in.Project.Idea.Genre + "\nMoods: " + strings.Join(in.Project.Idea.Moods, ", ") + "\nAspect ratio: " + in.Project.AspectRatio
-		ref := ""
-		for _, ch := range in.Characters {
-			if directorContains(characters, ch.ID) {
-				prompt += "\nCharacter: " + ch.Description
-				if ref == "" {
-					u, _, e := f.storage.SignedURL(c, ch.Key, time.Hour)
-					if e != nil {
-						return f.failWith(c, j, in, true, "REFERENCE_UNAVAILABLE", "เปิดภาพตัวละครอ้างอิงไม่ได้ กรุณาลองใหม่", e)
-					}
-					ref = u
-				}
-			}
+		cast := directorShotCharacters(in.Characters, characters)
+		if len(cast) > directorMaxImageReferences {
+			cast = cast[:directorMaxImageReferences]
 		}
-		if ref == "" && in.CoverKey != "" && j.Kind != "cover" && in.Project.Storyboard.StyleReference == "cover" {
+		refs := []string{}
+		for _, ch := range cast {
+			u, _, e := f.storage.SignedURL(c, ch.Key, time.Hour)
+			if e != nil {
+				return f.failWith(c, j, in, true, "REFERENCE_UNAVAILABLE", "เปิดภาพตัวละครอ้างอิงไม่ได้ กรุณาลองใหม่", e)
+			}
+			refs = append(refs, u)
+		}
+		if j.Kind == "cover" {
+			prompt = directorCoverPrompt(&in.Project, cast)
+		} else {
+			prompt = directorImagePrompt(&doc, &doc.Project, shot, cast, len(refs))
+		}
+		if len(refs) == 0 && in.CoverKey != "" && j.Kind != "cover" && in.Project.Storyboard.StyleReference == "cover" {
 			u, _, e := f.storage.SignedURL(c, in.CoverKey, time.Hour)
 			if e != nil {
 				return f.fail(c, j, in, true)
 			}
-			ref = u
-			prompt += "\nUse the reference image only for visual style and color tone, retain the described scene content."
+			refs = append(refs, u)
+			prompt += "\nUse reference Image 1 only for visual style and color tone; keep the described scene content."
 		}
-		data, e := f.images.GenerateImage(c, modelark.ImageRequest{Model: in.ImageModel, Prompt: prompt, Size: directorImageSize(in.Project.AspectRatio), ReferenceURL: ref})
+		data, e := f.images.GenerateImage(c, modelark.ImageRequest{Model: in.ImageModel, Prompt: prompt, Size: directorImageSize(in.Project.AspectRatio), ReferenceURLs: refs})
 		if e != nil {
 			known, definitive := storyDefinitiveImageError(e)
 			code, message := "IMAGE_PROVIDER_ERROR", ""
@@ -477,7 +526,7 @@ func (f *DirectorFacade) directorImage(c context.Context, j *models.DirectorJob,
 			if known != nil {
 				code, message = known.Code, known.Message+directorProviderHint(d.HTTPStatus, d.ProviderCode)
 			}
-			return f.failWith(c, j, in, definitive, code, message, fmt.Errorf("image provider http=%d code=%s model=%s size=%s ref=%t: %w", d.HTTPStatus, d.ProviderCode, in.ImageModel, directorImageSize(in.Project.AspectRatio), ref != "", e))
+			return f.failWith(c, j, in, definitive, code, message, fmt.Errorf("image provider http=%d code=%s model=%s size=%s refs=%d: %w", d.HTTPStatus, d.ProviderCode, in.ImageModel, directorImageSize(in.Project.AspectRatio), len(refs), e))
 		}
 		if !storyValidImage(data) {
 			return f.failWith(c, j, in, true, "IMAGE_INVALID_OUTPUT", "บริการสร้างภาพส่งไฟล์ที่ใช้ไม่ได้ กรุณาลองใหม่", fmt.Errorf("invalid image bytes len=%d type=%s", len(data), http.DetectContentType(data)))
@@ -512,6 +561,10 @@ func (f *DirectorFacade) directorImage(c context.Context, j *models.DirectorJob,
 				sh.Image.Stale = contentHash != storyHash(struct{ Description, Camera string }{sh.Description, sh.Camera})
 				sh.Image.DirectorFailure = dto.DirectorFailure{}
 				directorMarkVideoStale(sh)
+				// The previous shot's clip ends on this image as its last frame.
+				if prev := directorPreviousShot(&d.Project, sh); prev != nil && prev.Video != nil && prev.Video.UsesLastFrame {
+					directorMarkVideoStale(prev)
+				}
 				if d.Project.Cover != nil && d.Project.Cover.ShotID != nil && *d.Project.Cover.ShotID == sh.ID {
 					d.Keys[d.Project.Cover.ID] = key
 				}
@@ -548,9 +601,43 @@ func (f *DirectorFacade) directorVideo(c context.Context, j *models.DirectorJob,
 		if !f.videoAvailable() || in.ImageKey == "" || in.VideoModel == "" {
 			return f.fail(c, j, in, true)
 		}
-		ref, _, e := f.storage.SignedURL(c, in.ImageKey, time.Hour)
+		m, e := f.store.Get(c, j.ProjectID.String(), j.UserID.String())
 		if e != nil {
 			return f.fail(c, j, in, true)
+		}
+		doc, e := directorDecode(m)
+		if e != nil {
+			return e
+		}
+		request := modelark.CreateTaskRequest{Model: in.VideoModel, Resolution: "1080p"}
+		if in.DraftTaskID != "" {
+			// The provider inherits prompt, frames, ratio and duration from the draft and rejects resubmission.
+			request.Content = []modelark.ContentItem{{Type: modelark.ContentTypeDraftTask, DraftTaskID: in.DraftTaskID}}
+		} else {
+			first, _, e := f.storage.SignedURL(c, in.ImageKey, time.Hour)
+			if e != nil {
+				return f.failWith(c, j, in, true, "REFERENCE_UNAVAILABLE", "เปิดภาพ shot ไม่ได้ กรุณาลองใหม่", e)
+			}
+			sh := directorFindShot(&doc.Project, in.ShotID)
+			if sh == nil {
+				sh = directorFindShot(&in.Project, in.ShotID)
+			}
+			if sh == nil {
+				return f.fail(c, j, in, true)
+			}
+			prompt := directorVideoPrompt(&doc, &doc.Project, sh, directorShotCharacters(in.Characters, sh.CharacterAssetIDs), in.NextImageKey != "")
+			request.Content = []modelark.ContentItem{{Type: modelark.ContentTypeText, Text: prompt}, {Type: modelark.ContentTypeImageURL, URL: first, Role: modelark.RoleFirstFrame}}
+			if in.NextImageKey != "" {
+				last, _, e := f.storage.SignedURL(c, in.NextImageKey, time.Hour)
+				if e != nil {
+					return f.failWith(c, j, in, true, "REFERENCE_UNAVAILABLE", "เปิดภาพ shot ถัดไปไม่ได้ กรุณาลองใหม่", e)
+				}
+				request.Content = append(request.Content, modelark.ContentItem{Type: modelark.ContentTypeImageURL, URL: last, Role: modelark.RoleLastFrame})
+			}
+			request.Ratio, request.DurationSeconds, request.Resolution, request.Draft = in.Ratio, int64(in.Seconds), in.Resolution, in.Draft
+			if in.Draft {
+				request.Resolution = "480p"
+			}
 		}
 		if e = f.progress(c, j, in, func(d *directorDocument) error {
 			sh := directorFindShot(&d.Project, in.ShotID)
@@ -563,8 +650,7 @@ func (f *DirectorFacade) directorVideo(c context.Context, j *models.DirectorJob,
 		}); e != nil {
 			return e
 		}
-		prompt := in.Description + "\nCamera: " + in.Camera + "\nStyle: " + in.Project.Style + "\nGenre: " + in.Project.Idea.Genre + "\nMoods: " + strings.Join(in.Project.Idea.Moods, ", ") + "\nAnimate the first frame naturally, keep characters and composition consistent. No text overlays."
-		id, e := f.video.CreateTask(c, modelark.CreateTaskRequest{Model: in.VideoModel, Content: []modelark.ContentItem{{Type: modelark.ContentTypeText, Text: prompt}, {Type: modelark.ContentTypeImageURL, URL: ref, Role: modelark.RoleFirstFrame}}, Ratio: in.Ratio, DurationSeconds: int64(in.Seconds), Resolution: in.Resolution})
+		id, e := f.video.CreateTask(c, request)
 		if e != nil {
 			d := modelark.VideoFailureDiagnostic(e)
 			code, message := "VIDEO_PROVIDER_ERROR", ""
@@ -572,7 +658,7 @@ func (f *DirectorFacade) directorVideo(c context.Context, j *models.DirectorJob,
 			if errors.As(e, &ve) {
 				code, message = ve.Code, ve.Message
 			}
-			return f.failWith(c, j, in, d.HTTPStatus >= 400 && d.HTTPStatus < 500, code, message, fmt.Errorf("video submit http=%d model=%s ratio=%s seconds=%d resolution=%s: %w", d.HTTPStatus, in.VideoModel, in.Ratio, in.Seconds, in.Resolution, e))
+			return f.failWith(c, j, in, d.HTTPStatus >= 400 && d.HTTPStatus < 500, code, message, fmt.Errorf("video submit http=%d model=%s ratio=%s seconds=%d resolution=%s draft=%t refine=%t last_frame=%t: %w", d.HTTPStatus, in.VideoModel, request.Ratio, request.DurationSeconds, request.Resolution, request.Draft, in.DraftTaskID != "", in.NextImageKey != "", e))
 		}
 		if id == "" {
 			return f.fail(c, j, in, false)
@@ -633,10 +719,17 @@ func (f *DirectorFacade) directorVideo(c context.Context, j *models.DirectorJob,
 		}
 		return f.finish(c, j, in, "succeeded", false, func(d *directorDocument) error {
 			d.Keys[j.TargetID] = key
+			if in.Draft {
+				d.VideoDrafts[in.ShotID] = directorVideoDraft{TaskID: task.TaskID, Provider: in.VideoModel, CreatedAt: task.SubmittedAt}
+			} else {
+				delete(d.VideoDrafts, in.ShotID)
+			}
 			if sh := directorFindShot(&d.Project, in.ShotID); sh != nil && sh.Video != nil {
 				sh.Video.Status = "succeeded"
 				sh.Video.Progress = 100
-				sh.Video.Stale = d.Keys[sh.ID] != in.ImageKey || sh.Description != in.Description || sh.Camera != in.Camera
+				sh.Video.Draft = in.Draft
+				nextChanged := in.NextShotID != "" && d.Keys[in.NextShotID] != in.NextImageKey
+				sh.Video.Stale = in.DraftTaskID == "" && (d.Keys[sh.ID] != in.ImageKey || sh.Description != in.Description || sh.Camera != in.Camera || nextChanged)
 				sh.Video.DirectorFailure = dto.DirectorFailure{}
 			}
 			return nil
@@ -709,6 +802,7 @@ func (f *DirectorFacade) normalizeScene(s directorSceneOutput, in directorJobInp
 func (f *DirectorFacade) normalizeShot(s directorShotOutput, allowed []string) directorShotOutput {
 	cameras := f.Capabilities().Cameras
 	s.Description = directorTruncate(s.Description, 600)
+	s.Prompt = directorTruncate(s.Prompt, 1200)
 	s.Camera = directorPick(s.Camera, cameras, cameras[0])
 	s.CharacterAssetIDs = directorFilterIDs(s.CharacterAssetIDs, allowed)
 	return s
