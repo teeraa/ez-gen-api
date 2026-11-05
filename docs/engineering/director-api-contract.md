@@ -378,7 +378,7 @@ UI แสดงแถว "อ้างอิงโทนภาพ: ภาพป�
 
 ### วิดีโอ
 - `POST /projects/:id/video` `{ revision, idempotencyKey, shotIds?: string[], draft?: boolean, finalize?: boolean }` → `DirectorProject` (revision ไม่เปลี่ยน)
-- เฟรม: ภาพ shot นี้ = `first_frame`, ภาพ shot ถัดไปในฉากเดียวกัน (ถ้าสำเร็จแล้ว) = `last_frame` เพื่อให้คลิปต่อกันได้ (`video.usesLastFrame`); shot สุดท้ายของฉากใช้ first frame อย่างเดียว ได้ภาพ shot ถัดไปใหม่ → วิดีโอ shot ก่อนหน้า `stale`
+- เฟรม (Seedance reference mode): ทุกภาพส่งเป็น `reference_image` — Image 1 = ภาพ shot นี้ (prompt บังคับเป็นเฟรมแรก), Image 2 = ภาพ shot ถัดไปในฉากเดียวกัน (ถ้าสำเร็จแล้ว, prompt บังคับเป็นเฟรมสุดท้าย), ภาพถัดไป = ภาพตัวละครที่ถูกเอ่ยชื่อ (หน้า รูปร่าง ชุดเท่านั้น) รวมไม่เกิน 6 ภาพ เพื่อให้คลิปต่อกันได้ (`video.usesLastFrame`); shot สุดท้ายของฉากใช้ first frame อย่างเดียว ได้ภาพ shot ถัดไปใหม่ → วิดีโอ shot ก่อนหน้า `stale`
 - `draft: true` (เฉพาะโมเดลที่ `supportsDraft`, ตอนนี้ Seedance 2.5): 480p ราคา `draftPointsPerUnit` → `video.draft = true`; `finalize: true` ทำฉบับเต็ม 1080p จาก draft ที่ยังไม่หมดอายุ (`video.canFinalize`, ไม่ส่ง `shotIds` = ทุก shot ที่ทำได้) ราคาเต็ม; โมเดลไม่รองรับ → `422 DRAFT_NOT_SUPPORTED`, ไม่มี draft ที่ใช้ได้ → `409 DRAFT_NOT_AVAILABLE`
 - ไม่ส่ง `shotIds` = ทุก shot ที่ยังไม่มีวิดีโอสำเร็จหรือวิดีโอ `stale` (ไม่มีเลย → `409 VIDEO_UP_TO_DATE`); ส่ง `shotIds` = สร้างใหม่เฉพาะ shot ที่ระบุ
 - เงื่อนไข: ภาพของทุก shot ที่จะใช้ต้อง `succeeded` (`409 STORYBOARD_INCOMPLETE`), shot ไม่มีงานค้าง (`409 SHOT_BUSY`), โมเดล `storyboard.videoModelId` รองรับสัดส่วนของโปรเจกต์ (`422 MODEL_NOT_SUPPORTED`)
@@ -570,6 +570,10 @@ recorded separately in the workspace task report.
 - Shot cast is narrowed to characters named in the shot text, in mention order, before the
   single reference image is chosen; a close-up of one character no longer borrows another
   character's reference. With no names mentioned the planned cast is kept.
+- Image prompts open and close with the selected art style ("overrides the style of any
+  reference image"), and references are limited to identity (face, body, hair, outfit), so a
+  photoreal character sheet no longer forces every shot into its own rendering and tone.
+  Up to `DIRECTOR_IMAGE_MAX_REFERENCES` (default 4) named characters are sent as references.
 - Image prompts state the scene environment before the cast and tell the model that
   references define identity only, because character references are usually shot on
   plain backgrounds. Duplicate library character names get a letter suffix.

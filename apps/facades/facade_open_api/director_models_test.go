@@ -81,7 +81,7 @@ func TestDirectorImagePromptBindsCastSettingAndStyle(t *testing.T) {
 	d := directorDocument{Settings: map[string]string{"s1": "stone courtyard at dusk, red lanterns"}, Bible: "Song dynasty wuxia, ink-wash palette", Prompts: map[string]directorPlannedPrompt{"a": {Prompt: "Lin and Feng lock eyes", Hash: directorShotHash("หลินและเฟิงจ้องตากัน", "โคลสอัพ")}}}
 	cast := []directorCharacter{{ID: "c1", Name: "หลิน", Description: "white robe"}, {ID: "c2", Name: "เฟิง", Description: "black armor"}}
 	got := directorImagePrompt(&d, &p, &p.Scenes[0].Shots[0], cast, 2)
-	for _, want := range []string{"close-up shot", "Lin and Feng lock eyes", "หลิน", "reference Image 1", "เฟิง", "reference Image 2", "stone courtyard at dusk", "Song dynasty wuxia", "cinematic film still"} {
+	for _, want := range []string{"close-up shot", "Lin and Feng lock eyes", "หลิน", "reference Image 1", "เฟิง", "reference Image 2", "stone courtyard at dusk", "Song dynasty wuxia", "cinematic live-action film still"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("prompt missing %q:\n%s", want, got)
 		}
@@ -101,7 +101,7 @@ func TestDirectorImagePromptPutsEnvironmentBeforeCast(t *testing.T) {
 	cast := []directorCharacter{{ID: "c1", Name: "A"}}
 	got := directorImagePrompt(&d, &p, &p.Scenes[0].Shots[0], cast, 1)
 	env, chars := strings.Index(got, "misty mountain courtyard"), strings.Index(got, "Characters in this frame")
-	if env < 0 || chars < 0 || env > chars || !strings.Contains(got, "Ignore their backgrounds") || !strings.Contains(got, "never a plain") {
+	if env < 0 || chars < 0 || env > chars || !strings.Contains(got, "do not copy their art style") || !strings.Contains(got, "never a plain") || !strings.HasPrefix(got, "Art style") || !strings.Contains(got, "Final image style:") {
 		t.Fatalf("environment must precede cast and references must not supply the backdrop:\n%s", got)
 	}
 }
@@ -144,7 +144,7 @@ func TestDirectorImagePromptLeadsWithSceneLocation(t *testing.T) {
 	p.Scenes[0].Shots[0].Description, p.Scenes[0].Shots[0].Camera = "โคลสอัพใบหน้า", "โคลสอัพ"
 	d := directorDocument{}
 	got := directorImagePrompt(&d, &p, &p.Scenes[0].Shots[0], nil, 0)
-	if !strings.HasPrefix(got, "Location") || strings.Count(got, "ancient stone arena") < 2 {
+	if loc, cam := strings.Index(got, "Location"), strings.Index(got, "close-up shot"); loc < 0 || cam < loc || strings.Count(got, "ancient stone arena") < 2 {
 		t.Fatalf("scene location must lead and be restated even when the shot omits it:\n%s", got)
 	}
 }

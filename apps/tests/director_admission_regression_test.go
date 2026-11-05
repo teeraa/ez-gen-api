@@ -200,7 +200,7 @@ func TestDirectorCharacterLookIsDescribedOnceAndReusedEverywhere(t *testing.T) {
 		t.Fatalf("image requests: %d", len(d.media.requests))
 	}
 	for _, r := range d.media.requests {
-		if !strings.Contains(r.Prompt, "navy blue robe with gold trim") || !strings.Contains(r.Prompt, "Never change a named character's clothing, colors, hairstyle or accessories") {
+		if !strings.Contains(r.Prompt, "navy blue robe with gold trim") || !strings.Contains(r.Prompt, "Never change a named character's") {
 			t.Fatalf("every image prompt must carry the same look and the wardrobe lock (%d requests, refs %d):\n%q", len(d.media.requests), len(r.ReferenceURLs), r.Prompt)
 		}
 	}

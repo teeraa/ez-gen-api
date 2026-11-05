@@ -676,14 +676,38 @@ func (f *DirectorFacade) directorVideo(c context.Context, j *models.DirectorJob,
 			if sh == nil {
 				return f.fail(c, j, in, true)
 			}
-			prompt := directorVideoPrompt(&doc, &doc.Project, sh, directorFeaturedCast(directorShotCharacters(in.Characters, sh.CharacterAssetIDs), directorShotAction(&doc, sh)), in.NextImageKey != "")
-			request.Content = []modelark.ContentItem{{Type: modelark.ContentTypeText, Text: prompt}, {Type: modelark.ContentTypeImageURL, URL: first, Role: modelark.RoleFirstFrame}}
+			// Seedance reference mode: storyboard frames first (hard-wired as start/end in the
+			// prompt), then character identity references.
+			frames := []string{first}
 			if in.NextImageKey != "" {
 				last, _, e := f.storage.SignedURL(c, in.NextImageKey, time.Hour)
 				if e != nil {
 					return f.failWith(c, j, in, true, "REFERENCE_UNAVAILABLE", "เปิดภาพ shot ถัดไปไม่ได้ กรุณาลองใหม่", e)
 				}
-				request.Content = append(request.Content, modelark.ContentItem{Type: modelark.ContentTypeImageURL, URL: last, Role: modelark.RoleLastFrame})
+				frames = append(frames, last)
+			}
+			cast := directorFeaturedCast(directorShotCharacters(in.Characters, sh.CharacterAssetIDs), directorShotAction(&doc, sh))
+			refs := []string{}
+			used := []directorCharacter{}
+			for _, ch := range cast {
+				if len(frames)+len(refs) >= directorMaxVideoReferences || ch.Key == "" {
+					break
+				}
+				u, _, e := f.storage.SignedURL(c, ch.Key, time.Hour)
+				if e == nil && f.options.ReferenceCheck != nil {
+					e = f.options.ReferenceCheck(c, u)
+				}
+				if e != nil {
+					log.Printf("director: job=%s video reference for character %s unavailable: %s", j.ID, ch.ID, directorCause(e))
+					continue
+				}
+				refs = append(refs, u)
+				used = append(used, ch)
+			}
+			prompt := directorVideoPrompt(&doc, &doc.Project, sh, used, in.NextImageKey != "")
+			request.Content = []modelark.ContentItem{{Type: modelark.ContentTypeText, Text: prompt}}
+			for _, u := range append(frames, refs...) {
+				request.Content = append(request.Content, modelark.ContentItem{Type: modelark.ContentTypeImageURL, URL: u, Role: modelark.RoleReferenceImage})
 			}
 			request.Ratio, request.DurationSeconds, request.Resolution, request.Draft = in.Ratio, int64(in.Seconds), in.Resolution, in.Draft
 			if in.Draft {
@@ -711,7 +735,7 @@ func (f *DirectorFacade) directorVideo(c context.Context, j *models.DirectorJob,
 			}
 			// Nothing reached the provider when the request failed before submission: refund and allow retry.
 			definitive := d.HTTPStatus >= 400 && d.HTTPStatus < 500 || errors.Is(e, modelark.ErrNotSubmitted)
-			return f.failWith(c, j, in, definitive, code, message, fmt.Errorf("video submit http=%d model=%s ratio=%s seconds=%d resolution=%s draft=%t refine=%t last_frame=%t: %w", d.HTTPStatus, in.VideoModel, request.Ratio, request.DurationSeconds, request.Resolution, request.Draft, in.DraftTaskID != "", in.NextImageKey != "", e))
+			return f.failWith(c, j, in, definitive, code, message, fmt.Errorf("video submit http=%d model=%s ratio=%s seconds=%d resolution=%s draft=%t refine=%t last_frame=%t refs=%d: %w", d.HTTPStatus, in.VideoModel, request.Ratio, request.DurationSeconds, request.Resolution, request.Draft, in.DraftTaskID != "", in.NextImageKey != "", len(request.Content)-1, e))
 		}
 		if id == "" {
 			return f.fail(c, j, in, false)

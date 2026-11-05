@@ -73,7 +73,7 @@ func TestDirectorPostgresVideoLifecycle(t *testing.T) {
 		t.Fatalf("submissions: %d", len(video.CreatedRequests))
 	}
 	r := video.CreatedRequests[0]
-	if r.Model != "dreamina-seedance-2-0-fast-260128" || r.Ratio != "16:9" || r.DurationSeconds != 5 || r.Resolution != "720p" || len(r.Content) != 3 || r.Content[1].Role != modelark.RoleFirstFrame || r.Content[2].Role != modelark.RoleLastFrame || !strings.HasPrefix(r.Content[1].URL, "https://owned.test/") || r.Content[1].URL == r.Content[2].URL || !strings.Contains(r.Content[0].Text, "last frame") {
+	if r.Model != "dreamina-seedance-2-0-fast-260128" || r.Ratio != "16:9" || r.DurationSeconds != 5 || r.Resolution != "720p" || len(r.Content) != 3 || r.Content[1].Role != modelark.RoleReferenceImage || r.Content[2].Role != modelark.RoleReferenceImage || !strings.Contains(r.Content[0].Text, "Image 1 is the exact first frame") || !strings.Contains(r.Content[0].Text, "Image 2 is the exact last frame") || !strings.HasPrefix(r.Content[1].URL, "https://owned.test/") || r.Content[1].URL == r.Content[2].URL || !strings.Contains(r.Content[0].Text, "last frame") {
 		t.Fatalf("video request: %+v", r)
 	}
 	if last := video.CreatedRequests[1]; len(last.Content) != 2 || last.Draft {
@@ -307,7 +307,7 @@ func TestDirectorPostgresSceneSettingIsEditableAndMarksImagesStale(t *testing.T)
 	d.media.requests = nil
 	p = d.action(p, "/shots/"+sc.Shots[0].ID+"/regenerate")
 	d.tick()
-	if len(d.media.requests) != 1 || !strings.HasPrefix(d.media.requests[0].Prompt, "Location (fully rendered, identical in every shot of this scene): misty bamboo forest at dawn") {
+	if len(d.media.requests) != 1 || !strings.Contains(d.media.requests[0].Prompt, "\nLocation (fully rendered, identical in every shot of this scene): misty bamboo forest at dawn") {
 		t.Fatalf("regenerated prompt must lead with the edited location: %+v", d.media.requests)
 	}
 }
