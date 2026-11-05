@@ -141,7 +141,7 @@ type directorVideoFetcher interface {
 	Fetch(context.Context, string) ([]byte, string, error)
 }
 
-func newDirectorFixtureWith(t *testing.T, video modelark.Client, fetcher directorVideoFetcher) *directorFixture {
+func newDirectorFixtureWith(t *testing.T, video modelark.Client, fetcher directorVideoFetcher, configure ...func(*facade.DirectorOptions)) *directorFixture {
 	t.Helper()
 	dsn := os.Getenv("DIRECTOR_TEST_DATABASE_URL")
 	if dsn == "" {
@@ -204,7 +204,11 @@ func newDirectorFixtureWith(t *testing.T, video modelark.Client, fetcher directo
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := facade.NewDirectorFacade(store, directorTestAssets{}, media, analyzer, media, registry, video, fetcher, facade.DirectorOptions{Enabled: true, AnalysisModel: "fixture-story", ImageModel: "fixture-image", StoryPoints: 4, ImagePoints: 3, VideoPoints: 20, DraftPoints: 8, SampleBaseURL: "https://samples.test/director", VideoEnabled: video != nil})
+	options := facade.DirectorOptions{Enabled: true, AnalysisModel: "fixture-story", ImageModel: "fixture-image", StoryPoints: 4, ImagePoints: 3, VideoPoints: 20, DraftPoints: 8, SampleBaseURL: "https://samples.test/director", VideoEnabled: video != nil}
+	for _, fn := range configure {
+		fn(&options)
+	}
+	f := facade.NewDirectorFacade(store, directorTestAssets{}, media, analyzer, media, registry, video, fetcher, options)
 	app := fiber.New()
 	app.Use(func(c *fiber.Ctx) error {
 		owner := c.Get("X-Test-User")

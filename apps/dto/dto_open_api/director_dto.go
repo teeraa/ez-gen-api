@@ -105,6 +105,18 @@ type DirectorEstimates struct {
 	Storyboard int `json:"storyboard"`
 	Video      int `json:"video"`
 }
+
+// DirectorExport is the merged MP4 of every shot clip in story order.
+type DirectorExport struct {
+	Status    string     `json:"status"`
+	Progress  int        `json:"progress"`
+	URL       *string    `json:"url"`
+	ExpiresAt *time.Time `json:"expiresAt"`
+	// Stale is true when a shot clip changed after this export was made.
+	Stale     bool `json:"stale"`
+	ClipCount int  `json:"clipCount"`
+	DirectorFailure
+}
 type DirectorProject struct {
 	ID                  string             `json:"id"`
 	Revision            int                `json:"revision"`
@@ -118,6 +130,7 @@ type DirectorProject struct {
 	Story               DirectorStory      `json:"story"`
 	Storyboard          DirectorStoryboard `json:"storyboard"`
 	Scenes              []DirectorScene    `json:"scenes"`
+	Export              *DirectorExport    `json:"export"`
 	Estimates           DirectorEstimates  `json:"estimates"`
 	CoverImageURL       *string            `json:"coverImageUrl"`
 	CoverImageExpiresAt *time.Time         `json:"coverImageExpiresAt"`

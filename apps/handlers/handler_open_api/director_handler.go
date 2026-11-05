@@ -82,7 +82,7 @@ func (h *DirectorHandler) RegisterRoutes(r fiber.Router) {
 		{"POST", "/projects/:id/story", "story"}, {"PATCH", "/projects/:id/scenes/:target", "scene"}, {"POST", "/projects/:id/scenes/:target/rewrite", "rewrite"},
 		{"PATCH", "/projects/:id/storyboard-settings", "settings"}, {"POST", "/projects/:id/storyboard", "storyboard"},
 		{"PATCH", "/projects/:id/shots/:target", "shot"}, {"DELETE", "/projects/:id/shots/:target", "shot-delete"}, {"POST", "/projects/:id/shots/:target/regenerate", "regenerate"}, {"POST", "/projects/:id/shots/:target/retry", "retry"},
-		{"POST", "/projects/:id/scenes/:target/shots", "add"}, {"POST", "/projects/:id/video", "video"},
+		{"POST", "/projects/:id/scenes/:target/shots", "add"}, {"POST", "/projects/:id/video", "video"}, {"POST", "/projects/:id/export", "export"},
 	} {
 		g.Add(route.Method, route.Path, rate, func(c *fiber.Ctx) error {
 			var in req.DirectorRequest

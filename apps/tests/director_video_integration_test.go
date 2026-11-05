@@ -5,13 +5,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	dto "github.com/ez-gen/ez-gen-api/apps/dto/dto_open_api"
+	facade "github.com/ez-gen/ez-gen-api/apps/facades/facade_open_api"
 	"github.com/ez-gen/ez-gen-api/apps/services/modelark"
+	"github.com/ez-gen/ez-gen-api/apps/services/videoprocessing"
 	"github.com/google/uuid"
 )
 
@@ -348,5 +351,80 @@ func TestDirectorPostgresVideoNotSubmittedIsRefundedAndRetryable(t *testing.T) {
 	v := d.shots(p)[1].Video
 	if v == nil || v.Status != "failed" || !v.CanRetry || v.PointsRefunded != 20 || d.balance() != before {
 		t.Fatalf("a request that never reached the provider must refund and allow retry: %+v balance %d", v, d.balance())
+	}
+}
+
+type directorTestMerger struct {
+	mu    sync.Mutex
+	clips [][]byte
+}
+
+func (m *directorTestMerger) Merge(_ context.Context, req videoprocessing.MergeRequest) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.clips = nil
+	for _, c := range req.Clips {
+		data, err := os.ReadFile(c.Path)
+		if err != nil {
+			return nil, err
+		}
+		m.clips = append(m.clips, data)
+	}
+	return []byte("\x00\x00\x00\x18ftypmp42merged"), nil
+}
+
+func TestDirectorPostgresExportMergesShotClipsInOrder(t *testing.T) {
+	video := modelark.NewMockClient()
+	merger := &directorTestMerger{}
+	fetched := []string{}
+	d := newDirectorFixtureWith(t, video, &directorTestFetcher{}, func(o *facade.DirectorOptions) {
+		o.Processor = merger
+		o.VideoFetch = func(_ context.Context, u string) ([]byte, string, error) {
+			fetched = append(fetched, u)
+			return []byte("clip:" + u), "video/mp4", nil
+		}
+	})
+	p := d.board()
+	path := "/projects/" + p.ID
+	d.wantError("POST", path+"/export", map[string]any{"revision": p.Revision, "idempotencyKey": uuid.NewString()}, 409, "VIDEO_INCOMPLETE")
+	p = d.action(p, "/video")
+	d.tick()
+	d.tick()
+	video.SetTask(video.NextTaskID, &modelark.TaskResult{ProviderTaskID: video.NextTaskID, Status: modelark.ProviderStatusSucceeded, VideoURL: "https://provider.test/out.mp4"})
+	d.expireWaits()
+	d.tick()
+	d.tick()
+	p = d.get(p.ID)
+	before := d.balance()
+	p = d.action(p, "/export")
+	if p.Export == nil || p.Export.Status != "queued" || p.Export.ClipCount != 2 || d.balance() != before {
+		t.Fatalf("export admission (free): %+v balance %d", p.Export, d.balance())
+	}
+	d.tick()
+	p = d.get(p.ID)
+	if p.Export == nil || p.Export.Status != "succeeded" || p.Export.URL == nil || p.Export.Stale || len(merger.clips) != 2 {
+		t.Fatalf("export result: %+v merged %d", p.Export, len(merger.clips))
+	}
+	shots := d.shots(p)
+	for i, sh := range shots {
+		if !strings.Contains(fetched[i], sh.ID) {
+			t.Fatalf("clip %d fetched out of story order: %s", i, fetched[i])
+		}
+	}
+	stored := false
+	for key := range d.media.objects {
+		stored = stored || strings.Contains(key, "/export/")
+	}
+	if !stored {
+		t.Fatal("merged export not stored")
+	}
+	video.NextTaskID = "cgt-second"
+	p = d.project("POST", path+"/video", map[string]any{"revision": p.Revision, "idempotencyKey": uuid.NewString(), "shotIds": []string{shots[0].ID}})
+	d.tick()
+	video.SetTask(video.NextTaskID, &modelark.TaskResult{ProviderTaskID: video.NextTaskID, Status: modelark.ProviderStatusSucceeded, VideoURL: "https://provider.test/again.mp4"})
+	d.expireWaits()
+	d.tick()
+	if p = d.get(p.ID); p.Export == nil || !p.Export.Stale {
+		t.Fatalf("a new shot clip must mark the export stale: %+v", p.Export)
 	}
 }

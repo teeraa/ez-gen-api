@@ -9,9 +9,12 @@ import (
 	"github.com/ez-gen/ez-gen-api/apps/models"
 	repo "github.com/ez-gen/ez-gen-api/apps/repositories/repository_open_api"
 	"github.com/ez-gen/ez-gen-api/apps/services/modelark"
+	"github.com/ez-gen/ez-gen-api/apps/services/videoprocessing"
 	"log"
 	"math"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -168,6 +171,12 @@ func (f *DirectorFacade) failWith(c context.Context, j *models.DirectorJob, in d
 				}
 			}
 			directorRecount(p)
+		case "export":
+			if p.Export != nil {
+				p.Export.Status = status
+				p.Export.Progress = 0
+				p.Export.DirectorFailure = failure
+			}
 		case "video":
 			if sh := directorFindShot(p, in.ShotID); sh != nil && sh.Video != nil {
 				sh.Video.Status = status
@@ -232,6 +241,9 @@ func (f *DirectorFacade) Tick(ctx context.Context) error {
 	}
 	if j.Kind == "video" {
 		return f.directorVideo(c, j, in)
+	}
+	if j.Kind == "export" {
+		return f.directorExport(c, j, in)
 	}
 	if j.Kind == "image" || j.Kind == "cover" || (j.Kind == "add" && len(j.Output) > 0) {
 		return f.directorImage(c, j, in)
@@ -1065,4 +1077,73 @@ func directorMergeLook(look, description string) string {
 		return look
 	}
 	return look + " (" + description + ")"
+}
+
+// directorExport merges the clip keys frozen at request time, so edits made while it runs
+// cannot mix old and new clips; the result is marked stale afterwards instead.
+func (f *DirectorFacade) directorExport(c context.Context, j *models.DirectorJob, in directorJobInput) error {
+	if f.options.Processor == nil || f.options.VideoFetch == nil {
+		return f.failWith(c, j, in, true, "EXPORT_UNAVAILABLE", "ยังไม่ได้ตั้งค่าระบบรวมวิดีโอ กรุณาติดต่อผู้ดูแลระบบ", nil)
+	}
+	if len(in.ClipKeys) == 0 || len(in.ClipKeys) > 40 {
+		return f.failWith(c, j, in, true, "VIDEO_INCOMPLETE", "ยังมี shot ที่ไม่มีวิดีโอ กรุณาสร้างวิดีโอให้ครบก่อน export", nil)
+	}
+	setProgress := func(p int) error {
+		return f.progress(c, j, in, func(d *directorDocument) error {
+			if d.Project.Export != nil {
+				d.Project.Export.Status = "processing"
+				d.Project.Export.Progress = p
+			}
+			return nil
+		})
+	}
+	if e := setProgress(5); e != nil {
+		return e
+	}
+	dir, e := os.MkdirTemp("", "director-export-*")
+	if e != nil {
+		return e
+	}
+	defer os.RemoveAll(dir)
+	clips := make([]videoprocessing.Clip, 0, len(in.ClipKeys))
+	for i, key := range in.ClipKeys {
+		u, _, e := f.storage.SignedURL(c, key, 30*time.Minute)
+		if e == nil {
+			var data []byte
+			if data, _, e = f.options.VideoFetch(c, u); e == nil {
+				path := filepath.Join(dir, fmt.Sprintf("clip-%03d.mp4", i))
+				if e = os.WriteFile(path, data, 0o600); e == nil {
+					clips = append(clips, videoprocessing.Clip{Path: path})
+				}
+			}
+		}
+		if e != nil {
+			return f.failWith(c, j, in, true, "EXPORT_FAILED", "โหลดคลิปสำหรับรวมวิดีโอไม่ได้ กรุณาลองใหม่", fmt.Errorf("clip %d: %w", i+1, e))
+		}
+		if e = setProgress(5 + (i+1)*55/len(in.ClipKeys)); e != nil {
+			return e
+		}
+	}
+	data, e := f.options.Processor.Merge(c, videoprocessing.MergeRequest{Clips: clips, OutputResolution: in.Project.Resolution, OutputAspectRatio: in.Project.AspectRatio, AudioVolume: 1})
+	if e != nil || len(data) == 0 {
+		return f.failWith(c, j, in, true, "EXPORT_FAILED", "รวมวิดีโอไม่สำเร็จ กรุณาลองใหม่", fmt.Errorf("merge %d clips: %v", len(clips), e))
+	}
+	if e = setProgress(90); e != nil {
+		return e
+	}
+	key := fmt.Sprintf("director/%s/%s/export/%s.mp4", j.UserID, j.ProjectID, j.ID)
+	if e = f.storage.Upload(c, key, data, "video/mp4"); e != nil {
+		return f.failWith(c, j, in, true, "EXPORT_FAILED", "บันทึกวิดีโอรวมไม่ได้ กรุณาลองใหม่", e)
+	}
+	return f.finish(c, j, in, "succeeded", false, func(d *directorDocument) error {
+		d.Keys["export"] = key
+		d.ExportSource = storyHash(in.ClipKeys)
+		if d.Project.Export != nil {
+			d.Project.Export.Status = "succeeded"
+			d.Project.Export.Progress = 100
+			d.Project.Export.ClipCount = len(in.ClipKeys)
+			d.Project.Export.DirectorFailure = dto.DirectorFailure{}
+		}
+		return nil
+	})
 }

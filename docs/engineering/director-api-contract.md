@@ -561,6 +561,12 @@ recorded separately in the workspace task report.
   sent (`modelark.ErrNotSubmitted`) are refunded and retryable, not "uncertain".
 - The Gemini planner retries 429/5xx/transport failures up to 3 attempts (honoring Retry-After,
   max 30s) and logs the HTTP status and provider message on final failure.
+- `POST /projects/:id/export` `{ revision, idempotencyKey }` → `DirectorProject` with
+  `export: { status, progress, url, expiresAt, stale, clipCount, failure… }`. Requires a finished
+  clip for every shot (`409 VIDEO_INCOMPLETE`), one export at a time (`409 EXPORT_IN_PROGRESS`),
+  no points charged. The worker merges the clip keys frozen at request time in story order with
+  FFmpeg and stores `director/<user>/<project>/export/<job>.mp4`; `stale` turns true when any clip
+  changes afterwards. `503 DIRECTOR_EXPORT_UNAVAILABLE` when no processor is configured.
 - `GET /director/points` → `{ balance }`: the caller's Director point balance (0 when never
   funded, `Cache-Control: private, no-store`). The web navbar shows this real balance.
 - Scenes expose an editable `setting` (location/lighting, ≤400 chars, `PATCH /scenes/:id`

@@ -9,6 +9,7 @@ import (
 	repo "github.com/ez-gen/ez-gen-api/apps/repositories/repository_open_api"
 	req "github.com/ez-gen/ez-gen-api/apps/requests/request_open_api"
 	"github.com/ez-gen/ez-gen-api/apps/services/modelark"
+	"github.com/ez-gen/ez-gen-api/apps/services/videoprocessing"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"strconv"
@@ -66,6 +67,9 @@ type DirectorOptions struct {
 	// every shot reuses, so outfits stay identical even for characters sent without an image.
 	LookDescriber DirectorLookDescriber
 	ImageFetch    func(context.Context, string) ([]byte, string, error)
+	// Processor and VideoFetch merge finished shot clips into one exported MP4.
+	Processor  videoprocessing.VideoProcessor
+	VideoFetch func(context.Context, string) ([]byte, string, error)
 }
 
 type DirectorLookDescriber interface {
@@ -168,6 +172,8 @@ type directorDocument struct {
 	VideoDrafts map[string]directorVideoDraft `json:"videoDrafts,omitempty"`
 	// Looks caches the described appearance per character asset, keyed by the image it describes.
 	Looks map[string]directorLook `json:"looks,omitempty"`
+	// ExportSource hashes the clip keys the current export was built from.
+	ExportSource string `json:"exportSource,omitempty"`
 }
 type directorLook struct {
 	Text string `json:"text"`
@@ -198,6 +204,7 @@ type directorJobInput struct {
 	NextImageKey string              `json:"nextImageKey,omitempty"`
 	Draft        bool                `json:"draft,omitempty"`
 	DraftTaskID  string              `json:"draftTaskId,omitempty"`
+	ClipKeys     []string            `json:"clipKeys,omitempty"`
 }
 type directorCharacter struct {
 	ID          string `json:"id"`
@@ -441,6 +448,15 @@ func (f *DirectorFacade) present(c context.Context, m *models.DirectorProject) (
 			}
 		}
 	}
+	if p.Export != nil {
+		export := *p.Export
+		export.URL, export.ExpiresAt, e = sign(d.Keys["export"])
+		if e != nil {
+			return p, e
+		}
+		export.Stale = export.Status == "succeeded" && d.ExportSource != storyHash(directorClipKeys(&d))
+		p.Export = &export
+	}
 	p.CoverImageURL = nil
 	p.CoverImageExpiresAt = nil
 	if p.Cover != nil && p.Cover.Status == "succeeded" {
@@ -551,6 +567,25 @@ func directorTotal(p *dto.DirectorProject) int {
 }
 func directorVideoTarget(shotID string) string { return "video:" + shotID }
 
+// directorClipKeys lists every shot's finished clip in story order, or nil when any shot has
+// no finished clip (an export must not silently skip story beats).
+func directorClipKeys(d *directorDocument) []string {
+	keys := []string{}
+	for _, sc := range d.Project.Scenes {
+		for _, sh := range sc.Shots {
+			key := d.Keys[directorVideoTarget(sh.ID)]
+			if sh.Video == nil || sh.Video.Status != "succeeded" || key == "" {
+				return nil
+			}
+			keys = append(keys, key)
+		}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	return keys
+}
+
 // Continuity frames stay inside a scene; morphing into another location's first shot reads as a glitch.
 func directorNextShot(p *dto.DirectorProject, sh *dto.DirectorShot) *dto.DirectorShot {
 	sc := directorFindScene(p, sh.SceneID)
@@ -630,6 +665,9 @@ func (f *DirectorFacade) job(d *directorDocument, kind, target string, cost int,
 		snapshot.Description = sh.Description
 		snapshot.Camera = sh.Camera
 	}
+	if kind == "export" {
+		snapshot.ClipKeys = directorClipKeys(d)
+	}
 	if kind == "video" {
 		sh := directorFindShot(&d.Project, strings.TrimPrefix(target, "video:"))
 		m, ok := directorVideoModel(d.Project.Storyboard.VideoModelID)
@@ -679,7 +717,7 @@ func (f *DirectorFacade) Mutate(c context.Context, id, user, action, target stri
 	if _, e := uuid.Parse(id); e != nil {
 		return dto.DirectorProject{}, repo.ErrNotFound
 	}
-	ai := directorContains([]string{"cover-generate", "story", "rewrite", "storyboard", "regenerate", "retry", "add", "video"}, action)
+	ai := directorContains([]string{"cover-generate", "story", "rewrite", "storyboard", "regenerate", "retry", "add", "video", "export"}, action)
 	if ai {
 		if _, e := uuid.Parse(in.IdempotencyKey); e != nil {
 			return dto.DirectorProject{}, directorInvalid("idempotencyKey")
@@ -1074,6 +1112,22 @@ func (f *DirectorFacade) Mutate(c context.Context, id, user, action, target stri
 		case "video":
 			changed = false
 			if e = f.enqueueVideos(&d, in, enqueue); e != nil {
+				return nil, e
+			}
+		case "export":
+			changed = false
+			if f.options.Processor == nil || f.options.VideoFetch == nil {
+				return nil, directorError(503, "DIRECTOR_EXPORT_UNAVAILABLE")
+			}
+			if p.Export != nil && directorBusy(p.Export.Status) {
+				return nil, directorError(409, "EXPORT_IN_PROGRESS")
+			}
+			keys := directorClipKeys(&d)
+			if keys == nil {
+				return nil, directorError(409, "VIDEO_INCOMPLETE")
+			}
+			p.Export = &dto.DirectorExport{Status: "queued", ClipCount: len(keys)}
+			if e = enqueue("export", "export", 0); e != nil {
 				return nil, e
 			}
 		default:
