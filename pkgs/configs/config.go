@@ -13,6 +13,7 @@ type Config struct {
 	DirectorVideoPoints   int
 	DirectorDraftPoints   int
 	DirectorImageRefs     int
+	DirectorFaceMode      string
 	DirectorSampleBaseURL string
 	DirectorStoryProvider string
 
@@ -129,6 +130,7 @@ func Load() *Config {
 		DirectorVideoPoints:         getEnvInt("DIRECTOR_VIDEO_POINTS", 20),
 		DirectorDraftPoints:         getEnvInt("DIRECTOR_VIDEO_DRAFT_POINTS", 8),
 		DirectorImageRefs:           getEnvInt("DIRECTOR_IMAGE_MAX_REFERENCES", 4),
+		DirectorFaceMode:            strings.TrimSpace(os.Getenv("DIRECTOR_VIDEO_HUMAN_FACE_MODE")),
 		DirectorSampleBaseURL:       strings.TrimRight(strings.TrimSpace(os.Getenv("DIRECTOR_SAMPLE_BASE_URL")), "/"),
 		DirectorStoryProvider:       strings.ToLower(strings.TrimSpace(os.Getenv("DIRECTOR_STORY_PROVIDER"))),
 		ArkStoryAnalysisModel:       strings.TrimSpace(os.Getenv("ARK_STORY_ANALYSIS_MODEL")),

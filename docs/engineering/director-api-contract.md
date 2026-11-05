@@ -561,6 +561,11 @@ recorded separately in the workspace task report.
   sent (`modelark.ErrNotSubmitted`) are refunded and retryable, not "uncertain".
 - The Gemini planner retries 429/5xx/transport failures up to 3 attempts (honoring Retry-After,
   max 30s) and logs the HTTP status and provider message on final failure.
+- Seedance screens references for real-looking faces (`InputImageSensitiveContentDetected` →
+  `PROVIDER_IMAGE_REJECTED`). Rejection happens at submission, so Director retries once with the
+  storyboard frames only (no character sheets) and then with the first frame only. Terminal task
+  failures show the allowlisted provider reason. `DIRECTOR_VIDEO_HUMAN_FACE_MODE` optionally sends
+  `human_face_mode` (SDK field; live effect not yet verified).
 - `POST /projects/:id/export` `{ revision, idempotencyKey }` → `DirectorProject` with
   `export: { status, progress, url, expiresAt, stale, clipCount, failure… }`. Requires a finished
   clip for every shot (`409 VIDEO_INCOMPLETE`), one export at a time (`409 EXPORT_IN_PROGRESS`),

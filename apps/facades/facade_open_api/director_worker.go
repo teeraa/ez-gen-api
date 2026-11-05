@@ -673,6 +673,7 @@ func (f *DirectorFacade) directorVideo(c context.Context, j *models.DirectorJob,
 			return e
 		}
 		request := modelark.CreateTaskRequest{Model: in.VideoModel, Resolution: "1080p"}
+		var attempts [][]modelark.ContentItem
 		if in.DraftTaskID != "" {
 			// The provider inherits prompt, frames, ratio and duration from the draft and rejects resubmission.
 			request.Content = []modelark.ContentItem{{Type: modelark.ContentTypeDraftTask, DraftTaskID: in.DraftTaskID}}
@@ -716,10 +717,20 @@ func (f *DirectorFacade) directorVideo(c context.Context, j *models.DirectorJob,
 				refs = append(refs, u)
 				used = append(used, ch)
 			}
-			prompt := directorVideoPrompt(&doc, &doc.Project, sh, used, in.NextImageKey != "")
-			request.Content = []modelark.ContentItem{{Type: modelark.ContentTypeText, Text: prompt}}
-			for _, u := range append(frames, refs...) {
-				request.Content = append(request.Content, modelark.ContentItem{Type: modelark.ContentTypeImageURL, URL: u, Role: modelark.RoleReferenceImage})
+			build := func(frames, refs []string, cast []directorCharacter) []modelark.ContentItem {
+				items := []modelark.ContentItem{{Type: modelark.ContentTypeText, Text: directorVideoPrompt(&doc, &doc.Project, sh, cast, len(frames) > 1)}}
+				for _, u := range append(append([]string{}, frames...), refs...) {
+					items = append(items, modelark.ContentItem{Type: modelark.ContentTypeImageURL, URL: u, Role: modelark.RoleReferenceImage})
+				}
+				return items
+			}
+			request.Content = build(frames, refs, used)
+			// Seedance screens every reference for real-looking faces; character sheets are the most
+			// likely to be flagged, then the next frame. Rejection happens at submission and is free,
+			// so fall back to frames only, then the first frame only.
+			attempts = append(attempts, build(frames, nil, nil))
+			if len(frames) > 1 {
+				attempts = append(attempts, build(frames[:1], nil, nil))
 			}
 			request.Ratio, request.DurationSeconds, request.Resolution, request.Draft = in.Ratio, int64(in.Seconds), in.Resolution, in.Draft
 			if in.Draft {
@@ -737,7 +748,19 @@ func (f *DirectorFacade) directorVideo(c context.Context, j *models.DirectorJob,
 		}); e != nil {
 			return e
 		}
+		request.HumanFaceMode = f.options.VideoHumanFaceMode
 		id, e := f.video.CreateTask(c, request)
+		for _, fallback := range attempts {
+			if e == nil || !directorVideoReferenceRejected(e) {
+				break
+			}
+			if len(fallback) >= len(request.Content) {
+				continue
+			}
+			log.Printf("director: job=%s video reference rejected with %d images, retrying with %d", j.ID, len(request.Content)-1, len(fallback)-1)
+			request.Content = fallback
+			id, e = f.video.CreateTask(c, request)
+		}
 		if e != nil {
 			d := modelark.VideoFailureDiagnostic(e)
 			code, message := "VIDEO_PROVIDER_ERROR", ""
@@ -790,7 +813,12 @@ func (f *DirectorFacade) directorVideo(c context.Context, j *models.DirectorJob,
 		}
 		return f.store.Wait(c, j, j.Output, now.Add(directorVideoPoll))
 	case modelark.ProviderStatusFailed, modelark.ProviderStatusCancelled:
-		return f.failWith(c, j, in, true, "VIDEO_GENERATION_FAILED", "บริการสร้างวิดีโอไม่สำเร็จหรือปฏิเสธเนื้อหาของ shot นี้ กรุณาปรับคำบรรยายหรือภาพแล้วลองใหม่", fmt.Errorf("video task status=%s code=%s", result.Status, result.ErrorCode))
+		code, message := "VIDEO_GENERATION_FAILED", "บริการสร้างวิดีโอไม่สำเร็จหรือปฏิเสธเนื้อหาของ shot นี้ กรุณาปรับคำบรรยายหรือภาพแล้วลองใหม่"
+		if result.ErrorCode != "" && result.ErrorCode != "PROVIDER_GENERATION_FAILED" && result.ErrorMessage != "" {
+			code, message = result.ErrorCode, result.ErrorMessage
+		}
+		message += directorProviderHint(0, result.FailureDiagnostic.ProviderCode)
+		return f.failWith(c, j, in, true, code, message, fmt.Errorf("video task status=%s code=%s provider=%s", result.Status, result.ErrorCode, result.FailureDiagnostic.ProviderCode))
 	case modelark.ProviderStatusSucceeded:
 		data, kind, e := f.fetcher.Fetch(c, result.VideoURL)
 		if e != nil {
@@ -1146,4 +1174,9 @@ func (f *DirectorFacade) directorExport(c context.Context, j *models.DirectorJob
 		}
 		return nil
 	})
+}
+
+func directorVideoReferenceRejected(e error) bool {
+	var ve *modelark.VideoError
+	return errors.As(e, &ve) && ve.Code == "PROVIDER_IMAGE_REJECTED"
 }

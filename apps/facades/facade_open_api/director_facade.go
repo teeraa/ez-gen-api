@@ -58,6 +58,8 @@ type DirectorOptions struct {
 	// MaxImageReferences caps character images sent per Seedream request; other cast members are
 	// described in text. 0 is text-only, matching the Character Studio descriptive strategy.
 	MaxImageReferences int
+	// VideoHumanFaceMode is sent to Seedance as human_face_mode when set ("strict" | "relaxed").
+	VideoHumanFaceMode string
 	SampleBaseURL      string
 	VideoEnabled       bool
 	// ReferenceCheck confirms a signed reference URL is downloadable before it is sent to the

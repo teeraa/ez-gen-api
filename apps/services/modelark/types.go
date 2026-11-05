@@ -43,6 +43,8 @@ type CreateTaskRequest struct {
 	Watermark           bool
 	ReturnLastFrame     bool
 	ExpiresAfterSeconds int64
+	// HumanFaceMode is passed through as human_face_mode ("strict" | "relaxed") when set.
+	HumanFaceMode string
 	// Draft requests a faster, lower-quality preview render.
 	// Only supported by dreamina-seedance-2-5-260628 (violet-realism).
 	Draft bool

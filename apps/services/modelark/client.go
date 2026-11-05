@@ -64,6 +64,9 @@ func (a *arkClient) CreateTask(ctx context.Context, req CreateTaskRequest) (stri
 	if req.Resolution != "" {
 		sdkReq.Resolution = contentgeneration.OptString{Value: req.Resolution, Set: true}
 	}
+	if req.HumanFaceMode != "" {
+		sdkReq.HumanFaceMode = contentgeneration.OptString{Value: req.HumanFaceMode, Set: true}
+	}
 	if req.OptimizePrompt {
 		sdkReq.OptimizePrompt = contentgeneration.OptBool{Value: true, Set: true}
 	}

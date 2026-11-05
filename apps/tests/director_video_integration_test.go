@@ -428,3 +428,44 @@ func TestDirectorPostgresExportMergesShotClipsInOrder(t *testing.T) {
 		t.Fatalf("a new shot clip must mark the export stale: %+v", p.Export)
 	}
 }
+
+// directorFaceScreen rejects any submission with more than maxImages references, like
+// Seedance's real-face screening rejecting one of the supplied references.
+type directorFaceScreen struct {
+	*modelark.MockClient
+	maxImages int
+	sizes     []int
+}
+
+func (s *directorFaceScreen) CreateTask(ctx context.Context, req modelark.CreateTaskRequest) (string, error) {
+	images := 0
+	for _, item := range req.Content {
+		if item.Type == modelark.ContentTypeImageURL {
+			images++
+		}
+	}
+	s.sizes = append(s.sizes, images)
+	if images > s.maxImages {
+		return "", &modelark.VideoError{Code: "PROVIDER_IMAGE_REJECTED", Message: "fixture face screen"}
+	}
+	return s.MockClient.CreateTask(ctx, req)
+}
+
+func TestDirectorPostgresVideoFallsBackWhenReferenceRejected(t *testing.T) {
+	screen := &directorFaceScreen{MockClient: modelark.NewMockClient(), maxImages: 1}
+	d := newDirectorFixtureWith(t, screen, &directorTestFetcher{}, func(o *facade.DirectorOptions) { o.VideoHumanFaceMode = "relaxed" })
+	p := d.board()
+	shot := d.shots(p)[0]
+	p = d.project("POST", "/projects/"+p.ID+"/video", map[string]any{"revision": p.Revision, "idempotencyKey": uuid.NewString(), "shotIds": []string{shot.ID}})
+	d.tick()
+	if len(screen.sizes) != 2 || screen.sizes[0] != 2 || screen.sizes[1] != 1 {
+		t.Fatalf("reference attempts: %v", screen.sizes)
+	}
+	accepted := screen.CreatedRequests[len(screen.CreatedRequests)-1]
+	if accepted.HumanFaceMode != "relaxed" || strings.Contains(accepted.Content[0].Text, "Image 2 is the exact last frame") {
+		t.Fatalf("fallback request: %+v", accepted)
+	}
+	if v := d.shots(d.get(p.ID))[0].Video; v == nil || v.Status != "processing" {
+		t.Fatalf("fallback must be accepted and processing: %+v", v)
+	}
+}
