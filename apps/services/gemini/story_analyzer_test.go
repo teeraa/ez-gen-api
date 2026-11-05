@@ -7,8 +7,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ez-gen/ez-gen-api/apps/services/modelark"
 )
@@ -75,5 +78,60 @@ func TestStoryAnalyzerNotConfigured(t *testing.T) {
 	var ae *modelark.StoryAnalysisError
 	if !errors.As(err, &ae) || ae.Code != "ANALYSIS_NOT_CONFIGURED" {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestMain(m *testing.M) {
+	retryBase = time.Millisecond
+	os.Exit(m.Run())
+}
+
+func TestStoryAnalyzerRetriesTransientFailures(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) < 3 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"message":"overloaded"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"{}"}]}}]}`))
+	}))
+	defer srv.Close()
+	got, err := NewStoryAnalyzerWithEndpoint("k", srv.URL, srv.Client()).Analyze(context.Background(), "m", "p")
+	if err != nil || got != "{}" || calls.Load() != 3 {
+		t.Fatalf("got %q err %v calls %d", got, err, calls.Load())
+	}
+}
+
+func TestStoryAnalyzerFailureCarriesLogDetail(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"Resource has been exhausted (e.g. check quota)."}}`))
+	}))
+	defer srv.Close()
+	_, err := NewStoryAnalyzerWithEndpoint("k", srv.URL, srv.Client()).Analyze(context.Background(), "m", "p")
+	var ae *modelark.StoryAnalysisError
+	if !errors.As(err, &ae) || ae.Code != "ANALYSIS_UNAVAILABLE" || !strings.Contains(err.Error(), "http 429") || !strings.Contains(err.Error(), "quota") || strings.Contains(ae.Message, "quota") {
+		t.Fatalf("log detail must be in Error(), not the user message: %v", err)
+	}
+}
+
+func TestStoryAnalyzerDescribeImageSendsInlineImage(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in request
+		raw, _ := io.ReadAll(r.Body)
+		if json.Unmarshal(raw, &in) != nil || len(in.Contents[0].Parts) != 2 || in.Contents[0].Parts[1].InlineData == nil || in.Contents[0].Parts[1].InlineData.MIMEType != "image/png" || in.Contents[0].Parts[1].InlineData.Data != "iVBO" {
+			w.WriteHeader(418)
+			return
+		}
+		_, _ = w.Write([]byte(`{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"young swordsman in a navy blue robe with gold trim"}]}}]}`))
+	}))
+	defer srv.Close()
+	got, err := NewStoryAnalyzerWithEndpoint("k", srv.URL, srv.Client()).DescribeImage(context.Background(), "m", []byte{0x89, 0x50, 0x4e}, "image/png")
+	if err != nil || !strings.Contains(got, "navy blue robe") {
+		t.Fatalf("got %q err %v", got, err)
 	}
 }

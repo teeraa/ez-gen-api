@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -331,5 +332,21 @@ func TestDirectorPostgresResponsesNeverSendNullArrays(t *testing.T) {
 	second := d.project("POST", "/projects", map[string]any{"name": "ชื่อซ้ำ", "aspectRatio": "16:9", "style": "cinematic", "resolution": "720p", "idempotencyKey": uuid.NewString()})
 	if second.ID == created.Data.ID {
 		t.Fatal("same name must not reuse the existing project")
+	}
+}
+
+func TestDirectorPostgresVideoNotSubmittedIsRefundedAndRetryable(t *testing.T) {
+	video := modelark.NewMockClient()
+	video.CreateErr = fmt.Errorf("%w: missing AI usage owner", modelark.ErrNotSubmitted)
+	d := newDirectorFixtureWith(t, video, &directorTestFetcher{})
+	p := d.board()
+	shot := d.shots(p)[1]
+	before := d.balance()
+	p = d.project("POST", "/projects/"+p.ID+"/video", map[string]any{"revision": p.Revision, "idempotencyKey": uuid.NewString(), "shotIds": []string{shot.ID}})
+	d.tick()
+	p = d.get(p.ID)
+	v := d.shots(p)[1].Video
+	if v == nil || v.Status != "failed" || !v.CanRetry || v.PointsRefunded != 20 || d.balance() != before {
+		t.Fatalf("a request that never reached the provider must refund and allow retry: %+v balance %d", v, d.balance())
 	}
 }

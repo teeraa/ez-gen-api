@@ -3,6 +3,7 @@ package modelark
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/google/uuid"
 	"log"
 	"time"
@@ -36,6 +37,10 @@ func WithUsageOwner(ctx context.Context, userID, jobID uuid.UUID) context.Contex
 	return context.WithValue(ctx, usageOwnerKey{}, usageOwner{userID, jobID})
 }
 
+// ErrNotSubmitted marks failures that happen before any provider request is sent, so callers
+// can refund and allow a retry instead of treating the outcome as uncertain.
+var ErrNotSubmitted = errors.New("provider request not submitted")
+
 func beginUsage(ctx context.Context, recorder UsageRecorder, model, operation string) (UsageEvent, error) {
 	event := UsageEvent{AttemptID: uuid.New(), Provider: "byteplus", Model: model, Operation: operation, Status: "started", StartedAt: time.Now().UTC()}
 	if recorder == nil {
@@ -43,11 +48,11 @@ func beginUsage(ctx context.Context, recorder UsageRecorder, model, operation st
 	}
 	owner, ok := ctx.Value(usageOwnerKey{}).(usageOwner)
 	if !ok || owner.userID == uuid.Nil || owner.jobID == uuid.Nil {
-		return event, errors.New("missing AI usage owner")
+		return event, fmt.Errorf("%w: missing AI usage owner", ErrNotSubmitted)
 	}
 	event.UserID, event.JobID = owner.userID, owner.jobID
 	if err := recorder(ctx, event); err != nil {
-		return event, errors.New("cannot record AI usage attempt")
+		return event, fmt.Errorf("%w: cannot record AI usage attempt", ErrNotSubmitted)
 	}
 	return event, nil
 }

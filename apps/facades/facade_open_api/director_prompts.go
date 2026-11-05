@@ -110,8 +110,9 @@ func directorImagePrompt(d *directorDocument, p *dto.DirectorProject, sh *dto.Di
 			if i < referenced {
 				ref = fmt.Sprintf(" — identity from reference Image %d (same face, hairstyle, body and outfit)", i+1)
 			}
-			fmt.Fprintf(&b, "- %s: %s%s\n", directorCharacterName(ch, i), directorTruncate(ch.Description, 500), ref)
+			fmt.Fprintf(&b, "- %s: %s%s. Wears exactly this outfit, same colors and accessories, in every shot.\n", directorCharacterName(ch, i), directorTruncate(ch.Description, 600), ref)
 		}
+		b.WriteString("Never change a named character's clothing, colors, hairstyle or accessories between shots, even if another line mentions clothing.\n")
 		if referenced > 0 {
 			b.WriteString("Reference images define character identity only. Ignore their backgrounds, lighting, framing and poses.\n")
 		}
@@ -144,7 +145,7 @@ func directorVideoPrompt(d *directorDocument, p *dto.DirectorProject, sh *dto.Di
 	if len(cast) > 0 {
 		names := []string{}
 		for i, ch := range cast {
-			names = append(names, directorCharacterName(ch, i))
+			names = append(names, directorCharacterName(ch, i)+" ("+directorTruncate(ch.Description, 220)+")")
 		}
 		fmt.Fprintf(&b, "Characters: %s. Keep every character's face, hairstyle and outfit exactly as in the first frame; do not add or remove characters.\n", strings.Join(names, ", "))
 	}
@@ -185,6 +186,9 @@ func directorCoverPrompt(p *dto.DirectorProject, cast []directorCharacter, refer
 			ref = fmt.Sprintf(" — identity from reference Image %d", i+1)
 		}
 		fmt.Fprintf(&b, "- %s: %s%s\n", directorCharacterName(ch, i), directorTruncate(ch.Description, 500), ref)
+	}
+	if len(cast) > 0 {
+		b.WriteString("Never change a named character's clothing, colors, hairstyle or accessories from the description above.\n")
 	}
 	if referenced > 0 {
 		b.WriteString("Reference images define character identity only; ignore their backgrounds.\n")

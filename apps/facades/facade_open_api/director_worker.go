@@ -51,7 +51,8 @@ const directorPlannerGuide = "Write for a storyboard whose images are generated 
 	"Use each character's supplied name and look exactly; never invent new main characters. " +
 	"Keep each scene in one coherent location unless the story requires a move."
 const directorShotGuide = ` "prompt" is an English image-generation prompt of 60-120 words: subject and action, every visible character by name with expression and pose, ` +
-	`foreground/background composition, the scene's location and lighting from sceneSettings, and the visual bible's era, wardrobe and palette. ` +
+	`foreground/background composition, the scene's location and lighting from sceneSettings, and the visual bible's era and palette. ` +
+	`Never describe a named character's clothing, colors, hair or accessories: refer to them by name only, their fixed look is applied separately. ` +
 	`"description" is a Thai summary of the same shot for the user (1-2 sentences, names the characters). characterAssetIds lists every character visible in the shot.`
 
 func directorSubset(ids, allowed []string) bool {
@@ -226,6 +227,9 @@ func (f *DirectorFacade) Tick(ctx context.Context) error {
 	if j.Status == "submitting" && len(j.Output) == 0 {
 		return f.fail(c, j, in, false)
 	}
+	if len(j.Output) == 0 && len(in.Characters) > 0 {
+		in.Characters = f.characterLooks(c, j, in, &doc)
+	}
 	if j.Kind == "video" {
 		return f.directorVideo(c, j, in)
 	}
@@ -248,7 +252,7 @@ func (f *DirectorFacade) Tick(ctx context.Context) error {
 	schema := ""
 	switch j.Kind {
 	case "story":
-		schema = `{"logline":"Thai logline","visualBible":"English, <=500 chars: era/world, architecture, costume and wardrobe rules per character, color palette, lighting language","scenes":[{"title":"Thai title <=80 chars","summary":"Thai summary <=1200 chars","mood":"one supplied Thai mood","characterAssetIds":["ids of characters in this scene"],"setting":"English, <=400 chars: exact location, time of day, weather, light sources, key props and background details shared by every shot of the scene"}]}. Exactly one scene per supplied placeholder, same order. ` + directorPlannerGuide
+		schema = `{"logline":"Thai logline","visualBible":"English, <=500 chars: era/world, architecture, costume rules for background extras only (never restyle named characters), color palette, lighting language","scenes":[{"title":"Thai title <=80 chars","summary":"Thai summary <=1200 chars","mood":"one supplied Thai mood","characterAssetIds":["ids of characters in this scene"],"setting":"English, <=400 chars: exact location, time of day, weather, light sources, key props and background details shared by every shot of the scene"}]}. Exactly one scene per supplied placeholder, same order. ` + directorPlannerGuide
 	case "rewrite":
 		schema = `{"title":"Thai title <=80 chars","summary":"Thai summary <=1200 chars","mood":"one supplied Thai mood","characterAssetIds":["ids of characters in this scene"],"setting":"English, <=400 chars: exact location, time of day, weather, light sources, key props"}. Rewrite target scene only using neighboring scenes for continuity; preserve intended shot count and the visual bible. ` + directorPlannerGuide
 	case "plan":
@@ -705,7 +709,9 @@ func (f *DirectorFacade) directorVideo(c context.Context, j *models.DirectorJob,
 			if errors.As(e, &ve) {
 				code, message = ve.Code, ve.Message
 			}
-			return f.failWith(c, j, in, d.HTTPStatus >= 400 && d.HTTPStatus < 500, code, message, fmt.Errorf("video submit http=%d model=%s ratio=%s seconds=%d resolution=%s draft=%t refine=%t last_frame=%t: %w", d.HTTPStatus, in.VideoModel, request.Ratio, request.DurationSeconds, request.Resolution, request.Draft, in.DraftTaskID != "", in.NextImageKey != "", e))
+			// Nothing reached the provider when the request failed before submission: refund and allow retry.
+			definitive := d.HTTPStatus >= 400 && d.HTTPStatus < 500 || errors.Is(e, modelark.ErrNotSubmitted)
+			return f.failWith(c, j, in, definitive, code, message, fmt.Errorf("video submit http=%d model=%s ratio=%s seconds=%d resolution=%s draft=%t refine=%t last_frame=%t: %w", d.HTTPStatus, in.VideoModel, request.Ratio, request.DurationSeconds, request.Resolution, request.Draft, in.DraftTaskID != "", in.NextImageKey != "", e))
 		}
 		if id == "" {
 			return f.fail(c, j, in, false)
@@ -973,4 +979,66 @@ const directorImageProgressTick = 2 * time.Second
 
 func directorEstimatedProgress(elapsed time.Duration) int {
 	return min(95, 5+int(90*(1-math.Exp(-elapsed.Seconds()/25))))
+}
+
+// characterLooks attaches each character's cached appearance text, describing any reference
+// image not described yet. Failures fall back to the library description and are logged.
+func (f *DirectorFacade) characterLooks(c context.Context, j *models.DirectorJob, in directorJobInput, doc *directorDocument) []directorCharacter {
+	out := append([]directorCharacter(nil), in.Characters...)
+	fresh := map[string]directorLook{}
+	for i := range out {
+		ch := &out[i]
+		look, ok := doc.Looks[ch.ID]
+		if (!ok || look.Key != ch.Key || look.Text == "") && f.options.LookDescriber != nil && f.options.ImageFetch != nil && ch.Key != "" {
+			text, e := f.describeLook(c, ch.Key)
+			if e != nil {
+				log.Printf("director: job=%s describe look for character %s failed, using library text: %s", j.ID, ch.ID, directorCause(e))
+				continue
+			}
+			look, ok = directorLook{Text: text, Key: ch.Key}, true
+			fresh[ch.ID] = look
+		}
+		if ok && look.Key == ch.Key && look.Text != "" {
+			ch.Description = directorMergeLook(look.Text, ch.Description)
+		}
+	}
+	if len(fresh) > 0 {
+		if e := f.progress(c, j, in, func(d *directorDocument) error {
+			for id, l := range fresh {
+				d.Looks[id] = l
+			}
+			return nil
+		}); e != nil {
+			log.Printf("director: job=%s caching character looks failed: %v", j.ID, e)
+		}
+	}
+	return out
+}
+
+func (f *DirectorFacade) describeLook(c context.Context, key string) (string, error) {
+	u, _, e := f.storage.SignedURL(c, key, 10*time.Minute)
+	if e != nil {
+		return "", fmt.Errorf("sign reference: %w", e)
+	}
+	data, mime, e := f.options.ImageFetch(c, u)
+	if e != nil {
+		return "", fmt.Errorf("fetch reference: %w", e)
+	}
+	text, e := f.options.LookDescriber.DescribeImage(c, f.options.AnalysisModel, data, mime)
+	if e != nil {
+		return "", e
+	}
+	text = directorTruncate(text, 600)
+	if text == "" {
+		return "", errors.New("empty look description")
+	}
+	return text, nil
+}
+
+func directorMergeLook(look, description string) string {
+	description = strings.TrimSpace(description)
+	if description == "" || strings.Contains(look, description) {
+		return look
+	}
+	return look + " (" + description + ")"
 }

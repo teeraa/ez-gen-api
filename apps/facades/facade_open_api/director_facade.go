@@ -62,6 +62,14 @@ type DirectorOptions struct {
 	// ReferenceCheck confirms a signed reference URL is downloadable before it is sent to the
 	// provider; nil skips the check (tests and storage without public signed URLs).
 	ReferenceCheck func(context.Context, string) error
+	// LookDescriber turns each character reference image into one fixed appearance text that
+	// every shot reuses, so outfits stay identical even for characters sent without an image.
+	LookDescriber DirectorLookDescriber
+	ImageFetch    func(context.Context, string) ([]byte, string, error)
+}
+
+type DirectorLookDescriber interface {
+	DescribeImage(ctx context.Context, model string, image []byte, mime string) (string, error)
 }
 type DirectorFacade struct {
 	store    directorStore
@@ -158,6 +166,12 @@ type directorDocument struct {
 	Prompts  map[string]directorPlannedPrompt `json:"prompts,omitempty"`
 	// Provider draft handles stay private; they are only used to refine a draft into a final clip.
 	VideoDrafts map[string]directorVideoDraft `json:"videoDrafts,omitempty"`
+	// Looks caches the described appearance per character asset, keyed by the image it describes.
+	Looks map[string]directorLook `json:"looks,omitempty"`
+}
+type directorLook struct {
+	Text string `json:"text"`
+	Key  string `json:"key"`
 }
 type directorVideoDraft struct {
 	TaskID    string    `json:"taskId"`
@@ -203,6 +217,9 @@ func directorDecode(p *models.DirectorProject) (directorDocument, error) {
 	}
 	if d.VideoDrafts == nil {
 		d.VideoDrafts = map[string]directorVideoDraft{}
+	}
+	if d.Looks == nil {
+		d.Looks = map[string]directorLook{}
 	}
 	return d, e
 }

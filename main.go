@@ -197,7 +197,7 @@ func main() {
 	storyFacade := facade_open_api.NewStoryFlowFacade(repository_open_api.NewStoryFlowRepository(database, cfg.MaxConcurrentJobsPerUser), studioRepo, modelRegistry, modelark.NewImageClient(cfg.ArkImageAPIKey, cfg.ArkImageBaseURL, cfg.ArkImageModel), modelark.NewStoryFlowAnalyzer(cfg.ArkStoryAnalysisAPIKey, cfg.ArkStoryAnalysisBaseURL), modelark.NewClient(cfg.ArkAPIKey, cfg.ArkBaseURL), storageClient, mediaFetcher, videoProcessor, facade_open_api.StoryFlowOptions{AnalysisModel: cfg.ArkStoryAnalysisModel, ImageModel: imageModel, Enabled: cfg.ArkAPIKey != "" && cfg.ArkStoryAnalysisAPIKey != "", ExportAvailable: productionFacade.Capabilities().Export.Available})
 	handler_open_api.NewStoryFlowHandler(storyFacade, cfg.RateLimitJobsPerMinute).RegisterRoutes(openV1)
 	directorAnalyzer, directorAnalysisModel, directorStoryReady := directorStoryPlanner(cfg)
-	directorFacade := facade_open_api.NewDirectorFacade(repository_open_api.NewDirectorRepository(database, cfg.MaxConcurrentJobsPerUser), studioRepo, storageClient, directorAnalyzer, modelark.NewImageClient(cfg.ArkImageAPIKey, cfg.ArkImageBaseURL, cfg.ArkImageModel), modelRegistry, arkClient, mediaFetcher, facade_open_api.DirectorOptions{Enabled: imageEnabled && directorStoryReady, AnalysisModel: directorAnalysisModel, ImageModel: imageModel, StoryPoints: cfg.DirectorStoryPoints, ImagePoints: cfg.DirectorImagePoints, VideoPoints: cfg.DirectorVideoPoints, DraftPoints: cfg.DirectorDraftPoints, MaxImageReferences: cfg.DirectorImageRefs, SampleBaseURL: cfg.DirectorSampleBaseURL, VideoEnabled: cfg.ArkAPIKey != "", ReferenceCheck: storage.Reachable})
+	directorFacade := facade_open_api.NewDirectorFacade(repository_open_api.NewDirectorRepository(database, cfg.MaxConcurrentJobsPerUser), studioRepo, storageClient, directorAnalyzer, modelark.NewImageClient(cfg.ArkImageAPIKey, cfg.ArkImageBaseURL, cfg.ArkImageModel), modelRegistry, modelark.NewClient(cfg.ArkAPIKey, cfg.ArkBaseURL), mediaFetcher, facade_open_api.DirectorOptions{Enabled: imageEnabled && directorStoryReady, AnalysisModel: directorAnalysisModel, ImageModel: imageModel, StoryPoints: cfg.DirectorStoryPoints, ImagePoints: cfg.DirectorImagePoints, VideoPoints: cfg.DirectorVideoPoints, DraftPoints: cfg.DirectorDraftPoints, MaxImageReferences: cfg.DirectorImageRefs, SampleBaseURL: cfg.DirectorSampleBaseURL, VideoEnabled: cfg.ArkAPIKey != "", ReferenceCheck: storage.Reachable, LookDescriber: directorLookDescriber(directorAnalyzer), ImageFetch: func(c context.Context, u string) ([]byte, string, error) { return storage.FetchImage(c, u, 7<<20) }})
 	handler_open_api.NewDirectorHandler(directorFacade, cfg.RateLimitJobsPerMinute).RegisterRoutes(openV1)
 
 	// Jobs
@@ -281,4 +281,12 @@ func directorStoryPlanner(cfg *configs.Config) (modelark.StoryFlowAnalyzer, stri
 	}
 	log.Printf("director: story planner provider=modelark model=%s", cfg.ArkStoryAnalysisModel)
 	return modelark.NewStoryFlowAnalyzer(cfg.ArkStoryAnalysisAPIKey, cfg.ArkStoryAnalysisBaseURL), cfg.ArkStoryAnalysisModel, cfg.ArkStoryAnalysisAPIKey != "" && cfg.ArkStoryAnalysisModel != ""
+}
+
+// Only the Gemini planner can read images; with the ModelArk text planner, looks fall back to library text.
+func directorLookDescriber(a modelark.StoryFlowAnalyzer) facade_open_api.DirectorLookDescriber {
+	if g, ok := a.(*gemini.StoryAnalyzer); ok {
+		return g
+	}
+	return nil
 }

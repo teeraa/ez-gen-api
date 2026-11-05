@@ -552,6 +552,15 @@ recorded separately in the workspace task report.
   action, every shot character bound to reference Image N (all shot characters,
   up to 4, are sent as references), scene setting, visual bible and a style
   descriptor. Video prompts add camera motion, cast continuity and setting.
+- Character looks: with the Gemini planner, each character reference image is described once
+  per project (outfit, colors, hair, accessories) and cached privately by storage key. The same
+  text is given to the planner and to every image/video prompt with a wardrobe lock; shot
+  prompts must not restyle named characters. Without Gemini the library description is used.
+- Director video uses a ModelArk client without AI-usage recording: `ai_usage.job_id` references
+  `video_generation_jobs`, which Director jobs are not. Errors raised before a provider request is
+  sent (`modelark.ErrNotSubmitted`) are refunded and retryable, not "uncertain".
+- The Gemini planner retries 429/5xx/transport failures up to 3 attempts (honoring Retry-After,
+  max 30s) and logs the HTTP status and provider message on final failure.
 - `GET /director/points` → `{ balance }`: the caller's Director point balance (0 when never
   funded, `Cache-Control: private, no-store`). The web navbar shows this real balance.
 - Scenes expose an editable `setting` (location/lighting, ≤400 chars, `PATCH /scenes/:id`
