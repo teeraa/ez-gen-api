@@ -398,7 +398,8 @@ func (f *DirectorFacade) present(c context.Context, m *models.DirectorProject) (
 		}
 	}
 	// Copy before filling display-only values so the stored document is not mutated.
-	p.Scenes = append([]dto.DirectorScene(nil), p.Scenes...)
+	// Non-nil even when empty: clients require "scenes": [] rather than null.
+	p.Scenes = append(make([]dto.DirectorScene, 0, len(p.Scenes)), p.Scenes...)
 	var first *dto.DirectorShot
 	for i := range p.Scenes {
 		if p.Scenes[i].Setting == "" {

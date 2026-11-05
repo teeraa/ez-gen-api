@@ -310,3 +310,26 @@ func TestDirectorPostgresSceneSettingIsEditableAndMarksImagesStale(t *testing.T)
 		t.Fatalf("regenerated prompt must lead with the edited location: %+v", d.media.requests)
 	}
 }
+
+func TestDirectorPostgresResponsesNeverSendNullArrays(t *testing.T) {
+	d := newDirectorFixture(t)
+	status, b, _ := d.http("POST", "/projects", map[string]any{"name": "ชื่อซ้ำ", "aspectRatio": "16:9", "style": "cinematic", "resolution": "720p", "idempotencyKey": uuid.NewString()}, nil)
+	if status != 201 || bytes.Contains(b, []byte(`"scenes":null`)) || !bytes.Contains(b, []byte(`"scenes":[]`)) {
+		t.Fatalf("new project must return an empty scenes array: %d %s", status, b)
+	}
+	var created struct {
+		Data dto.DirectorProject `json:"data"`
+	}
+	if err := json.Unmarshal(b, &created); err != nil {
+		t.Fatal(err)
+	}
+	status, b, _ = d.http("GET", "/projects/"+created.Data.ID, nil, nil)
+	if status != 200 || bytes.Contains(b, []byte(`"scenes":null`)) {
+		t.Fatalf("get must return an empty scenes array: %d %s", status, b)
+	}
+	// Duplicate names are allowed; each request with a new key creates a new project.
+	second := d.project("POST", "/projects", map[string]any{"name": "ชื่อซ้ำ", "aspectRatio": "16:9", "style": "cinematic", "resolution": "720p", "idempotencyKey": uuid.NewString()})
+	if second.ID == created.Data.ID {
+		t.Fatal("same name must not reuse the existing project")
+	}
+}
