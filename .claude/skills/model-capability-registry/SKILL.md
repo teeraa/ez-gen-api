@@ -6,7 +6,7 @@ validation.
 
 ## When to Invoke
 
-- Before implementing `POST /open/v1/jobs` request validation
+- Before implementing `POST /api/v1/jobs` request validation
 - When adding a new model to the platform
 - When a BytePlus model is deprecated or renamed
 - When a model's parameters change (new resolution tier, duration range update)

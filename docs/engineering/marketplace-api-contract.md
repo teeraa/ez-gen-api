@@ -1,6 +1,6 @@
 # Marketplace API contract (manual phase)
 
-All routes are under `/open/v1/marketplace` (user JWT). Responses use the standard envelope
+All routes are under `/api/v1/marketplace` (user JWT). Responses use the standard envelope
 `{ "data": ..., "requestId": ... }`; errors use `{ "code", "message", "requestId", "details?" }`.
 Every resource is scoped to the authenticated user; another user's id answers `404 NOT_FOUND`.
 
@@ -35,7 +35,7 @@ Field shapes are the DTOs in `apps/dto/dto_open_api/marketplace_dto.go` and the 
 
 Notes:
 
-- Images: `logoUploadId` and `imageUploadIds` are ids from `POST /open/v1/uploads`. The storage key is
+- Images: `logoUploadId` and `imageUploadIds` are ids from `POST /api/v1/uploads`. The storage key is
   copied onto the shop/product, so pictures outlive the 24-hour upload row. An id already attached is
   kept without a new lookup. Image URLs in responses are signed for one hour.
 - Links (`website`, `*Url`, `postUrl`) must be http(s); a value without a scheme gets `https://`.

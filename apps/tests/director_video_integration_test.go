@@ -75,7 +75,7 @@ func TestDirectorPostgresVideoLifecycle(t *testing.T) {
 
 	status, b, _ := d.http("GET", "/capabilities", nil, nil)
 	var caps struct {
-		Data dto.DirectorCapabilities `json:"data"`
+		Data dto.DirectorCapabilities `json:"payload"`
 	}
 	if status != 200 || json.Unmarshal(b, &caps) != nil || !caps.Data.VideoEnabled || len(caps.Data.Models.Video) == 0 || caps.Data.Models.Video[0].ID != "seedance-2-5" || caps.Data.Models.Video[0].Name != "Seedance 2.5" {
 		t.Fatalf("video capabilities: %d %s", status, b)
@@ -307,7 +307,7 @@ func TestDirectorPostgresPointsBalance(t *testing.T) {
 		t.Helper()
 		status, b, h := d.http("GET", "/points", nil, nil)
 		var out struct {
-			Data dto.DirectorPoints `json:"data"`
+			Data dto.DirectorPoints `json:"payload"`
 		}
 		if status != 200 || json.Unmarshal(b, &out) != nil || h.Get("Cache-Control") != "private, no-store" {
 			t.Fatalf("points: %d %s", status, b)
@@ -358,7 +358,7 @@ func TestDirectorPostgresResponsesNeverSendNullArrays(t *testing.T) {
 		t.Fatalf("new project must return an empty scenes array: %d %s", status, b)
 	}
 	var created struct {
-		Data dto.DirectorProject `json:"data"`
+		Data dto.DirectorProject `json:"payload"`
 	}
 	if err := json.Unmarshal(b, &created); err != nil {
 		t.Fatal(err)

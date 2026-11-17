@@ -155,7 +155,7 @@ func main() {
 	app.Use(recover.New())
 	app.Get("/health", func(c *fiber.Ctx) error { return c.JSON(fiber.Map{"status": "ok"}) })
 	app.Get("/fixture/objects", store.serve)
-	group := app.Group("/open/v1", func(c *fiber.Ctx) error {
+	group := app.Group("/api/v1", func(c *fiber.Ctx) error {
 		token := strings.TrimPrefix(c.Get("Authorization"), "Bearer ")
 		user := fixtureUser
 		if token == "video-editor-other" {

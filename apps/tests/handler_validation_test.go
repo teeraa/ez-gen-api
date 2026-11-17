@@ -49,7 +49,8 @@ func TestJobHandler_CreateJob_ValidationError(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if payload["code"] != "VALIDATION_ERROR" {
-		t.Errorf("expected VALIDATION_ERROR code, got %q", payload["code"])
+	errPayload, _ := payload["payload"].(map[string]any)
+	if payload["success"] != false || errPayload["errorCode"] != "VALIDATION_ERROR" {
+		t.Errorf("expected VALIDATION_ERROR code, got %v", payload)
 	}
 }

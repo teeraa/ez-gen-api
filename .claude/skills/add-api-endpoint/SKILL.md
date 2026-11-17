@@ -5,7 +5,7 @@ Add a new API endpoint to the VIOLET STUDIO Go backend following the established
 ## When to Use
 
 Use this skill when:
-- Adding a new route to `/open/v1/`
+- Adding a new route to `/api/v1/`
 - Adding a new route to `/api/v1/`
 - Implementing a new operation in an existing domain (e.g., new job action)
 
@@ -176,7 +176,7 @@ func Register<Domain>Routes(router fiber.Router, h *handler_<domain>.Handler) {
 
 Wire in `main.go`:
 ```go
-openV1 := app.Group("/open/v1", middleware.AuthRequired(cfg))
+openV1 := app.Group("/api/v1", middleware.AuthRequired(cfg))
 routes.Register<Domain>Routes(openV1, handler_<domain>.NewHandler(facade))
 ```
 

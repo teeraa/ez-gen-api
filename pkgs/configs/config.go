@@ -8,6 +8,17 @@ import (
 )
 
 type Config struct {
+	// Point prices for AI features outside Director/Film (see facade_open_api.PointPrices).
+	AIPointsEnabled         bool
+	AIChatMessagePoints     int
+	AIVideoPoints           int
+	AIVideoDraftPoints      int
+	AIImagePoints           int
+	AIStoryAnalysisPoints   int
+	AIEditorAnalysisPoints  int
+	AIEditorEditPoints      int
+	AIVoicePoints           int
+	AITextSuggestionPoints  int
 	DirectorStoryPoints     int
 	DirectorImagePoints     int
 	DirectorVideoPoints     int
@@ -149,6 +160,16 @@ func Load() *Config {
 		ArkImageAPIKey:              getEnv("ARK_IMAGE_API_KEY", os.Getenv("ARK_API_KEY")),
 		ArkImageBaseURL:             getEnv("ARK_IMAGE_BASE_URL", getEnv("ARK_BASE_URL", "https://ark.ap-southeast.bytepluses.com/api/v3")),
 		ArkImageModel:               getEnv("ARK_IMAGE_MODEL", "seedream-5-0-260128"),
+		AIPointsEnabled:             getEnv("AI_POINTS_ENABLED", "true") != "false",
+		AIChatMessagePoints:         getEnvInt("AI_CHAT_MESSAGE_POINTS", 3),
+		AIVideoPoints:               getEnvInt("AI_VIDEO_POINTS", getEnvInt("DIRECTOR_VIDEO_POINTS", 20)),
+		AIVideoDraftPoints:          getEnvInt("AI_VIDEO_DRAFT_POINTS", getEnvInt("DIRECTOR_VIDEO_DRAFT_POINTS", 8)),
+		AIImagePoints:               getEnvInt("AI_IMAGE_POINTS", getEnvInt("DIRECTOR_IMAGE_POINTS", 3)),
+		AIStoryAnalysisPoints:       getEnvInt("AI_STORY_ANALYSIS_POINTS", getEnvInt("DIRECTOR_STORY_POINTS", 4)),
+		AIEditorAnalysisPoints:      getEnvInt("AI_EDITOR_ANALYSIS_POINTS", 10),
+		AIEditorEditPoints:          getEnvInt("AI_EDITOR_EDIT_POINTS", 3),
+		AIVoicePoints:               getEnvInt("AI_VOICE_POINTS", 2),
+		AITextSuggestionPoints:      getEnvInt("AI_TEXT_SUGGESTION_POINTS", 2),
 		DirectorStoryPoints:         getEnvInt("DIRECTOR_STORY_POINTS", 4),
 		DirectorImagePoints:         getEnvInt("DIRECTOR_IMAGE_POINTS", 3),
 		DirectorVideoPoints:         getEnvInt("DIRECTOR_VIDEO_POINTS", 20),

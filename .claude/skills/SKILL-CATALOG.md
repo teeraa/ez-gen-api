@@ -53,7 +53,7 @@
 **Does NOT do:** Store DNA config (that's a DB task); guarantee visual consistency.
 
 ### 6 · reference-assets-and-storage
-**Trigger:** Implementing `POST /open/v1/uploads`; output persistence after generation; signed URL generation.
+**Trigger:** Implementing `POST /api/v1/uploads`; output persistence after generation; signed URL generation.
 **Does:** Storage abstraction (`Client` interface, multi-provider); magic byte validation; output download + store; signed URL generation; upload expiry.
 **Does NOT do:** Provider polling (that's `video-generation-lifecycle`); security reviews (that's `video-generation-security`).
 

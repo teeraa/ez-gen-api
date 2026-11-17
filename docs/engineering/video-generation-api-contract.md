@@ -38,7 +38,7 @@ The Next.js server reads `API_URL` from env. The browser never sees this URL dir
 
 ## Route Group
 
-All video-generation endpoints mount under `/open/v1/`.
+All video-generation endpoints mount under `/api/v1/`.
 
 ---
 
@@ -87,7 +87,7 @@ The `requestId` is generated per-request by middleware and must be logged by the
 
 ## Endpoints
 
-### POST /open/v1/jobs — Create Generation Job
+### POST /api/v1/jobs — Create Generation Job
 
 Submit a new AI video generation request.
 
@@ -136,7 +136,7 @@ HTTP 200 with the existing job's current state instead of creating a new one.
 
 ---
 
-### GET /open/v1/jobs/:jobId — Get Job Status
+### GET /api/v1/jobs/:jobId — Get Job Status
 
 Poll job progress. Poll every 2 seconds while in `queued` or `processing` state.
 
@@ -191,7 +191,7 @@ Poll job progress. Poll every 2 seconds while in `queued` or `processing` state.
 
 ---
 
-### DELETE /open/v1/jobs/:jobId — Cancel Job
+### DELETE /api/v1/jobs/:jobId — Cancel Job
 
 Cancel a queued or processing job.
 
@@ -213,7 +213,7 @@ Cancel a queued or processing job.
 
 ---
 
-### POST /open/v1/uploads — Upload Reference Image
+### POST /api/v1/uploads — Upload Reference Image
 
 Upload a reference image before submitting a job. The upload is temporary.
 
@@ -249,7 +249,7 @@ file: <binary>   (PNG, JPG, or WEBP, max 8 MB)
 
 ---
 
-### GET /open/v1/projects — List Projects
+### GET /api/v1/projects — List Projects
 
 List the authenticated user's projects.
 
@@ -290,7 +290,7 @@ List the authenticated user's projects.
 
 ---
 
-### GET /open/v1/projects/:projectId — Get Project
+### GET /api/v1/projects/:projectId — Get Project
 
 Full project detail including media URL.
 
@@ -328,7 +328,7 @@ Full project detail including media URL.
 
 ---
 
-### DELETE /open/v1/projects/:projectId — Delete Project
+### DELETE /api/v1/projects/:projectId — Delete Project
 
 Remove a project and its associated media.
 
@@ -338,7 +338,7 @@ Media in object storage is deleted asynchronously.
 
 ---
 
-### GET /open/v1/credits — Get Credit Balance
+### GET /api/v1/credits — Get Credit Balance
 
 ```json
 {
@@ -355,7 +355,7 @@ Media in object storage is deleted asynchronously.
 
 ---
 
-### POST /open/v1/jobs/:jobId/shares — Create Share Link
+### POST /api/v1/jobs/:jobId/shares — Create Share Link
 
 Returns the job's public share link, creating it on first call. One active link per job;
 calling again returns the same link.
@@ -384,7 +384,7 @@ token is the only credential for the public page: 256-bit random, base64url, 43 
 
 ---
 
-### DELETE /open/v1/shares/:shareId — Revoke Share Link
+### DELETE /api/v1/shares/:shareId — Revoke Share Link
 
 **Success — 204** (no body). The public link stops working (allow up to 60 s for caches).
 Creating a share for the same job afterwards mints a **new** URL.
@@ -392,7 +392,7 @@ Creating a share for the same job afterwards mints a **new** URL.
 
 ---
 
-### GET /open/v1/jobs/:jobId/download — Download URL (owner)
+### GET /api/v1/jobs/:jobId/download — Download URL (owner)
 
 ```json
 {
@@ -409,7 +409,7 @@ Opening `url` makes the browser save the file. Same 404/409 rules as creating a 
 
 ---
 
-### GET /public/v1/shares/:token — Public Share (no auth)
+### GET /api/v1/public/shares/:token — Public Share (no auth)
 
 Used by the frontend share page (server-side) to render the player and Open Graph tags.
 Not authenticated; rate limited per client IP (`PUBLIC_RATE_LIMIT_PER_MINUTE`, default 120)
@@ -585,15 +585,15 @@ See [Story Flow API](story-flow-api-contract.md). Requires migration020; no lega
 
 ## Director (editable successor)
 
-The separate `/open/v1/director` domain follows the
+The separate `/api/v1/director` domain follows the
 [Director contract](director-api-contract.md). It preserves Story Flow projects and
-routes. `POST /open/v1/director/projects/:id/video` turns storyboard shots into clips
+routes. `POST /api/v1/director/projects/:id/video` turns storyboard shots into clips
 with the same video models as the video menu; see the contract for billing and
 adapter constraints.
 
 ## Independent footage video editor
 
-The phase-one footage editor uses `/open/v1/video-editor` and its own projects,
+The phase-one footage editor uses `/api/v1/video-editor` and its own projects,
 assets and immutable export snapshots. See [video-editor-api-contract.md](video-editor-api-contract.md)
 for the authoritative routes, revision/idempotency semantics, upload constraints
 and segment identity. Editor capabilities add `textTransforms`; optional text-layer

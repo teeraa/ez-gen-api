@@ -44,6 +44,9 @@ func (h *StudioHandler) RegisterRoutes(r fiber.Router) {
 	r.Delete("/assets/:id", h.deleteAsset)
 }
 func studioError(c *fiber.Ctx, e error) error {
+	if r, ok := insufficientPoints(c, e); ok {
+		return r
+	}
 	switch {
 	case errors.Is(e, f.ErrUnauthorized):
 		return utils.Error(c, 401, "UNAUTHORIZED", "อีเมลหรือรหัสผ่านไม่ถูกต้อง", nil)

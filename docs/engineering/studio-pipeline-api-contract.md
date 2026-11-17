@@ -1,6 +1,6 @@
 # Studio one-click pipeline API
 
-Backend authoritative. All routes use authenticated `/open/v1`, standard `data/requestId` envelope, owner-scoped 404, `Cache-Control: no-store`. No provider identifiers in responses.
+Backend authoritative. All routes use authenticated `/api/v1`, standard `data/requestId` envelope, owner-scoped 404, `Cache-Control: no-store`. No provider identifiers in responses.
 
 `POST /studio-pipelines` accepts optional `referenceImageId` UUID (upload) or optional `characterAssetId` UUID (library), mutually exclusive. Neither selects text-to-image. `characterPrompt` is required 1–2000 Unicode characters except library, where it may be empty; `scenePrompt` is always required 1–2000 Unicode characters, `dialogue` optional up to 1000 characters (JSON-quoted representation also limited to 1700 characters to protect the provider prompt budget; combined scene/dialogue/reference controls must fit the16000-Unicode-code-point application safety budget and are validated before acceptance), `idempotencyKey` UUID required. Defaults: `visualStyle=cinematic_realistic`, `aspectRatio=9:16`, `durationSeconds=5`, `modelId=violet-motion-2`, `quality=standard`. Styles: cinematic_realistic/3d_animation/anime/illustration/clay. Model/settings must be supported by the actual configured registry. Dialogue requires native audio support. Whitespace-only prompts fail. Dialogue is preserved exactly, never silently shortened. A long dialogue may not fit the selected video duration; completion is not guaranteed by the provider.
 

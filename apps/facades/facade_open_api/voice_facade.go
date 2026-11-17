@@ -291,6 +291,18 @@ func (f *VoiceFacade) Generate(ctx context.Context, userID string, raw VoiceInpu
 	if e != nil {
 		return dto.VoiceGenerationDTO{}, false, e
 	}
+	// Charged per requestId; refunded unless this call saves a new generation.
+	pointRef := userID + ":" + rid.String()
+	paid, e := chargePointsNew(ctx, userID, pointFeatureVoice, pointRef, pointPrices.Voice)
+	if e != nil {
+		return dto.VoiceGenerationDTO{}, false, e
+	}
+	saved := false
+	defer func() {
+		if paid && !saved {
+			refundPoints(ctx, userID, pointFeatureVoice, pointRef)
+		}
+	}()
 	out, e := f.gen.Generate(ctx, req)
 	if e != nil {
 		log.Printf("voice: user=%s generate failed: %v", uid, e)
@@ -335,6 +347,7 @@ func (f *VoiceFacade) Generate(ctx context.Context, userID string, raw VoiceInpu
 		}
 		return dto.VoiceGenerationDTO{}, false, e
 	}
+	saved = true
 	d, e := f.toDTO(ctx, row)
 	return d, true, e
 }

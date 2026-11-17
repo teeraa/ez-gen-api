@@ -18,7 +18,7 @@ func NewLibraryHandler(facade facade_open_api.LibraryFacade) *LibraryHandler {
 	return &LibraryHandler{facade: facade}
 }
 
-// RegisterRoutes mounts on the authenticated /open/v1 router.
+// RegisterRoutes mounts on the authenticated /api/v1 router.
 func (h *LibraryHandler) RegisterRoutes(r fiber.Router) {
 	r.Get("/prompts", h.ListPrompts)
 	r.Post("/prompts", h.CreatePrompt)

@@ -564,6 +564,9 @@ func (f *PipelineFacade) RunOnce(c context.Context) error {
 		if errors.Is(e, ErrDraftExpired) {
 			return f.failPipeline(c, p, "failed", "DRAFT_EXPIRED", "ฉบับร่างหมดอายุ กรุณาสร้างวิดีโอใหม่")
 		}
+		if _, ok := IsInsufficientPoints(e); ok {
+			return f.failPipeline(c, p, "failed", "INSUFFICIENT_POINTS", insufficientPointsMessage)
+		}
 		if errors.Is(e, ErrImageExpired) || errors.Is(e, ErrValidation) || errors.Is(e, ErrModelInvalid) || errors.Is(e, ErrNotFound) || errors.Is(e, ErrAssetSource) || errors.Is(e, ErrImageUnavailable) {
 			return f.failPipeline(c, p, "failed", "INPUT_UNAVAILABLE", "ข้อมูลหรือภาพอ้างอิงนี้ใช้สร้างงานไม่ได้ กรุณาตรวจสอบแล้วเริ่มคำขอใหม่")
 		}

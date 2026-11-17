@@ -12,6 +12,7 @@ import (
 	"github.com/ez-gen/ez-gen-api/apps/dto/dto_open_api"
 	"github.com/ez-gen/ez-gen-api/apps/models"
 	"github.com/ez-gen/ez-gen-api/apps/repositories/repository_open_api"
+	"github.com/google/uuid"
 )
 
 // The call runs inside the HTTP request, so it must finish before the server's write timeout.
@@ -154,7 +155,20 @@ func marketplaceParseSuggestion(text string) (*dto_open_api.MarketplaceSuggestio
 }
 
 // SuggestForProduct asks the text model how similar products are usually advertised and stores the answer on the product.
+// It charges one AI suggestion and refunds it when no suggestion comes back.
 func (f *MarketplaceFacade) SuggestForProduct(ctx context.Context, id, userID string) (*dto_open_api.MarketplaceSuggestionDTO, error) {
+	pointRef := uuid.NewString()
+	if e := chargePoints(ctx, userID, pointFeatureMarketplace, pointRef, pointPrices.TextSuggestion); e != nil {
+		return nil, e
+	}
+	out, e := f.suggestForProduct(ctx, id, userID)
+	if e != nil {
+		refundPoints(ctx, userID, pointFeatureMarketplace, pointRef)
+	}
+	return out, e
+}
+
+func (f *MarketplaceFacade) suggestForProduct(ctx context.Context, id, userID string) (*dto_open_api.MarketplaceSuggestionDTO, error) {
 	if f.options.Analyzer == nil || strings.TrimSpace(f.options.AnalysisModel) == "" {
 		return nil, ErrMarketplaceAIUnavailable
 	}
@@ -246,7 +260,20 @@ func marketplaceParseTrends(text string) (*dto_open_api.MarketplaceTrendsDTO, er
 
 // SuggestTrends stores seasonal product ideas for a shop. They come from the model's general
 // knowledge, not from live marketplace rankings; the API contract says so and the UI repeats it.
+// It charges one AI suggestion and refunds it when no suggestion comes back.
 func (f *MarketplaceFacade) SuggestTrends(ctx context.Context, shopID, userID string) (*dto_open_api.MarketplaceTrendsDTO, error) {
+	pointRef := uuid.NewString()
+	if e := chargePoints(ctx, userID, pointFeatureMarketplace, pointRef, pointPrices.TextSuggestion); e != nil {
+		return nil, e
+	}
+	out, e := f.suggestTrends(ctx, shopID, userID)
+	if e != nil {
+		refundPoints(ctx, userID, pointFeatureMarketplace, pointRef)
+	}
+	return out, e
+}
+
+func (f *MarketplaceFacade) suggestTrends(ctx context.Context, shopID, userID string) (*dto_open_api.MarketplaceTrendsDTO, error) {
 	if f.options.Analyzer == nil || strings.TrimSpace(f.options.AnalysisModel) == "" {
 		return nil, ErrMarketplaceAIUnavailable
 	}

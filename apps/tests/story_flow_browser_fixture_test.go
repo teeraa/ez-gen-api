@@ -50,11 +50,11 @@ func TestStoryFlowBrowserFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 	sf.video.failTask = "task2"
-	sf.app.Get("/open/v1/auth/me", func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{"data": fiber.Map{"id": sf.user, "displayName": "Isolated fixture", "email": "fixture@example.invalid", "plan": "free"}})
+	sf.app.Get("/api/v1/auth/me", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{"payload": fiber.Map{"id": sf.user, "displayName": "Isolated fixture", "email": "fixture@example.invalid", "plan": "free"}})
 	})
-	sf.app.Get("/open/v1/assets", func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{"data": fiber.Map{"items": []string{}, "total": 0, "page": 1, "limit": 20}})
+	sf.app.Get("/api/v1/assets", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{"payload": fiber.Map{"items": []string{}, "total": 0, "page": 1, "limit": 20}})
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

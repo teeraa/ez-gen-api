@@ -84,6 +84,9 @@ func storyFlowBody(c *fiber.Ctx, out any) error {
 	return nil
 }
 func storyFlowError(c *fiber.Ctx, e error) error {
+	if r, ok := insufficientPoints(c, e); ok {
+		return r
+	}
 	var v *f.StoryFlowValidationError
 	switch {
 	case errors.As(e, &v):

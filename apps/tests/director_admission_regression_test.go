@@ -25,7 +25,7 @@ func directorAdmissionApp(d *directorFixture, rate int) {
 		c.Locals("requestID", "director-admission-fixture")
 		return c.Next()
 	})
-	handler.NewDirectorHandler(d.facade, rate).RegisterRoutes(app.Group("/open/v1"))
+	handler.NewDirectorHandler(d.facade, rate).RegisterRoutes(app.Group("/api/v1"))
 	d.app = app
 }
 func TestDirectorAdmissionAutosaveDoesNotSpendAIQuota(t *testing.T) {

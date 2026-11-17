@@ -416,6 +416,20 @@ func (f *jobFacade) CreateJob(ctx context.Context, userID string, in CreateJobIn
 		return nil, fmt.Errorf("persist job: %w", err)
 	}
 
+	// Charge before the provider sees the request; a replayed request returned above.
+	price := pointPrices.Video
+	if in.Draft && !refining {
+		price = pointPrices.VideoDraft
+	}
+	if e := chargePoints(ctx, job.UserID.String(), pointFeatureVideo, job.ID.String(), price); e != nil {
+		_ = f.jobs.UpdateStatus(context.WithoutCancel(ctx), job.ID.String(), models.JobStatusFailed, map[string]any{
+			"failure_code":    "INSUFFICIENT_POINTS",
+			"failure_message": insufficientPointsMessage,
+			"completed_at":    time.Now(),
+		})
+		return nil, e
+	}
+
 	// Submit to provider
 	arkReq := modelark.CreateTaskRequest{
 		Model:               compiled.ProviderModelID,
@@ -474,6 +488,7 @@ func (f *jobFacade) CreateJob(ctx context.Context, userID string, in CreateJobIn
 			"failure_message": message,
 			"completed_at":    now,
 		})
+		refundPoints(ctx, job.UserID.String(), pointFeatureVideo, job.ID.String())
 		return nil, failure
 	}
 	log.Printf("[ark] task created job=%s providerTaskID=%s", job.ID, providerTaskID)
@@ -725,7 +740,14 @@ func (f *jobFacade) PollAndUpdate(ctx context.Context, job *models.VideoGenerati
 		updates["provider_error"] = datatypes.JSON(diagnostic)
 	}
 
-	return f.jobs.UpdateStatus(ctx, job.ID.String(), appStatus, updates)
+	if err := f.jobs.UpdateStatus(ctx, job.ID.String(), appStatus, updates); err != nil {
+		return err
+	}
+	if appStatus == models.JobStatusFailed {
+		// The provider produced nothing usable; give the points back (once per job).
+		refundPoints(ctx, job.UserID.String(), pointFeatureVideo, job.ID.String())
+	}
+	return nil
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────

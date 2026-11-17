@@ -26,7 +26,7 @@ func TestWrappedVideoPromptBudgetMapsToSafe422(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if response.StatusCode != 422 || !strings.Contains(string(body), `"code":"PROMPT_TOO_LONG"`) || strings.Contains(string(body), "private-prompt-content") {
+	if response.StatusCode != 422 || !strings.Contains(string(body), `"errorCode":"PROMPT_TOO_LONG"`) || strings.Contains(string(body), "private-prompt-content") {
 		t.Fatalf("bad budget response %d %s", response.StatusCode, body)
 	}
 }

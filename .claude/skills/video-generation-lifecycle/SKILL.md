@@ -191,7 +191,7 @@ func (r *jobRepository) TransitionStatus(ctx context.Context, id, fromStatus, to
 ## Cancellation Flow
 
 ```
-User DELETE /open/v1/jobs/:id
+User DELETE /api/v1/jobs/:id
          │
          ▼
     Check status (with SELECT FOR UPDATE)

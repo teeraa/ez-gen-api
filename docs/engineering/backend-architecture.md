@@ -139,7 +139,7 @@ No GORM tags. Never embed models directly.
 ```
 apps/dto/
 └── dto_video_generation/
-    ├── job_response.go   # Returned by GET /open/v1/jobs/:id
+    ├── job_response.go   # Returned by GET /api/v1/jobs/:id
     └── create_response.go
 ```
 
@@ -151,8 +151,8 @@ Use `validate:` tags compatible with `go-playground/validator/v10`.
 ```
 apps/requests/
 └── request_video_generation/
-    ├── create_job.go     # POST /open/v1/jobs body
-    └── list_jobs.go      # GET /open/v1/jobs query params
+    ├── create_job.go     # POST /api/v1/jobs body
+    └── list_jobs.go      # GET /api/v1/jobs query params
 ```
 
 ### `apps/crons/`
@@ -290,7 +290,7 @@ func RegisterRoutes(router fiber.Router, h *Handler) {
 }
 ```
 
-The main Fiber router attaches this to the `/open/v1` group.
+The main Fiber router attaches this to the `/api/v1` group.
 
 ---
 
@@ -328,7 +328,7 @@ config → db → repos → services → facades → handlers → routes
 | Request structs | `apps/requests/request_video_generation/` | Field validation tags |
 | Response DTOs | `apps/dto/dto_video_generation/` | Clean JSON shapes |
 | Status poller | `apps/crons/video_generation_poller.go` | Goroutine, configurable interval |
-| Route registration | `routes/open_api/v1/video_generation.go` | Mounts on `/open/v1` |
+| Route registration | `routes/open_api/v1/video_generation.go` | Mounts on `/api/v1` |
 
 ---
 

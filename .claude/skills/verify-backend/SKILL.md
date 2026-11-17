@@ -144,7 +144,7 @@ For each modified endpoint:
 go run . &
 
 # Test the endpoint shape (replace with actual auth token when available)
-curl -s -X POST http://localhost:8080/open/v1/jobs \
+curl -s -X POST http://localhost:8080/api/v1/jobs \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <token>" \
   -d '{"prompt":"test","mode":"text","model":"violet-motion-2","aspectRatio":"16:9","duration":5,"quality":"standard","enhancePrompt":false}'

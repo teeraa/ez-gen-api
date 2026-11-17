@@ -132,7 +132,7 @@ The frontend expects this API at `API_URL=http://localhost:8080`.
 | Group | File | Prefix | Description |
 |---|---|---|---|
 | Internal | `routes/api/` | `/api/v1` | Service-to-service calls |
-| Open API | `routes/open_api/` | `/open/v1` | User-facing authenticated endpoints |
+| Open API | `routes/open_api/` | `/api/v1` | User-facing authenticated endpoints |
 | OAuth2 | `routes/oauth2/` | `/oauth` | OAuth2 authorization flow |
 
 Video-generation endpoints go in **Open API**.

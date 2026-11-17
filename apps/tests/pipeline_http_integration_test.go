@@ -339,19 +339,21 @@ func runPipelineHTTPActualWorkersSDKIntegration(t *testing.T, source string) {
 	rejectedBody, _ := json.Marshal(rejected)
 	rejectedStatus, rejectedRaw := pipelineHTTP(t, app, "POST", "/studio-pipelines", rejectedBody)
 	var rejectedOut struct {
-		Code    string `json:"code"`
 		Message string `json:"message"`
-		Details []struct {
-			Field   string `json:"field"`
-			Reason  string `json:"reason"`
-			Message string `json:"message"`
-		} `json:"details"`
+		Payload struct {
+			Code    string `json:"errorCode"`
+			Details []struct {
+				Field   string `json:"field"`
+				Reason  string `json:"reason"`
+				Message string `json:"message"`
+			} `json:"details"`
+		} `json:"payload"`
 	}
 	if err := json.Unmarshal(rejectedRaw, &rejectedOut); err != nil {
 		t.Fatal(err)
 	}
 	expectedMessage := "ฉากและการเคลื่อนไหวยาวเกินขีดจำกัด กรุณาย่อแล้วลองอีกครั้ง"
-	if rejectedStatus != 400 || rejectedOut.Code != "VALIDATION_ERROR" || rejectedOut.Message != expectedMessage || len(rejectedOut.Details) != 1 || rejectedOut.Details[0].Field != "scenePrompt" || rejectedOut.Details[0].Reason != "too_long" || rejectedOut.Details[0].Message != expectedMessage {
+	if rejectedStatus != 400 || rejectedOut.Payload.Code != "VALIDATION_ERROR" || rejectedOut.Message != expectedMessage || len(rejectedOut.Payload.Details) != 1 || rejectedOut.Payload.Details[0].Field != "scenePrompt" || rejectedOut.Payload.Details[0].Reason != "too_long" || rejectedOut.Payload.Details[0].Message != expectedMessage {
 		t.Fatalf("budget validation %d %s", rejectedStatus, rejectedRaw)
 	}
 	if store.p != nil || imageCalls != 0 || videoCalls != 0 {
@@ -367,7 +369,7 @@ func runPipelineHTTPActualWorkersSDKIntegration(t *testing.T, source string) {
 		t.Fatalf("POST %d %s", status, raw)
 	}
 	var out struct {
-		Data dto.PipelineDTO `json:"data"`
+		Data dto.PipelineDTO `json:"payload"`
 	}
 	if e := json.Unmarshal(raw, &out); e != nil {
 		t.Fatal(e)
@@ -381,7 +383,7 @@ func runPipelineHTTPActualWorkersSDKIntegration(t *testing.T, source string) {
 		t.Fatalf("replay %d %s", status, raw)
 	}
 	var replay struct {
-		Data dto.PipelineDTO `json:"data"`
+		Data dto.PipelineDTO `json:"payload"`
 	}
 	_ = json.Unmarshal(raw, &replay)
 	if replay.Data.ID != id {

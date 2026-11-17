@@ -20,7 +20,7 @@ func NewDNAHandler(facade facade_open_api.DNAFacade) *DNAHandler {
 }
 
 // RegisterRoutes mounts all DNA routes on the given router.
-// Expects /open/v1/dna as the router prefix.
+// Expects /api/v1/dna as the router prefix.
 func (h *DNAHandler) RegisterRoutes(r fiber.Router) {
 	// Tags
 	r.Get("/tags", h.ListTags)
@@ -337,6 +337,9 @@ func (h *DNAHandler) SelectSceneOutput(c *fiber.Ctx) error {
 // ─── shared helpers ───────────────────────────────────────────────────────────
 
 func mapFacadeError(c *fiber.Ctx, err error) error {
+	if r, ok := insufficientPoints(c, err); ok {
+		return r
+	}
 	switch {
 	case errors.Is(err, facade_open_api.ErrVideoPromptBudget):
 		return utils.Error(c, fiber.StatusUnprocessableEntity, "PROMPT_TOO_LONG", "รายละเอียดวิดีโอรวมยาวเกินขีดจำกัด กรุณาย่อข้อความแล้วลองใหม่", nil)

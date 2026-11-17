@@ -3,6 +3,7 @@ package middlewares
 import (
 	"strings"
 
+	"github.com/ez-gen/ez-gen-api/apps/utils"
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
@@ -58,10 +59,5 @@ func DevAuth(devUserID string) fiber.Handler {
 }
 
 func respondUnauthorized(c *fiber.Ctx) error {
-	rid, _ := c.Locals("requestID").(string)
-	return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-		"code":      "UNAUTHORIZED",
-		"message":   "กรุณาเข้าสู่ระบบเพื่อใช้งาน",
-		"requestId": rid,
-	})
+	return utils.Error(c, fiber.StatusUnauthorized, "UNAUTHORIZED", "กรุณาเข้าสู่ระบบเพื่อใช้งาน", nil)
 }

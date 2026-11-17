@@ -2,7 +2,7 @@
 
 Authoritative contract for the independent footage editor. Existing generation,
 scene and storyboard routes retain their current contracts. All routes below are
-under `/open/v1/video-editor`, require the existing JWT bearer middleware, and use
+under `/api/v1/video-editor`, require the existing JWT bearer middleware, and use
 standard `{data,requestId}` success / `{code,message,requestId}` error envelopes.
 Browser calls go through the Next proxy `/api/proxy/video-editor`.
 

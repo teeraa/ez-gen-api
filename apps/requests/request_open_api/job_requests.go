@@ -1,6 +1,6 @@
 package request_open_api
 
-// CreateJobRequest is the body for POST /open/v1/jobs.
+// CreateJobRequest is the body for POST /api/v1/jobs.
 type CreateJobRequest struct {
 	Prompt             string  `json:"prompt"             validate:"required,min=1,max=2000"`
 	Mode               string  `json:"mode"               validate:"required,oneof=text image_video image_image"`
@@ -22,7 +22,7 @@ type CreateJobRequest struct {
 	Draft bool `json:"draft"`
 }
 
-// ContinueSceneRequest is the body for POST /open/v1/dna/scenes/:id/continue.
+// ContinueSceneRequest is the body for POST /api/v1/dna/scenes/:id/continue.
 type ContinueSceneRequest struct {
 	Title           string  `json:"title"           validate:"max=200"`
 	ActionOverride  string  `json:"actionOverride"  validate:"required,min=1,max=2000"`

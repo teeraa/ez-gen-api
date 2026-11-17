@@ -1,4 +1,4 @@
-# Voice menu API (`/open/v1/voice`)
+# Voice menu API (`/api/v1/voice`)
 
 Text-to-speech for the web Voice menu (`/studio/voice`, tab "พากย์เสียง") using BytePlus
 `seed-audio-1.0` (`apps/services/seedaudio`). Results are saved per user (migration 037,

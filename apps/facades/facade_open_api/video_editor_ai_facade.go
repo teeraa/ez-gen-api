@@ -195,7 +195,16 @@ func (f *VideoEditorAIFacade) Create(ctx context.Context, project, user string, 
 		}
 	}
 	j := models.VideoEditorAIJob{UserID: p.UserID, ProjectID: p.ID, RequestID: uuid.MustParse(in.RequestID), RequestHash: hash, SourceRevision: in.Revision, Phase: "analysis", Status: "queued", Stage: "queued", Input: aiJSON(snapshot), Transcripts: aiJSON([]models.EditorAITranscript{}), Visuals: aiJSON([]models.EditorAIVisual{}), Concepts: aiJSON([]models.EditorAIConcept{}), Evidence: aiJSON([]models.EditorAIEvidence{}), Draft: datatypes.JSON("null"), RetryRequests: datatypes.JSON("[]"), AppliedProject: datatypes.JSON("null")}
+	// Charged per request ID before the job is queued; a replay keeps the original charge.
+	pointRef := user + ":" + in.RequestID
+	paid, e := chargePointsNew(ctx, user, pointFeatureEditorAnalysis, pointRef, pointPrices.EditorAnalysis)
+	if e != nil {
+		return dto.VideoEditorAIJobDTO{}, false, e
+	}
 	created, e := f.repo.Create(ctx, &j)
+	if paid && (e != nil || !created) {
+		refundPoints(ctx, user, pointFeatureEditorAnalysis, pointRef)
+	}
 	return aiDTO(&j), created, e
 }
 
@@ -463,9 +472,27 @@ func (f *VideoEditorAIFacade) Retry(ctx context.Context, id, user, request strin
 	if !f.Capabilities().Available {
 		return dto.VideoEditorAIJobDTO{}, editorai.ErrUnavailable
 	}
-	j, e := f.repo.Retry(ctx, id, user, request)
+	pointRef := user + ":" + request
+	paid, e := chargePointsNew(ctx, user, pointFeatureEditorAnalysis, pointRef, pointPrices.EditorAnalysis)
 	if e != nil {
 		return dto.VideoEditorAIJobDTO{}, e
 	}
+	j, e := f.repo.Retry(ctx, id, user, request)
+	if e != nil {
+		if paid {
+			refundPoints(ctx, user, pointFeatureEditorAnalysis, pointRef)
+		}
+		return dto.VideoEditorAIJobDTO{}, e
+	}
 	return aiDTO(j), nil
+}
+
+// aiJobPointRef names the charge for the job's current run: the latest retry request, or
+// the request that created it.
+func aiJobPointRef(j *models.VideoEditorAIJob) string {
+	var retries []string
+	if json.Unmarshal(j.RetryRequests, &retries) == nil && len(retries) > 0 {
+		return j.UserID.String() + ":" + retries[len(retries)-1]
+	}
+	return j.UserID.String() + ":" + j.RequestID.String()
 }

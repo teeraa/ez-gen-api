@@ -45,11 +45,14 @@ func TestProviderSubmissionDiagnosticSurvivesFacadeBoundary(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var diagnostic struct{ Code, Message string }
+			var diagnostic struct {
+				Message string
+				Payload struct{ ErrorCode string }
+			}
 			if err := json.Unmarshal(body, &diagnostic); err != nil {
 				t.Fatal(err)
 			}
-			if response.StatusCode != 502 || diagnostic.Code != "PROVIDER_ERROR" || failure.Code() != tc.wantCode || diagnostic.Message != failure.Message() {
+			if response.StatusCode != 502 || diagnostic.Payload.ErrorCode != "PROVIDER_ERROR" || failure.Code() != tc.wantCode || diagnostic.Message != failure.Message() {
 				t.Fatalf("response %d %s", response.StatusCode, body)
 			}
 			for _, private := range []string{"secret-key", "private-prompt", "signed-url", "private request"} {
@@ -72,7 +75,7 @@ func TestGenericProviderFailureRemainsSafe(t *testing.T) {
 	}
 	defer response.Body.Close()
 	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != 502 || !strings.Contains(string(body), `"code":"PROVIDER_ERROR"`) || strings.Contains(string(body), "secret-key") {
+	if response.StatusCode != 502 || !strings.Contains(string(body), `"errorCode":"PROVIDER_ERROR"`) || strings.Contains(string(body), "secret-key") {
 		t.Fatalf("response %d %s", response.StatusCode, body)
 	}
 }

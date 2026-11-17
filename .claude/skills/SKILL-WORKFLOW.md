@@ -94,7 +94,7 @@ Agents working in parallel must not edit the same file. Coordinate through Agent
 ## Data Flow: Single Generation Request
 
 ```
-POST /open/v1/jobs
+POST /api/v1/jobs
      │
      ▼ [add-api-endpoint]
 Handler: validate request → call facade
@@ -113,7 +113,7 @@ Poller: GetTask() every N seconds → TransitionStatus()
 PersistOutput(): download video_url → upload to storage → update job (succeeded)
      │
      ▼
-GET /open/v1/jobs/:id → storage.SignedURL() → return mediaUrl + expiresAt
+GET /api/v1/jobs/:id → storage.SignedURL() → return mediaUrl + expiresAt
 ```
 
 ---

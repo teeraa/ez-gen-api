@@ -58,6 +58,9 @@ func (h *VideoEditorHandler) RegisterRoutes(r fiber.Router) {
 	g.Get("/exports/:id/download", h.download)
 }
 func veHTTPError(c *fiber.Ctx, e error) error {
+	if r, ok := insufficientPoints(c, e); ok {
+		return r
+	}
 	status, code, message := 500, "INTERNAL_ERROR", "ระบบไม่สามารถดำเนินการได้ กรุณาลองใหม่"
 	switch {
 	case errors.Is(e, repo.ErrNotFound):

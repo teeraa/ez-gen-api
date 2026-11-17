@@ -78,13 +78,17 @@ func TestPipelineCreateStructuredInputErrors(t *testing.T) {
 			encoded, _ := json.Marshal(body)
 			status, raw := inputHTTP(t, app, encoded)
 			var out struct {
-				Code, Message, RequestID string
-				Details                  []pipelineValidationDetail
+				Message   string
+				RequestID string `json:"transactionCode"`
+				Payload   struct {
+					ErrorCode string
+					Details   []pipelineValidationDetail
+				}
 			}
 			if err := json.Unmarshal(raw, &out); err != nil {
 				t.Fatal(err)
 			}
-			if status != 400 || out.Code != "VALIDATION_ERROR" || out.RequestID != "fixture-request-id" || len(out.Details) != 1 || out.Details[0].Field != tc.field || out.Details[0].Reason != tc.reason || out.Details[0].Message == "" || out.Message != out.Details[0].Message || mock.calls != 0 {
+			if status != 400 || out.Payload.ErrorCode != "VALIDATION_ERROR" || out.RequestID != "fixture-request-id" || len(out.Payload.Details) != 1 || out.Payload.Details[0].Field != tc.field || out.Payload.Details[0].Reason != tc.reason || out.Payload.Details[0].Message == "" || out.Message != out.Payload.Details[0].Message || mock.calls != 0 {
 				t.Fatalf("unsafe or missing field response: %d %s calls%d", status, raw, mock.calls)
 			}
 			if bytes.Contains(raw, []byte("private-")) || bytes.Contains(raw, []byte("cannot unmarshal")) || bytes.Contains(raw, []byte(strings.Repeat("ก", 100))) {
@@ -100,7 +104,7 @@ func TestPipelineCreateMalformedInputAndUUIDVersion(t *testing.T) {
 		status, raw := inputHTTP(t, inputApp(mock), []byte(body))
 		var out struct{ Details []pipelineValidationDetail }
 		_ = json.Unmarshal(raw, &out)
-		if status != 400 || len(out.Details) != 1 || out.Details[0].Field != "body" || out.Details[0].Reason != "malformed_json" || mock.calls != 0 {
+		if status != 400 || len(out.Payload.Details) != 1 || out.Payload.Details[0].Field != "body" || out.Payload.Details[0].Reason != "malformed_json" || mock.calls != 0 {
 			t.Fatalf("malformed %q -> %d %s", body, status, raw)
 		}
 	}
@@ -150,7 +154,7 @@ func TestPipelineCreateMalformedInputAndUUIDVersion(t *testing.T) {
 	_, raw := inputHTTP(t, inputApp(mock), encoded)
 	var out struct{ Details []pipelineValidationDetail }
 	_ = json.Unmarshal(raw, &out)
-	if len(out.Details) != 8 {
+	if len(out.Payload.Details) != 8 {
 		t.Fatalf("detail bound missing %s", raw)
 	}
 }

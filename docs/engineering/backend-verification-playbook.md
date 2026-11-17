@@ -249,7 +249,7 @@ Manual spot-check:
 go run . &
 
 # Create job (requires auth token — TBD)
-curl -X POST http://localhost:8080/open/v1/jobs \
+curl -X POST http://localhost:8080/api/v1/jobs \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{"prompt":"test","mode":"text","model":"violet-motion-2","aspectRatio":"16:9","duration":5,"quality":"standard","enhancePrompt":false}'

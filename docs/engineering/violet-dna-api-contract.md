@@ -2,7 +2,7 @@
 
 > Date: 2026-10-12
 > Status: **Implemented**
-> Route group: `/open/v1/dna/` (VIOLET DNA) + `/open/v1/jobs/` (extended)
+> Route group: `/api/v1/dna/` (VIOLET DNA) + `/api/v1/jobs/` (extended)
 > Auth: All endpoints require `Authorization: Bearer <jwt-token>`
 
 ---
@@ -35,7 +35,7 @@ All endpoints follow the standard response envelope:
 
 ## Tags
 
-### GET /open/v1/dna/tags
+### GET /api/v1/dna/tags
 
 List all active tags, optionally filtered by category.
 
@@ -65,7 +65,7 @@ List all active tags, optionally filtered by category.
 
 ---
 
-### GET /open/v1/dna/tags/categories
+### GET /api/v1/dna/tags/categories
 
 List all supported tag categories.
 
@@ -99,7 +99,7 @@ List all supported tag categories.
 
 ## Character Profiles
 
-### POST /open/v1/dna/characters
+### POST /api/v1/dna/characters
 
 Create a new character profile.
 
@@ -161,7 +161,7 @@ snapshots preserve the version number at the time of submission.
 
 ---
 
-### GET /open/v1/dna/characters
+### GET /api/v1/dna/characters
 
 List the authenticated user's character profiles.
 
@@ -182,7 +182,7 @@ List the authenticated user's character profiles.
 
 ---
 
-### GET /open/v1/dna/characters/:id
+### GET /api/v1/dna/characters/:id
 
 Get a single character profile.
 
@@ -194,7 +194,7 @@ Get a single character profile.
 
 ---
 
-### PUT /open/v1/dna/characters/:id
+### PUT /api/v1/dna/characters/:id
 
 Update a character profile. All fields are optional (partial update).
 Each update increments `version`.
@@ -207,7 +207,7 @@ Each update increments `version`.
 
 ---
 
-### DELETE /open/v1/dna/characters/:id
+### DELETE /api/v1/dna/characters/:id
 
 Soft-delete a character profile.
 
@@ -217,7 +217,7 @@ Soft-delete a character profile.
 
 ## Style Profiles
 
-### POST /open/v1/dna/styles
+### POST /api/v1/dna/styles
 
 **Request body:**
 ```json
@@ -266,16 +266,16 @@ Soft-delete a character profile.
 }
 ```
 
-### GET /open/v1/dna/styles         — list (paginated)
-### GET /open/v1/dna/styles/:id     — get single
-### PUT /open/v1/dna/styles/:id     — update (partial)
-### DELETE /open/v1/dna/styles/:id  — soft-delete → 204
+### GET /api/v1/dna/styles         — list (paginated)
+### GET /api/v1/dna/styles/:id     — get single
+### PUT /api/v1/dna/styles/:id     — update (partial)
+### DELETE /api/v1/dna/styles/:id  — soft-delete → 204
 
 ---
 
 ## Scenes
 
-### POST /open/v1/dna/scenes
+### POST /api/v1/dna/scenes
 
 Create a scene that references character and style profiles.
 
@@ -360,14 +360,14 @@ to refresh them. `expiresAt` is `null` only for legacy rows still holding a prov
 `characters` is always an array (`[]` when the scene has none) and is sorted by `sortOrder`.
 `characterProfileId` equals `characters[0].id` (or `null`) and is kept for older clients.
 
-### GET /open/v1/dna/scenes         — list ordered by sceneOrder ASC
-### GET /open/v1/dna/scenes/:id     — get with preloaded profiles + tags
-### PUT /open/v1/dna/scenes/:id     — update (partial)
-### DELETE /open/v1/dna/scenes/:id  — soft-delete → 204
+### GET /api/v1/dna/scenes         — list ordered by sceneOrder ASC
+### GET /api/v1/dna/scenes/:id     — get with preloaded profiles + tags
+### PUT /api/v1/dna/scenes/:id     — update (partial)
+### DELETE /api/v1/dna/scenes/:id  — soft-delete → 204
 
 ---
 
-### PUT /open/v1/dna/scenes/:id/select-output/:jobId
+### PUT /api/v1/dna/scenes/:id/select-output/:jobId
 
 Mark a generation job as the selected output for this scene. The job must belong to the
 caller, otherwise **404 NOT_FOUND**.
@@ -384,7 +384,7 @@ caller, otherwise **404 NOT_FOUND**.
 
 ## Continue Scene
 
-### POST /open/v1/dna/scenes/:id/continue
+### POST /api/v1/dna/scenes/:id/continue
 
 Create a new scene as a sequel to the specified scene, then immediately
 submit a generation job for it.
@@ -418,7 +418,7 @@ The caller **overrides**:
 the system attempts to use its last-frame thumbnail as the `first_frame` reference
 image for the new generation, creating visual continuity between scenes.
 
-**Response — 201:** CreateJobResponseDTO (same as `POST /open/v1/jobs`)
+**Response — 201:** CreateJobResponseDTO (same as `POST /api/v1/jobs`)
 ```json
 {
   "data": {
@@ -444,7 +444,7 @@ image for the new generation, creating visual continuity between scenes.
 
 ## Generate for Scene
 
-### POST /open/v1/dna/scenes/:id/generate
+### POST /api/v1/dna/scenes/:id/generate
 
 Submit a generation job for an existing scene without creating a new scene.
 The scene's current characters (all of them, in order), style profile, and tags are read at
@@ -452,13 +452,13 @@ submission time and snapshotted into the job's `effectiveInputs`. Sending
 `characterProfileIds`/`characterProfileId` in the body overrides the scene's characters for
 this job only.
 
-**Request body:** same as `POST /open/v1/jobs`
+**Request body:** same as `POST /api/v1/jobs`
 
 ---
 
 ## Generation Jobs (Extended)
 
-### POST /open/v1/jobs
+### POST /api/v1/jobs
 
 Create a generation job. Extended to accept VIOLET DNA references.
 
@@ -505,7 +505,7 @@ the scene's characters. Explicitly requested characters must all belong to the c
 
 ---
 
-### GET /open/v1/jobs/:jobId
+### GET /api/v1/jobs/:jobId
 
 Get generation job status and result.
 
@@ -554,7 +554,7 @@ Get generation job status and result.
 
 ---
 
-### DELETE /open/v1/jobs/:jobId — Cancel Job
+### DELETE /api/v1/jobs/:jobId — Cancel Job
 
 **Response — 200:**
 ```json
@@ -643,7 +643,7 @@ after submission does NOT change historical job records.
    URL. The storage service abstraction is defined; implementation is deferred.
 
 3. **Upload validation.** Magic-byte file validation for uploads is not yet implemented.
-   The endpoint stub exists at `POST /open/v1/uploads` (referenced in the original contract).
+   The endpoint stub exists at `POST /api/v1/uploads` (referenced in the original contract).
 
 4. **Tag lookup by ID.** The Prompt Compiler's tag assembly currently accepts pre-resolved
    `models.DNATag` slices. A `TagRepository.FindByIDs` method is needed to load tags

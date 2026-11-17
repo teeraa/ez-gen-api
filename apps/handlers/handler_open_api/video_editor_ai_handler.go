@@ -129,6 +129,9 @@ func (h *VideoEditorAIHandler) RegisterRoutes(r fiber.Router) {
 	})
 }
 func aiHTTPError(c *fiber.Ctx, e error) error {
+	if r, ok := insufficientPoints(c, e); ok {
+		return r
+	}
 	status, code, message := 0, "", ""
 	var rate *editorai.RateError
 	switch {

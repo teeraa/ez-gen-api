@@ -115,7 +115,7 @@ func TestPipelineDraftToFinalHTTPActualJobFacadeIntegration(t *testing.T) {
 			t.Fatalf("%s %s: %d %s", method, path, status, raw)
 		}
 		var out struct {
-			Data dto.PipelineDTO `json:"data"`
+			Data dto.PipelineDTO `json:"payload"`
 		}
 		if err := json.Unmarshal(raw, &out); err != nil {
 			t.Fatal(err)
@@ -127,7 +127,7 @@ func TestPipelineDraftToFinalHTTPActualJobFacadeIntegration(t *testing.T) {
 		t.Fatalf("caps %d %s", status, raw)
 	}
 	var caps struct {
-		Data dto.PipelineCapabilitiesDTO `json:"data"`
+		Data dto.PipelineCapabilitiesDTO `json:"payload"`
 	}
 	if err := json.Unmarshal(raw, &caps); err != nil {
 		t.Fatal(err)

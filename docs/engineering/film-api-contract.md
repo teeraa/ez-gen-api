@@ -44,7 +44,7 @@ a live-action lead and pass user text through Director's style-word neutralizer.
 `generate_audio` when the model supports audio. Prompts are validated against the application
 video prompt budget before charging.
 
-## Routes (`/open/v1/film`)
+## Routes (`/api/v1/film`)
 
 | Method | Path | Body | Response |
 |---|---|---|---|

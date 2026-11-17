@@ -125,6 +125,9 @@ func (h *VideoEditorAIChatHandler) RegisterRoutes(r fiber.Router) {
 }
 
 func chatErrorBody(e error) (string, string) {
+	if _, ok := f.IsInsufficientPoints(e); ok {
+		return "INSUFFICIENT_POINTS", "พอยต์ไม่เพียงพอ กรุณาเติมพอยต์ก่อนลองใหม่"
+	}
 	switch {
 	case errors.Is(e, f.ErrAIChatBusy):
 		return "AI_CHAT_BUSY", "AI กำลังตอบข้อความก่อนหน้าอยู่ กรุณารอสักครู่"
@@ -135,6 +138,9 @@ func chatErrorBody(e error) (string, string) {
 }
 
 func chatHTTPError(c *fiber.Ctx, e error) error {
+	if r, ok := insufficientPoints(c, e); ok {
+		return r
+	}
 	switch {
 	case errors.Is(e, f.ErrAIChatInput):
 		return utils.Error(c, 400, "VALIDATION_ERROR", "ข้อความต้องมี 1–2000 ตัวอักษร", nil)

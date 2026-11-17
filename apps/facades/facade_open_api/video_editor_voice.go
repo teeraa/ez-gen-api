@@ -92,6 +92,18 @@ func (f *VideoEditorFacade) GenerateVoice(ctx context.Context, id, user string, 
 	if in.Speaker != "" {
 		req.References = []seedaudio.Reference{{Speaker: in.Speaker}}
 	}
+	// Charged per client upload ID; refunded unless this call adds a new asset.
+	pointRef := user + ":" + in.ClientUploadID
+	paid, e := chargePointsNew(ctx, user, pointFeatureEditorVoice, pointRef, pointPrices.Voice)
+	if e != nil {
+		return dto.VideoEditorVoiceDTO{}, false, e
+	}
+	added := false
+	defer func() {
+		if paid && !added {
+			refundPoints(ctx, user, pointFeatureEditorVoice, pointRef)
+		}
+	}()
 	out, e := f.voice.Generate(ctx, req)
 	if e != nil {
 		log.Printf("video_editor: voice project=%s failed: %v", id, e)
@@ -107,6 +119,7 @@ func (f *VideoEditorFacade) GenerateVoice(ctx context.Context, id, user string, 
 	if e != nil {
 		return dto.VideoEditorVoiceDTO{}, false, e
 	}
+	added = created
 	result := dto.VideoEditorVoiceDTO{Asset: asset, Sentences: []dto.VideoEditorVoiceSentence{}}
 	for _, s := range out.Sentences {
 		result.Sentences = append(result.Sentences, dto.VideoEditorVoiceSentence{Start: float64(s.StartMS) / 1000, End: float64(s.EndMS) / 1000, Text: s.Text})

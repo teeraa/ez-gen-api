@@ -17,7 +17,7 @@ func NewJobHandler(facade facade_open_api.JobFacade) *JobHandler {
 }
 
 // RegisterRoutes mounts job routes on the given router.
-// Expects the router to already be scoped to /open/v1.
+// Expects the router to already be scoped to /api/v1.
 func (h *JobHandler) RegisterRoutes(r fiber.Router) {
 	r.Post("/jobs", h.CreateJob)
 	r.Get("/jobs", h.ListJobs)
@@ -26,7 +26,7 @@ func (h *JobHandler) RegisterRoutes(r fiber.Router) {
 }
 
 // RegisterSceneRoutes mounts the Continue Scene route.
-// Called with the /open/v1/dna router.
+// Called with the /api/v1/dna router.
 func (h *JobHandler) RegisterSceneRoutes(r fiber.Router) {
 	r.Post("/scenes/:id/continue", h.ContinueScene)
 	r.Post("/scenes/:id/generate", h.GenerateForScene)

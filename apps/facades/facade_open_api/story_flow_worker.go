@@ -150,7 +150,7 @@ func (f *StoryFlowFacade) Tick(c context.Context) error {
 	case "story":
 		e = f.storyStep(c, p, &s, save)
 	case "shots":
-		e = f.shotsStep(c, &s, save)
+		e = f.shotsStep(c, p, &s, save)
 	case "storyboard":
 		e = f.storyboardStep(c, p, &s, save)
 	case "video":
@@ -178,6 +178,18 @@ func (f *StoryFlowFacade) storyStep(c context.Context, p *models.StoryFlowProjec
 		if e := save(false); e != nil {
 			return e
 		}
+		pointRef := uuid.NewString()
+		if e := chargePoints(c, p.UserID.String(), pointFeatureStoryImage, pointRef, pointPrices.Image); e != nil {
+			s.CharacterStatus = "failed"
+			storyPointsFailure(s, e)
+			return nil
+		}
+		paid := false
+		defer func() {
+			if !paid {
+				refundPoints(c, p.UserID.String(), pointFeatureStoryImage, pointRef)
+			}
+		}()
 		data, e := f.images.GenerateImage(c, modelark.ImageRequest{Model: s.ImageModel, Prompt: s.CharacterPrompt, Size: ImageSize(s.Input.AspectRatio)})
 		if e != nil {
 			if known, ok := storyDefinitiveImageError(e); ok {
@@ -206,6 +218,7 @@ func (f *StoryFlowFacade) storyStep(c context.Context, p *models.StoryFlowProjec
 			}
 		}
 		s.CharacterStatus = "succeeded"
+		paid = true
 		return nil
 	}
 	if s.AnalysisPrompt == "" {
@@ -229,8 +242,15 @@ func (f *StoryFlowFacade) storyStep(c context.Context, p *models.StoryFlowProjec
 	if e := save(false); e != nil {
 		return e
 	}
+	pointRef := uuid.NewString()
+	if e := chargePoints(c, p.UserID.String(), pointFeatureStoryAnalysis, pointRef, pointPrices.StoryAnalysis); e != nil {
+		s.AnalysisStatuses[s.Stage] = "failed"
+		storyPointsFailure(s, e)
+		return nil
+	}
 	text, e := f.analyzer.Analyze(c, s.AnalysisModel, s.AnalysisPrompt)
 	if e != nil {
+		refundPoints(c, p.UserID.String(), pointFeatureStoryAnalysis, pointRef)
 		storyAnalysisFailure(s, e)
 		return nil
 	}
@@ -241,6 +261,7 @@ func (f *StoryFlowFacade) storyStep(c context.Context, p *models.StoryFlowProjec
 		e = storyValidateScenes(s, out.Scenes)
 	}
 	if e != nil {
+		refundPoints(c, p.UserID.String(), pointFeatureStoryAnalysis, pointRef)
 		s.AnalysisStatuses[s.Stage] = "failed"
 		storyFailure(s, "ANALYSIS_INVALID_OUTPUT", "โมเดลส่งเนื้อเรื่องไม่ครบหรือรูปแบบไม่ถูกต้อง ยังไม่ได้บันทึกเป็นผลสำเร็จ กรุณาลองใหม่", true)
 		return nil
@@ -252,7 +273,7 @@ func (f *StoryFlowFacade) storyStep(c context.Context, p *models.StoryFlowProjec
 	s.AnalysisPrompt = ""
 	return nil
 }
-func (f *StoryFlowFacade) shotsStep(c context.Context, s *dto.StoryFlowSnapshot, save func(bool) error) error {
+func (f *StoryFlowFacade) shotsStep(c context.Context, p *models.StoryFlowProject, s *dto.StoryFlowSnapshot, save func(bool) error) error {
 	if s.AnalysisPrompt == "" {
 		s.AnalysisPrompt = storySnapshotPrompt(s, "shots")
 		if s.AnalysisPrompts == nil {
@@ -274,8 +295,15 @@ func (f *StoryFlowFacade) shotsStep(c context.Context, s *dto.StoryFlowSnapshot,
 	if e := save(false); e != nil {
 		return e
 	}
+	pointRef := uuid.NewString()
+	if e := chargePoints(c, p.UserID.String(), pointFeatureStoryAnalysis, pointRef, pointPrices.StoryAnalysis); e != nil {
+		s.AnalysisStatuses[s.Stage] = "failed"
+		storyPointsFailure(s, e)
+		return nil
+	}
 	text, e := f.analyzer.Analyze(c, s.AnalysisModel, s.AnalysisPrompt)
 	if e != nil {
+		refundPoints(c, p.UserID.String(), pointFeatureStoryAnalysis, pointRef)
 		storyAnalysisFailure(s, e)
 		return nil
 	}
@@ -284,6 +312,7 @@ func (f *StoryFlowFacade) shotsStep(c context.Context, s *dto.StoryFlowSnapshot,
 		e = storyValidateShots(s, &out)
 	}
 	if e != nil {
+		refundPoints(c, p.UserID.String(), pointFeatureStoryAnalysis, pointRef)
 		s.AnalysisStatuses[s.Stage] = "failed"
 		storyFailure(s, "ANALYSIS_INVALID_OUTPUT", "จำนวนหรือข้อมูล Shot ไม่ตรงกับที่กำหนด ยังไม่ได้สร้างภาพ กรุณาลองใหม่", true)
 		return nil
@@ -346,6 +375,17 @@ func (f *StoryFlowFacade) storyboardStep(c context.Context, p *models.StoryFlowP
 			if e := save(false); e != nil {
 				return e
 			}
+			pointRef := uuid.NewString()
+			if e := chargePoints(c, p.UserID.String(), pointFeatureStoryImage, pointRef, pointPrices.Image); e != nil {
+				storyShotPointsFailure(s, sh, "storyboard", e)
+				return nil
+			}
+			paid := false
+			defer func() {
+				if !paid {
+					refundPoints(c, p.UserID.String(), pointFeatureStoryImage, pointRef)
+				}
+			}()
 			data, e := f.images.GenerateImage(c, modelark.ImageRequest{Model: s.ImageModel, Prompt: sh.ImagePrompt, Size: ImageSize(s.Input.AspectRatio), ReferenceURL: reference})
 			if e != nil {
 				if known, ok := storyDefinitiveImageError(e); ok {
@@ -368,6 +408,7 @@ func (f *StoryFlowFacade) storyboardStep(c context.Context, p *models.StoryFlowP
 			}
 			sh.ImageKey = key
 			sh.ImageStatus = "succeeded"
+			paid = true
 			return nil
 		}
 	}
@@ -404,10 +445,17 @@ func (f *StoryFlowFacade) videoStep(c context.Context, p *models.StoryFlowProjec
 				if e = save(false); e != nil {
 					return e
 				}
+				// One charge per provider task; the ref is derivable later to refund a failed task.
+				pointRef := storyVideoPointRef(sh, len(sh.ProviderTaskHistory))
+				if e := chargePoints(c, p.UserID.String(), pointFeatureStoryVideo, pointRef, pointPrices.Video); e != nil {
+					storyShotPointsFailure(s, sh, "video", e)
+					return nil
+				}
 				id, e := f.video.CreateTask(c, modelark.CreateTaskRequest{Model: s.Model.ProviderModelID, Content: []modelark.ContentItem{{Type: modelark.ContentTypeText, Text: sh.VideoPrompt}, {Type: modelark.ContentTypeImageURL, URL: image, Role: modelark.RoleFirstFrame}}, Ratio: s.Input.AspectRatio, DurationSeconds: int64(sh.DurationSeconds), Resolution: modelark.QualityToResolution(s.Input.Quality)})
 				if e != nil {
 					d := modelark.VideoFailureDiagnostic(e)
 					if d.HTTPStatus >= 400 && d.HTTPStatus < 500 {
+						refundPoints(c, p.UserID.String(), pointFeatureStoryVideo, pointRef)
 						var ve *modelark.VideoError
 						if errors.As(e, &ve) {
 							storyShotFailure(s, sh, "video", ve.Code, ve.Message, true)
@@ -447,6 +495,9 @@ func (f *StoryFlowFacade) videoStep(c context.Context, p *models.StoryFlowProjec
 			case modelark.ProviderStatusQueued, modelark.ProviderStatusRunning:
 				return nil
 			case modelark.ProviderStatusFailed, modelark.ProviderStatusCancelled:
+				if n := len(sh.ProviderTaskHistory); n > 0 {
+					refundPoints(c, p.UserID.String(), pointFeatureStoryVideo, storyVideoPointRef(sh, n-1))
+				}
 				sh.ProviderTaskID = ""
 				storyShotFailure(s, sh, "video", "VIDEO_GENERATION_FAILED", "บริการสร้างวิดีโอไม่สำเร็จหรือปฏิเสธเนื้อหาของ Shot นี้", true)
 				return nil
@@ -615,4 +666,32 @@ func storyImageExtension(data []byte) string {
 		return "jpg"
 	}
 	return "png"
+}
+
+// storyVideoPointRef names the charge for a shot's attempt-th provider task.
+func storyVideoPointRef(sh *models.StoryFlowShot, attempt int) string {
+	return fmt.Sprintf("%s:%d", sh.ID, attempt)
+}
+
+// storyPointsFailure records a failed charge on the project; other charge errors leave the
+// step for an operator like any uncertain submission.
+func storyPointsFailure(s *dto.StoryFlowSnapshot, e error) {
+	if _, ok := IsInsufficientPoints(e); ok {
+		storyFailure(s, "INSUFFICIENT_POINTS", insufficientPointsMessage, true)
+		return
+	}
+	storyAttention(s)
+}
+
+func storyShotPointsFailure(s *dto.StoryFlowSnapshot, sh *models.StoryFlowShot, stage string, e error) {
+	if _, ok := IsInsufficientPoints(e); ok {
+		storyShotFailure(s, sh, stage, "INSUFFICIENT_POINTS", insufficientPointsMessage, true)
+		return
+	}
+	if stage == "storyboard" {
+		sh.ImageStatus = "needs_attention"
+	} else {
+		sh.VideoStatus = "needs_attention"
+	}
+	storyAttention(s)
 }

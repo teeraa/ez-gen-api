@@ -53,11 +53,11 @@ func TestDirectorBrowserFixture(t *testing.T) {
 	var shutdownOnce sync.Once
 	d.fund(5000)
 	d.analyzer.reply = directorBrowserPlanner
-	d.app.Get("/open/v1/auth/me", func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{"data": fiber.Map{"id": d.user, "displayName": "Director fixture", "email": "fixture@example.invalid", "plan": "free", "role": "user"}})
+	d.app.Get("/api/v1/auth/me", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{"payload": fiber.Map{"id": d.user, "displayName": "Director fixture", "email": "fixture@example.invalid", "plan": "free", "role": "user"}})
 	})
-	d.app.Get("/open/v1/assets", func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{"data": fiber.Map{"items": []any{}, "total": 0, "page": 1, "limit": 50}})
+	d.app.Get("/api/v1/assets", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{"payload": fiber.Map{"items": []any{}, "total": 0, "page": 1, "limit": 50}})
 	})
 	d.app.Get("/__fixture/health", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"ready": true, "providers": "fake", "persistence": "isolated-postgres"})

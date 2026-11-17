@@ -21,8 +21,8 @@ func (d *directorFixture) data(method, path string, body any, want int, out any)
 		return
 	}
 	var env struct {
-		Data      json.RawMessage `json:"data"`
-		RequestID string          `json:"requestId"`
+		Data      json.RawMessage `json:"payload"`
+		RequestID string          `json:"transactionCode"`
 	}
 	if err := json.Unmarshal(b, &env); err != nil || env.RequestID == "" {
 		d.t.Fatalf("envelope: %v %s", err, b)
@@ -90,7 +90,7 @@ func TestDirectorPostgresSeriesEpisodes(t *testing.T) {
 			defer wg.Done()
 			status, b, _ := d.http("POST", base+"/episodes", map[string]any{"idempotencyKey": uuid.NewString()}, nil)
 			var out struct {
-				Data dto.DirectorProject `json:"data"`
+				Data dto.DirectorProject `json:"payload"`
 			}
 			if status != 201 || json.Unmarshal(b, &out) != nil || out.Data.EpisodeNumber == nil {
 				errs <- fmt.Sprintf("%d %s", status, b)
@@ -139,7 +139,7 @@ func TestDirectorPostgresSeriesEpisodes(t *testing.T) {
 	raw := map[string]any{}
 	status, b, _ := d.http("GET", "/projects/"+standalone.ID, nil, nil)
 	if status != 200 || json.Unmarshal(b, &struct {
-		Data *map[string]any `json:"data"`
+		Data *map[string]any `json:"payload"`
 	}{&raw}) != nil {
 		t.Fatalf("standalone get %d %s", status, b)
 	}

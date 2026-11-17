@@ -221,7 +221,7 @@ func newDirectorFixtureWith(t *testing.T, video modelark.Client, fetcher directo
 		c.Locals("requestID", "director-fixture")
 		return c.Next()
 	})
-	handler.NewDirectorHandler(f, 1000).RegisterRoutes(app.Group("/open/v1"))
+	handler.NewDirectorHandler(f, 1000).RegisterRoutes(app.Group("/api/v1"))
 	return &directorFixture{t, db, store, f, app, user, media, analyzer}
 }
 func (d *directorFixture) http(method, path string, body any, headers map[string]string) (int, []byte, http.Header) {
@@ -234,7 +234,7 @@ func (d *directorFixture) http(method, path string, body any, headers map[string
 			d.t.Fatal(err)
 		}
 	}
-	r := httptest.NewRequest(method, "/open/v1/director"+path, bytes.NewReader(data))
+	r := httptest.NewRequest(method, "/api/v1/director"+path, bytes.NewReader(data))
 	r.Header.Set("Content-Type", "application/json")
 	for k, v := range headers {
 		r.Header.Set(k, v)
@@ -257,7 +257,7 @@ func (d *directorFixture) project(method, path string, body any) dto.DirectorPro
 		d.t.Fatalf("%s %s: %d %s", method, path, status, b)
 	}
 	var out struct {
-		Data dto.DirectorProject `json:"data"`
+		Data dto.DirectorProject `json:"payload"`
 	}
 	if err := json.Unmarshal(b, &out); err != nil {
 		d.t.Fatal(err)
@@ -271,10 +271,12 @@ func (d *directorFixture) wantError(method, path string, body any, status int, c
 	d.t.Helper()
 	got, b, _ := d.http(method, path, body, nil)
 	var out struct {
-		Code string `json:"code"`
+		Payload struct {
+			Code string `json:"errorCode"`
+		} `json:"payload"`
 	}
 	_ = json.Unmarshal(b, &out)
-	if got != status || out.Code != code {
+	if got != status || out.Payload.Code != code {
 		d.t.Fatalf("%s %s: want %d %s got %d %s", method, path, status, code, got, b)
 	}
 }
@@ -591,22 +593,24 @@ func TestDirectorPostgresHTTPValidationAndSummary(t *testing.T) {
 	d.wantError("PATCH", path, map[string]any{"revision": p.Revision, "step": "plot"}, 409, "DIRECTOR_STATE_CONFLICT")
 	status, b, _ := d.http("PATCH", path, map[string]any{"revision": p.Revision, "name": strings.Repeat("ก", 81)}, nil)
 	var out struct {
-		Code    string `json:"code"`
-		Details []struct {
-			Field string `json:"field"`
-		} `json:"details"`
+		Payload struct {
+			Code    string `json:"errorCode"`
+			Details []struct {
+				Field string `json:"field"`
+			} `json:"details"`
+		} `json:"payload"`
 	}
 	if err := json.Unmarshal(b, &out); err != nil {
 		t.Fatal(err)
 	}
-	if status != 400 || out.Code != "VALIDATION_ERROR" || len(out.Details) != 1 || out.Details[0].Field != "name" {
+	if status != 400 || out.Payload.Code != "VALIDATION_ERROR" || len(out.Payload.Details) != 1 || out.Payload.Details[0].Field != "name" {
 		t.Fatalf("field validation: %d %s", status, b)
 	}
 	d.wantError("PATCH", path, map[string]any{"revision": p.Revision, "name": "a" + strings.Repeat(" ", 81)}, 400, "VALIDATION_ERROR")
 	d.wantError("GET", "/projects?limit=51", nil, 400, "VALIDATION_ERROR")
 	status, b, _ = d.http("GET", "/projects?search="+url.QueryEscape("การเดินทาง"), nil, nil)
 	var list struct {
-		Data dto.DirectorList `json:"data"`
+		Data dto.DirectorList `json:"payload"`
 	}
 	if err := json.Unmarshal(b, &list); err != nil {
 		t.Fatal(err)
@@ -643,7 +647,7 @@ func TestDirectorPostgresConcurrentAdmissionChargesOnce(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		r := <-results
 		var out struct {
-			Data dto.DirectorProject `json:"data"`
+			Data dto.DirectorProject `json:"payload"`
 		}
 		if err := json.Unmarshal(r.body, &out); err != nil {
 			t.Fatal(err)

@@ -15,14 +15,14 @@ func NewShareHandler(facade facade_open_api.ShareFacade) *ShareHandler {
 	return &ShareHandler{facade: facade}
 }
 
-// RegisterRoutes mounts owner routes on the authenticated /open/v1 router.
+// RegisterRoutes mounts owner routes on the authenticated /api/v1 router.
 func (h *ShareHandler) RegisterRoutes(r fiber.Router) {
 	r.Post("/jobs/:jobId/shares", h.CreateShare)
 	r.Get("/jobs/:jobId/download", h.GetDownloadURL)
 	r.Delete("/shares/:shareId", h.RevokeShare)
 }
 
-// RegisterPublicRoutes mounts unauthenticated routes on the /public/v1 router.
+// RegisterPublicRoutes mounts unauthenticated routes on the /api/v1/public router.
 func (h *ShareHandler) RegisterPublicRoutes(r fiber.Router) {
 	r.Get("/shares/:token", h.GetPublicShare)
 }

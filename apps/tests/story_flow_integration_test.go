@@ -323,7 +323,7 @@ func sfNew(t *testing.T, store interface {
 	f := facade.NewStoryFlowFacade(store, assets, registry, media, analysis, video, media, media, merge, facade.StoryFlowOptions{AnalysisModel: "analysis-fixture", ImageModel: "image-fixture", Enabled: true, ExportAvailable: true, OwnedMediaFetcher: media})
 	user := uuid.NewString()
 	app := fiber.New()
-	g := app.Group("/open/v1", func(c *fiber.Ctx) error {
+	g := app.Group("/api/v1", func(c *fiber.Ctx) error {
 		u := c.Get("X-Fixture-User")
 		if u == "" {
 			u = user
@@ -341,7 +341,7 @@ func (sf *sfFixture) http(t *testing.T, method, path string, body any, user stri
 	if body != nil {
 		data, _ = json.Marshal(body)
 	}
-	r := httptest.NewRequest(method, "/open/v1/story-flow"+path, bytes.NewReader(data))
+	r := httptest.NewRequest(method, "/api/v1/story-flow"+path, bytes.NewReader(data))
 	r.Header.Set("Content-Type", "application/json")
 	if user != "" {
 		r.Header.Set("X-Fixture-User", user)
@@ -361,7 +361,7 @@ func (sf *sfFixture) project(t *testing.T, method, path string, body any) *dto.S
 		t.Fatalf("%s %s status=%d %s", method, path, status, b)
 	}
 	var env struct {
-		Data dto.StoryFlowProjectDTO `json:"data"`
+		Data dto.StoryFlowProjectDTO `json:"payload"`
 	}
 	if e := json.Unmarshal(b, &env); e != nil {
 		t.Fatal(e)

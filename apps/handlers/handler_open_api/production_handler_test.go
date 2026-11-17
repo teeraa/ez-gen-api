@@ -84,7 +84,7 @@ func TestProjectErrorsProduceSafeDiagnostic(t *testing.T) {
 				}
 				defer response.Body.Close()
 				body, _ := io.ReadAll(response.Body)
-				if response.StatusCode != 500 || !bytes.Contains(body, []byte(`"code":"INTERNAL_ERROR"`)) {
+				if response.StatusCode != 500 || !bytes.Contains(body, []byte(`"errorCode":"INTERNAL_ERROR"`)) {
 					t.Fatalf("response %d %s", response.StatusCode, body)
 				}
 				operation := "projects.list"

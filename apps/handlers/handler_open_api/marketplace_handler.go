@@ -25,7 +25,7 @@ func NewMarketplaceHandler(facade *facade_open_api.MarketplaceFacade, aiRatePerM
 	return &MarketplaceHandler{facade: facade, aiRate: aiRatePerMinute}
 }
 
-// RegisterRoutes mounts on the authenticated /open/v1 router.
+// RegisterRoutes mounts on the authenticated /api/v1 router.
 func (h *MarketplaceHandler) RegisterRoutes(r fiber.Router) {
 	g := r.Group("/marketplace")
 	// Suggestions call the text model synchronously and are free of charge, so they get their own per-user limit.
@@ -60,6 +60,9 @@ func (h *MarketplaceHandler) RegisterRoutes(r fiber.Router) {
 }
 
 func marketplaceError(c *fiber.Ctx, err error) error {
+	if r, ok := insufficientPoints(c, err); ok {
+		return r
+	}
 	switch {
 	case errors.Is(err, facade_open_api.ErrMarketplaceLimit):
 		return utils.Error(c, fiber.StatusConflict, "MARKETPLACE_LIMIT_REACHED", "จำนวนรายการครบขีดจำกัดแล้ว กรุณาลบรายการที่ไม่ใช้ก่อน", nil)

@@ -1,6 +1,6 @@
 # Prompt library & Skills API (CRUD)
 
-Menus: `/studio/prompts` and `/studio/skills` in ez-gen-web. Group: Open API (`/open/v1`, user JWT).
+Menus: `/studio/prompts` and `/studio/skills` in ez-gen-web. Group: Open API (`/api/v1`, user JWT).
 Migration: `033_prompt_library_and_skills.sql` (tables `prompt_templates`, `prompt_bookmarks`, `skills`, plus built-in seed rows).
 
 Built-in rows have `user_id IS NULL`, are visible to every user, and are read-only (`403 BUILT_IN_READ_ONLY`).

@@ -32,7 +32,7 @@
 
 ## 2. ข้อตกลงทั่วไป
 
-- **Base path:** `/open/v1/director`, เรียกผ่าน Next proxy `/api/proxy/director/...`
+- **Base path:** `/api/v1/director`, เรียกผ่าน Next proxy `/api/proxy/director/...`
 - **Auth:** JWT เดิม (cookie `ezgen_session` → proxy ใส่ `Authorization: Bearer`) โปรเจกต์เป็นของผู้ใช้คนเดียว ถ้าเป็นโปรเจกต์ของคนอื่นให้ตอบ `404 PROJECT_NOT_FOUND` ไม่ใช่ 403
 - **Envelope:** สำเร็จ `{ "data": ..., "requestId": "..." }` / ผิดพลาด `{ code, message, details?, requestId }`
 - **ID:** UUID ของแอปทั้งหมด ห้ามส่ง provider task ID หรือ storage key ออกมา
@@ -309,8 +309,8 @@ UI แสดงแถว "อ้างอิงโทนภาพ: ภาพป�
 
 ### ตัวละคร (แผงขวาขั้นไอเดีย)
 **ไม่มี endpoint ใหม่** ใช้ของ Character Studio เดิม
-- ลิสต์: `GET /open/v1/assets?type=character&page=1&limit=50`
-- สร้างตัวละครใหม่จาก modal: `POST /open/v1/image-jobs` `{ category: "character", prompt, aspectRatio: "3:4", designFormat: "full_body", idempotencyKey }` แล้ว poll `GET /jobs/:jobId` → เมื่อสำเร็จเรียก `POST /open/v1/assets` เพื่อบันทึก จากนั้นเพิ่ม id ลง `idea.characterAssetIds`
+- ลิสต์: `GET /api/v1/assets?type=character&page=1&limit=50`
+- สร้างตัวละครใหม่จาก modal: `POST /api/v1/image-jobs` `{ category: "character", prompt, aspectRatio: "3:4", designFormat: "full_body", idempotencyKey }` แล้ว poll `GET /jobs/:jobId` → เมื่อสำเร็จเรียก `POST /api/v1/assets` เพื่อบันทึก จากนั้นเพิ่ม id ลง `idea.characterAssetIds`
 
 ---
 
@@ -484,14 +484,14 @@ Worker: ใช้กฎเดียวกับ Story Flow คือ lease ใ�
 
 **สร้างโปรเจกต์**
 ```http
-POST /open/v1/director/projects
+POST /api/v1/director/projects
 { "name": "ตำนานอัศวินแห่งรุ่งอรุณ", "aspectRatio": "16:9", "style": "cinematic", "resolution": "1080p",
   "idempotencyKey": "5b0f…" }
 ```
 
 **สร้างภาพปก → poll**
 ```http
-POST /open/v1/director/projects/9c1e…/cover
+POST /api/v1/director/projects/9c1e…/cover
 { "revision": 4, "idempotencyKey": "a71d…" }
 
 → 200 { "data": { "id": "9c1e…", "revision": 4,
@@ -691,7 +691,7 @@ storyboard, shots, video, export, PATCH, DELETE) works unchanged on an episode.
 Migration: `migrations/030_director_series.sql` (`director_series`,
 `director_series_receipts`, `director_projects.series_id/episode_number/episode_title`,
 unique `(series_id, episode_number)` among live rows). All routes are under
-`/open/v1/director`, JWT, user-scoped, envelope `{data, requestId}`.
+`/api/v1/director`, JWT, user-scoped, envelope `{data, requestId}`.
 
 ```ts
 interface DirectorSeries {

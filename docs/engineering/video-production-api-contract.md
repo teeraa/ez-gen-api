@@ -1,6 +1,6 @@
 # Video production API contract
 
-All paths below are relative to `/open/v1`; JWT required. Existing `{data:...}` success and `{code,message,details?,requestId}` error envelopes apply. Owner mismatch is 404. All timestamps RFC3339. No provider credits are consumed by planning/edit/export APIs.
+All paths below are relative to `/api/v1`; JWT required. Existing `{data:...}` success and `{code,message,details?,requestId}` error envelopes apply. Owner mismatch is 404. All timestamps RFC3339. No provider credits are consumed by planning/edit/export APIs.
 
 ## Projects
 

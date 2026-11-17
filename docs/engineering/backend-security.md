@@ -112,7 +112,7 @@ Validation errors return HTTP 400 with `code: VALIDATION_ERROR` and a `details` 
 
 ### 4.2 File Upload Validation
 
-For `POST /open/v1/uploads`:
+For `POST /api/v1/uploads`:
 1. Check `Content-Type` header (reject non-multipart).
 2. Enforce 8 MB file size limit at the Fiber body limit middleware level.
 3. Read the first 512 bytes and validate magic bytes:
@@ -139,8 +139,8 @@ Fiber's built-in rate limiter or a custom in-memory store.
 
 | Endpoint group | Limit | Window |
 |---|---|---|
-| POST /open/v1/jobs | 10 requests | 1 minute |
-| POST /open/v1/uploads | 20 requests | 1 hour |
+| POST /api/v1/jobs | 10 requests | 1 minute |
+| POST /api/v1/uploads | 20 requests | 1 hour |
 | All other | 100 requests | 1 minute |
 | Concurrent jobs | 3 per user | Checked at job creation |
 

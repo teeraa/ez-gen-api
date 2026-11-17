@@ -28,7 +28,7 @@ func NewVoiceHandler(facade *f.VoiceFacade, ratePerMinute int) *VoiceHandler {
 	return &VoiceHandler{facade: facade, rate: ratePerMinute, inFlight: map[string]int{}}
 }
 
-// RegisterRoutes mounts on the authenticated /open/v1 router.
+// RegisterRoutes mounts on the authenticated /api/v1 router.
 func (h *VoiceHandler) RegisterRoutes(r fiber.Router) {
 	g := r.Group("/voice")
 	// Each generation is a paid provider call, so it gets its own per-user limit.
@@ -47,6 +47,9 @@ func (h *VoiceHandler) RegisterRoutes(r fiber.Router) {
 }
 
 func voiceError(c *fiber.Ctx, e error) error {
+	if r, ok := insufficientPoints(c, e); ok {
+		return r
+	}
 	switch {
 	case errors.Is(e, f.ErrValidation):
 		return utils.Error(c, fiber.StatusUnprocessableEntity, "VALIDATION_ERROR", "ข้อมูลไม่ถูกต้อง กรุณาตรวจข้อความ เสียง ความเร็ว และระดับเสียง", nil)

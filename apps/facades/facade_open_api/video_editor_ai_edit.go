@@ -839,5 +839,14 @@ func (f *VideoEditorAIFacade) PreviewEdit(ctx context.Context, project, user str
 		return dto.VideoEditorAIEditPreviewDTO{}, err
 	}
 	defer release()
-	return previewAIEdit(ctx, f.provider, p, assets, instruction, f.editor.imageReady(ctx), func() error { return f.edits.charge(user) })
+	// One charge per preview; refunded when the model gives no usable edit.
+	pointRef := uuid.NewString()
+	if err := chargePoints(ctx, user, pointFeatureEditorEdit, pointRef, pointPrices.EditorEdit); err != nil {
+		return dto.VideoEditorAIEditPreviewDTO{}, err
+	}
+	out, err := previewAIEdit(ctx, f.provider, p, assets, instruction, f.editor.imageReady(ctx), func() error { return f.edits.charge(user) })
+	if err != nil {
+		refundPoints(ctx, user, pointFeatureEditorEdit, pointRef)
+	}
+	return out, err
 }

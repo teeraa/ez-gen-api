@@ -1,6 +1,6 @@
 # Story Flow API (additive, isolated)
 
-Base `/open/v1/story-flow`, existing JWT and `{data,requestId}` envelope.
+Base `/api/v1/story-flow`, existing JWT and `{data,requestId}` envelope.
 No production migration is run. Requires migration020. Sources are immutable after
 create: start a new project to change inputs; revision is1 throughout this version.
 Old projects/scenes/jobs/pipelines/exports are never written by this domain.

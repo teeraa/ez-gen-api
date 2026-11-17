@@ -295,8 +295,14 @@ func (f *VideoEditorAIChatFacade) Send(ctx context.Context, project, user string
 	if e != nil {
 		return e
 	}
+	// Each message costs a flat price, charged before the model is called.
+	pointRef := uuid.NewString()
+	if e = chargePoints(ctx, user, pointFeatureChat, pointRef, pointPrices.ChatMessage); e != nil {
+		return e
+	}
 	userID, projectID := uuid.MustParse(user), uuid.MustParse(project)
 	if e = f.repo.Create(ctx, &models.VideoEditorAIChatMessage{UserID: userID, ProjectID: projectID, Role: "user", Content: text, Meta: datatypes.JSON("{}")}); e != nil {
+		refundPoints(ctx, user, pointFeatureChat, pointRef)
 		return e
 	}
 	s := newAIChatSession(ctx, f, p, user, assets)
@@ -321,6 +327,10 @@ func (f *VideoEditorAIChatFacade) Send(ctx context.Context, project, user string
 	meta.JobID = s.jobID
 	if proposal := s.proposal(final); proposal != nil {
 		meta.Proposal = proposal
+	}
+	if failure != nil && final == "" && meta.Proposal == nil && s.jobID == "" {
+		// The model gave nothing the user can use; the message is not charged.
+		refundPoints(ctx, user, pointFeatureChat, pointRef)
 	}
 	if final == "" {
 		final = aiChatFallbackText(failure, meta.Proposal != nil, s.jobID != "")

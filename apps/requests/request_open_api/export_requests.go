@@ -2,7 +2,7 @@ package request_open_api
 
 import "github.com/ez-gen/ez-gen-api/apps/models"
 
-// CreateExportRequest is the body for POST /open/v1/exports.
+// CreateExportRequest is the body for POST /api/v1/exports.
 // Either sceneIds or clips must resolve to 2–20 scenes; clips supersedes sceneIds.
 type CreateExportRequest struct {
 	ProjectID      *string              `json:"projectId" validate:"omitempty,uuid4"`

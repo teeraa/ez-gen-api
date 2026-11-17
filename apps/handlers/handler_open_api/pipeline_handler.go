@@ -82,6 +82,9 @@ type pipelineValidationDetail struct {
 }
 
 func pipelineError(c *fiber.Ctx, e error) error {
+	if r, ok := insufficientPoints(c, e); ok {
+		return r
+	}
 	if errors.Is(e, f.ErrDraftExpired) {
 		return utils.Error(c, 409, "DRAFT_EXPIRED", "ฉบับร่างหมดอายุ กรุณาสร้างวิดีโอใหม่", nil)
 	}

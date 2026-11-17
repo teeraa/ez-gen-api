@@ -66,13 +66,15 @@ func TestCharacterReferenceUnavailableHasDedicatedSafe503(t *testing.T) {
 	}
 	defer response.Body.Close()
 	var body struct {
-		Code    string `json:"code"`
 		Message string `json:"message"`
+		Payload struct {
+			ErrorCode string `json:"errorCode"`
+		} `json:"payload"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	if response.StatusCode != 503 || body.Code != "CHARACTER_REFERENCE_UNAVAILABLE" || !strings.Contains(body.Message, "ข้อความอย่างเดียว") {
+	if response.StatusCode != 503 || body.Payload.ErrorCode != "CHARACTER_REFERENCE_UNAVAILABLE" || !strings.Contains(body.Message, "ข้อความอย่างเดียว") {
 		t.Fatalf("wrong unavailable response: %d %+v", response.StatusCode, body)
 	}
 }

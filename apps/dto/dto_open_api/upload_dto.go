@@ -1,6 +1,6 @@
 package dto_open_api
 
-// UploadDTO is the response for POST /open/v1/uploads.
+// UploadDTO is the response for POST /api/v1/uploads.
 type UploadDTO struct {
 	UploadID  string `json:"uploadId"`
 	MimeType  string `json:"mimeType"`

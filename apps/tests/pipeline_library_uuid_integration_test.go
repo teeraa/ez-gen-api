@@ -50,7 +50,7 @@ func TestPipelineGeneratedUUIDv5CharacterReusableThroughHTTP(t *testing.T) {
 		t.Fatalf("text pipeline %d %s", status, raw)
 	}
 	var out struct {
-		Data dto.PipelineDTO `json:"data"`
+		Data dto.PipelineDTO `json:"payload"`
 	}
 	if err = json.Unmarshal(raw, &out); err != nil {
 		t.Fatal(err)

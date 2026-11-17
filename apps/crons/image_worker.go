@@ -63,7 +63,11 @@ func (w *ImageWorker) RunOnce(parent context.Context) error {
 	c, cancel := context.WithTimeout(parent, 5*time.Minute)
 	defer cancel()
 	fail := func(code, msg string) error {
-		return w.repo.FinishImage(parent, j.ID.String(), models.JobStatusFailed, map[string]any{"failure_code": code, "failure_message": msg})
+		if e := w.repo.FinishImage(parent, j.ID.String(), models.JobStatusFailed, map[string]any{"failure_code": code, "failure_message": msg}); e != nil {
+			return e
+		}
+		facade.RefundImageJob(parent, j)
+		return nil
 	}
 	sizes := map[string]string{"1:1": "2048x2048", "3:4": "1728x2304", "4:3": "2304x1728", "16:9": "2560x1440", "9:16": "1440x2560"}
 	var snapshot facade.CharacterReferenceSnapshot

@@ -55,7 +55,7 @@ type JobError struct {
 	Message string `json:"message"`
 }
 
-// CreateJobResponseDTO is returned by POST /open/v1/jobs.
+// CreateJobResponseDTO is returned by POST /api/v1/jobs.
 type CreateJobResponseDTO struct {
 	JobID            string `json:"jobId"`
 	Status           string `json:"status"`
@@ -63,7 +63,7 @@ type CreateJobResponseDTO struct {
 	CreatedAt        string `json:"createdAt"`
 }
 
-// CancelJobResponseDTO is returned by DELETE /open/v1/jobs/:jobId.
+// CancelJobResponseDTO is returned by DELETE /api/v1/jobs/:jobId.
 type CancelJobResponseDTO struct {
 	JobID  string `json:"jobId"`
 	Status string `json:"status"`

@@ -6,9 +6,9 @@ signed URL generation for client delivery.
 
 ## When to Invoke
 
-- Implementing `POST /open/v1/uploads` (reference image upload)
+- Implementing `POST /api/v1/uploads` (reference image upload)
 - Implementing the output media download step after a job succeeds
-- Implementing `GET /open/v1/projects/:id` (generate signed URL for response)
+- Implementing `GET /api/v1/projects/:id` (generate signed URL for response)
 - Adding a new object storage provider
 - Debugging expired media URLs in production
 
@@ -19,7 +19,7 @@ signed URL generation for client delivery.
 ### Flow A — Reference Image Upload (before generation)
 
 ```
-Client → POST /open/v1/uploads (multipart) → validate → store in S3/R2/TOS
+Client → POST /api/v1/uploads (multipart) → validate → store in S3/R2/TOS
                                            → return uploadId + expiresAt (24h)
                                            → store record in uploads table
 ```

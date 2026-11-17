@@ -2,7 +2,7 @@
 
 Scope: authentication → character image generation → reusable personal Asset Library.
 Projects, planning, scenes, and export remain existing legacy features and are not
-part of this delivery. All routes below are `/open/v1`; standard `{data,requestId}`
+part of this delivery. All routes below are `/api/v1`; standard `{data,requestId}`
 success and `{code,message,requestId}` error envelopes. All except register/login
 require `Authorization: Bearer <HS256 JWT>` issued by this API. Missing/expired
 credentials return 401. Foreign/missing owned resources both return 404.

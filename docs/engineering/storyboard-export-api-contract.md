@@ -20,14 +20,14 @@ captions. Processing is asynchronous: create an export, then poll its status unt
 reaches a terminal state, then fetch a signed download URL.
 
 ```
-1. POST /open/v1/uploads            (optional) upload an audio file → uploadId
-2. POST /open/v1/exports            queue the export  → exportId (status: queued)
-3. GET  /open/v1/exports/:exportId  poll until status = succeeded | failed
-4. GET  /open/v1/exports/:exportId/download   → short-lived signed URL
+1. POST /api/v1/uploads            (optional) upload an audio file → uploadId
+2. POST /api/v1/exports            queue the export  → exportId (status: queued)
+3. GET  /api/v1/exports/:exportId  poll until status = succeeded | failed
+4. GET  /api/v1/exports/:exportId/download   → short-lived signed URL
 ```
 
 A scene is eligible for export only if it has a **selected job** whose status is
-`succeeded` with a stored video output. (Set via `PUT /open/v1/dna/scenes/:id/select-output/:jobId`.)
+`succeeded` with a stored video output. (Set via `PUT /api/v1/dna/scenes/:id/select-output/:jobId`.)
 
 ---
 
@@ -47,7 +47,7 @@ Upload a reference image or an audio track. Returns an `uploadId` you pass to la
 calls. Uploads expire 24 hours after creation.
 
 ```
-POST /open/v1/uploads
+POST /api/v1/uploads
 Content-Type: multipart/form-data
 ```
 
@@ -90,7 +90,7 @@ Queues a new storyboard export. Returns immediately with status `queued`; a back
 worker performs the merge.
 
 ```
-POST /open/v1/exports
+POST /api/v1/exports
 Content-Type: application/json
 ```
 
@@ -216,7 +216,7 @@ Two additive capabilities on top of the baseline body. Both are optional; a base
 Poll this until `status` is terminal (`succeeded` or `failed`).
 
 ```
-GET /open/v1/exports/:exportId
+GET /api/v1/exports/:exportId
 ```
 
 ### Response `200`
@@ -250,7 +250,7 @@ roughly 60–120 s depending on clip length and whether text overlays are applie
 ## 4. List Exports
 
 ```
-GET /open/v1/exports?page=1&limit=20
+GET /api/v1/exports?page=1&limit=20
 ```
 
 | Query | Default | Max |
@@ -287,7 +287,7 @@ Returns a short-lived signed URL (TTL ~1 hour). The link forces a download with 
 filename of `export-<exportId>.mp4`.
 
 ```
-GET /open/v1/exports/:exportId/download
+GET /api/v1/exports/:exportId/download
 ```
 
 ### Response `200`

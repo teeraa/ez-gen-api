@@ -215,7 +215,19 @@ func (f *StudioFacade) createImage(c context.Context, user string, in request_op
 		return nil, ErrValidation
 	}
 	j := &models.VideoGenerationJob{CompiledPrompt: &prompt, EffectiveInputs: snapshot, UserID: uid, Status: models.JobStatusQueued, Prompt: strings.TrimSpace(in.Prompt), Mode: "text_image", ModelID: "character-image", AspectRatio: in.AspectRatio, DurationSeconds: 0, Quality: "standard", IdempotencyKey: &key, UploadID: uploadID}
+	// Charged per idempotency key before the job is queued, so the worker never runs an
+	// unpaid job. A replay of a key returns the existing job and keeps its charge as is.
+	pointRef := imagePointRef(user, key)
+	paid, e := chargePointsNew(c, user, pointFeatureImage, pointRef, pointPrices.Image)
+	if e != nil {
+		return nil, e
+	}
 	out, e := f.repo.EnqueueImage(c, j, f.maxJobs)
+	if e != nil || out == nil || out.ID != j.ID {
+		if paid {
+			refundPoints(c, user, pointFeatureImage, pointRef)
+		}
+	}
 	if e != nil {
 		if errors.Is(e, repo.ErrConflict) {
 			return nil, ErrRateLimit

@@ -84,7 +84,7 @@
 
 ## Generation Jobs
 
-### POST `/open/v1/jobs` — สร้าง generation job
+### POST `/api/v1/jobs` — สร้าง generation job
 
 **Request body:**
 ```json
@@ -138,7 +138,7 @@
 
 ---
 
-### GET `/open/v1/jobs` — รายการ jobs
+### GET `/api/v1/jobs` — รายการ jobs
 
 **Query params:** `?page=1&limit=20`
 
@@ -146,7 +146,7 @@
 
 ---
 
-### GET `/open/v1/jobs/:jobId` — ดูสถานะ job
+### GET `/api/v1/jobs/:jobId` — ดูสถานะ job
 
 **Response — 200:**
 ```json
@@ -212,7 +212,7 @@ queued → submitted → processing → succeeded
 
 ---
 
-### DELETE `/open/v1/jobs/:jobId` — Cancel job
+### DELETE `/api/v1/jobs/:jobId` — Cancel job
 
 **Response — 200:**
 ```json
@@ -230,7 +230,7 @@ queued → submitted → processing → succeeded
 
 ## File Uploads
 
-### POST `/open/v1/uploads` — อัพโหลด reference image
+### POST `/api/v1/uploads` — อัพโหลด reference image
 
 > ใช้ก่อนสร้าง job ที่ mode = `image_video` หรือ `image_image`
 
@@ -269,7 +269,7 @@ file: <binary>   (PNG, JPG, หรือ WEBP, ไม่เกิน 8 MB)
 
 ## VIOLET DNA — Tags
 
-### GET `/open/v1/dna/tags` — รายการ tags ทั้งหมด
+### GET `/api/v1/dna/tags` — รายการ tags ทั้งหมด
 
 **Query params:** `?category=visual_style` *(optional)*
 
@@ -293,7 +293,7 @@ file: <binary>   (PNG, JPG, หรือ WEBP, ไม่เกิน 8 MB)
 
 ---
 
-### GET `/open/v1/dna/tags/categories` — รายการ categories
+### GET `/api/v1/dna/tags/categories` — รายการ categories
 
 **Response — 200:**
 ```json
@@ -335,7 +335,7 @@ file: <binary>   (PNG, JPG, หรือ WEBP, ไม่เกิน 8 MB)
 
 ## VIOLET DNA — Character Profiles
 
-### POST `/open/v1/dna/characters` — สร้าง character profile
+### POST `/api/v1/dna/characters` — สร้าง character profile
 
 **Request body:**
 ```json
@@ -391,7 +391,7 @@ file: <binary>   (PNG, JPG, หรือ WEBP, ไม่เกิน 8 MB)
 
 ---
 
-### GET `/open/v1/dna/characters` — รายการ character profiles
+### GET `/api/v1/dna/characters` — รายการ character profiles
 
 **Query:** `?page=1&limit=20`
 
@@ -399,13 +399,13 @@ file: <binary>   (PNG, JPG, หรือ WEBP, ไม่เกิน 8 MB)
 
 ---
 
-### GET `/open/v1/dna/characters/:id` — ดู character profile
+### GET `/api/v1/dna/characters/:id` — ดู character profile
 
 **Response — 200:** `CharacterProfileDTO`
 
 ---
 
-### PUT `/open/v1/dna/characters/:id` — แก้ไข character profile
+### PUT `/api/v1/dna/characters/:id` — แก้ไข character profile
 
 ส่งเฉพาะ field ที่ต้องการเปลี่ยน (partial update)
 
@@ -423,7 +423,7 @@ file: <binary>   (PNG, JPG, หรือ WEBP, ไม่เกิน 8 MB)
 
 ---
 
-### DELETE `/open/v1/dna/characters/:id` — ลบ character profile
+### DELETE `/api/v1/dna/characters/:id` — ลบ character profile
 
 **Response — 204** (no body)
 
@@ -431,7 +431,7 @@ file: <binary>   (PNG, JPG, หรือ WEBP, ไม่เกิน 8 MB)
 
 ## VIOLET DNA — Style Profiles
 
-### POST `/open/v1/dna/styles` — สร้าง style profile
+### POST `/api/v1/dna/styles` — สร้าง style profile
 
 **Request body:**
 ```json
@@ -482,16 +482,16 @@ file: <binary>   (PNG, JPG, หรือ WEBP, ไม่เกิน 8 MB)
 }
 ```
 
-### GET `/open/v1/dna/styles` — รายการ (paginated)
-### GET `/open/v1/dna/styles/:id` — ดู single
-### PUT `/open/v1/dna/styles/:id` — แก้ไข (partial update)
-### DELETE `/open/v1/dna/styles/:id` — ลบ → 204
+### GET `/api/v1/dna/styles` — รายการ (paginated)
+### GET `/api/v1/dna/styles/:id` — ดู single
+### PUT `/api/v1/dna/styles/:id` — แก้ไข (partial update)
+### DELETE `/api/v1/dna/styles/:id` — ลบ → 204
 
 ---
 
 ## VIOLET DNA — Scenes
 
-### POST `/open/v1/dna/scenes` — สร้าง scene
+### POST `/api/v1/dna/scenes` — สร้าง scene
 
 Scene คือหน่วยของ creative brief — ผูก character + style profile แล้วเพิ่ม override สำหรับ scene นั้น
 
@@ -557,18 +557,18 @@ Scene คือหน่วยของ creative brief — ผูก character +
 
 ---
 
-### GET `/open/v1/dna/scenes` — รายการ scenes
+### GET `/api/v1/dna/scenes` — รายการ scenes
 
 **Query:** `?page=1&limit=20`
 ผลลัพธ์เรียงตาม `sceneOrder ASC, createdAt DESC`
 
 ---
 
-### GET `/open/v1/dna/scenes/:id` — ดู scene (พร้อม profiles + tags)
+### GET `/api/v1/dna/scenes/:id` — ดู scene (พร้อม profiles + tags)
 
 ---
 
-### PUT `/open/v1/dna/scenes/:id` — แก้ไข scene (partial)
+### PUT `/api/v1/dna/scenes/:id` — แก้ไข scene (partial)
 
 ```json
 {
@@ -580,11 +580,11 @@ Scene คือหน่วยของ creative brief — ผูก character +
 
 ---
 
-### DELETE `/open/v1/dna/scenes/:id` — ลบ scene → 204
+### DELETE `/api/v1/dna/scenes/:id` — ลบ scene → 204
 
 ---
 
-### PUT `/open/v1/dna/scenes/:id/select-output/:jobId` — เลือก output ของ scene
+### PUT `/api/v1/dna/scenes/:id/select-output/:jobId` — เลือก output ของ scene
 
 ใช้บอกว่า job ไหนเป็น "output ที่เลือก" สำหรับ scene นี้ (แสดงใน feed / ใช้เป็น last frame ใน Continue Scene)
 
@@ -603,7 +603,7 @@ Scene คือหน่วยของ creative brief — ผูก character +
 
 ## Continue Scene
 
-### POST `/open/v1/dna/scenes/:id/continue` — ต่อ scene
+### POST `/api/v1/dna/scenes/:id/continue` — ต่อ scene
 
 สร้าง scene ใหม่ที่ต่อจาก scene นี้ แล้วส่ง generation job ทันที
 
@@ -646,7 +646,7 @@ Scene คือหน่วยของ creative brief — ผูก character +
 | `useLastFrame` | bool | — | `true` = ใช้ last frame ของ scene ก่อนหน้าเป็น first frame (visual continuity) |
 | `idempotencyKey` | uuid | — | — |
 
-**Response — 201:** `CreateJobResponseDTO` (เหมือน POST /open/v1/jobs)
+**Response — 201:** `CreateJobResponseDTO` (เหมือน POST /api/v1/jobs)
 
 ```json
 {
@@ -660,15 +660,15 @@ Scene คือหน่วยของ creative brief — ผูก character +
 }
 ```
 
-จากนั้น poll `/open/v1/jobs/:jobId` เหมือนปกติ
+จากนั้น poll `/api/v1/jobs/:jobId` เหมือนปกติ
 
 ---
 
-### POST `/open/v1/dna/scenes/:id/generate` — generate job สำหรับ scene ที่มีอยู่
+### POST `/api/v1/dna/scenes/:id/generate` — generate job สำหรับ scene ที่มีอยู่
 
 ส่ง job สำหรับ scene โดยไม่สร้าง scene ใหม่ ใช้สำหรับ re-generate scene เดิม
 
-**Request body:** เหมือน `POST /open/v1/jobs`
+**Request body:** เหมือน `POST /api/v1/jobs`
 
 **Response — 201:** `CreateJobResponseDTO`
 
@@ -917,11 +917,11 @@ interface UploadResponse {
 ### Flow 1: Text-to-Video (basic)
 
 ```
-POST /open/v1/jobs  { prompt, mode:"text", model, aspectRatio, duration, quality }
+POST /api/v1/jobs  { prompt, mode:"text", model, aspectRatio, duration, quality }
   → { jobId, status:"queued" }
 
 loop every 2s:
-  GET /open/v1/jobs/:jobId
+  GET /api/v1/jobs/:jobId
   → status: queued → submitted → processing → succeeded
   → result.mediaUrl ✅
 ```
@@ -929,38 +929,38 @@ loop every 2s:
 ### Flow 2: Image-to-Video
 
 ```
-POST /open/v1/uploads  (multipart/form-data)
+POST /api/v1/uploads  (multipart/form-data)
   → { uploadId }
 
-POST /open/v1/jobs  { mode:"image_video", referenceImageId: uploadId, ... }
+POST /api/v1/jobs  { mode:"image_video", referenceImageId: uploadId, ... }
   → { jobId }
 
-GET /open/v1/jobs/:jobId  (poll until succeeded)
+GET /api/v1/jobs/:jobId  (poll until succeeded)
 ```
 
 ### Flow 3: VIOLET DNA — Character + Style
 
 ```
-POST /open/v1/dna/characters  { name, appearance, clothing, ... }
+POST /api/v1/dna/characters  { name, appearance, clothing, ... }
   → { id: charId }
 
-POST /open/v1/dna/styles  { name, visualStyle, cameraLanguage, ... }
+POST /api/v1/dna/styles  { name, visualStyle, cameraLanguage, ... }
   → { id: styleId }
 
-POST /open/v1/dna/scenes  { characterProfileId: charId, styleProfileId: styleId, description: "..." }
+POST /api/v1/dna/scenes  { characterProfileId: charId, styleProfileId: styleId, description: "..." }
   → { id: sceneId }
 
-POST /open/v1/jobs  { sceneId, characterProfileId: charId, styleProfileId: styleId, ... }
+POST /api/v1/jobs  { sceneId, characterProfileId: charId, styleProfileId: styleId, ... }
   → { jobId }
 
-PUT /open/v1/dna/scenes/:sceneId/select-output/:jobId
+PUT /api/v1/dna/scenes/:sceneId/select-output/:jobId
 ```
 
 ### Flow 4: Continue Scene (visual continuity)
 
 ```
 // Scene 1 เสร็จแล้ว selectedJobId ถูก set
-POST /open/v1/dna/scenes/:scene1Id/continue
+POST /api/v1/dna/scenes/:scene1Id/continue
   {
     actionOverride: "Elena enters the courtyard",
     useLastFrame: true,
@@ -969,7 +969,7 @@ POST /open/v1/dna/scenes/:scene1Id/continue
   }
   → { jobId }   ← job ของ scene 2
 
-GET /open/v1/jobs/:jobId  (poll)
+GET /api/v1/jobs/:jobId  (poll)
 ```
 
 ---

@@ -15,7 +15,7 @@ func NewShowcaseHandler(facade facade_open_api.ShowcaseFacade) *ShowcaseHandler 
 	return &ShowcaseHandler{facade: facade}
 }
 
-// RegisterPublicRoutes mounts unauthenticated routes on the /public/v1 router.
+// RegisterPublicRoutes mounts unauthenticated routes on the /api/v1/public router.
 func (h *ShowcaseHandler) RegisterPublicRoutes(r fiber.Router) {
 	r.Get("/showcase", h.List)
 }

@@ -11,10 +11,10 @@
 ## 1. Polling งาน (เร่งด่วน — ตอนนี้ยิง ~10 req/s)
 
 - [ ] มี polling loop **เดียว** ต่อ job ID (ใช้ ref/flag กันสร้างซ้ำตอน re-render หรือ StrictMode)
-- [ ] Poll `GET /open/v1/jobs/:jobId` ทุก **2–3 วินาที** ไม่ถี่กว่านี้
+- [ ] Poll `GET /api/v1/jobs/:jobId` ทุก **2–3 วินาที** ไม่ถี่กว่านี้
 - [ ] `clearInterval` / abort ใน cleanup ของ `useEffect` เมื่อ unmount หรือ jobId เปลี่ยน
 - [ ] หยุด poll ทันทีเมื่อ `status` เป็น `succeeded`, `failed` หรือ `cancelled`
-- [ ] เรียก `PUT /open/v1/dna/scenes/:id/select-output/:jobId` **ครั้งเดียว** ต่อ job (ตอนนี้ยิงซ้ำหลายร้อยครั้ง)
+- [ ] เรียก `PUT /api/v1/dna/scenes/:id/select-output/:jobId` **ครั้งเดียว** ต่อ job (ตอนนี้ยิงซ้ำหลายร้อยครั้ง)
 - [ ] ไม่ให้ผลจาก `select-output` ไป trigger การ poll ใหม่ (ตรวจ dependency array ของ effect)
 
 ## 2. Progress bar
@@ -59,7 +59,7 @@ Response ของ job มี field ใหม่:
 - [ ] (ไม่บังคับ) เพิ่ม `violet-classic` ในตัวเลือก model
 - [ ] แสดงข้อความที่เข้าใจได้เมื่อได้ `MODEL_NOT_SUPPORTED` เช่น "ความยาวหรือสัดส่วนนี้ไม่รองรับในโมเดลปัจจุบัน"
 
-> ข้อจำกัดเปลี่ยนตาม `ARK_DEFAULT_MODEL` ของ backend ถ้าต้องการไม่ hardcode ให้ขอ endpoint `GET /open/v1/models`
+> ข้อจำกัดเปลี่ยนตาม `ARK_DEFAULT_MODEL` ของ backend ถ้าต้องการไม่ hardcode ให้ขอ endpoint `GET /api/v1/models`
 
 ## 5. สถานะ/error ใหม่ของ job
 
@@ -68,7 +68,7 @@ Response ของ job มี field ใหม่:
 
 ## 6. Continue Scene (ใช้งานได้แล้ว)
 
-- [ ] `POST /open/v1/dna/scenes/:id/continue` กับ `useLastFrame: true` ใช้เฟรมสุดท้ายของ output ที่เลือกไว้เป็นเฟรมแรก
+- [ ] `POST /api/v1/dna/scenes/:id/continue` กับ `useLastFrame: true` ใช้เฟรมสุดท้ายของ output ที่เลือกไว้เป็นเฟรมแรก
 - [ ] ต้องเลือก output ของซีนก่อนหน้าแล้ว (`select-output`) และ job นั้นต้อง `succeeded` — ไม่งั้น backend จะสร้างแบบ text-only โดยไม่แจ้ง error
 - [ ] ซีนใหม่ได้ตัวละคร **ทุกตัว** จากซีนก่อน (ตามลำดับเดิม) — refresh ข้อมูลซีนหลัง continue
 
@@ -77,8 +77,8 @@ Response ของ job มี field ใหม่:
 ### สร้าง/แก้ซีน
 - [ ] UI เลือกตัวละครได้หลายตัว **สูงสุด 3** และเรียงลำดับได้ (ตัวแรก = ตัวหลัก)
 - [ ] ส่ง `characterProfileIds: string[]` ตามลำดับที่ผู้ใช้จัด
-  - `POST /open/v1/dna/scenes` — ส่ง list
-  - `PUT /open/v1/dna/scenes/:id` — ส่ง list = **แทนที่ทั้งหมด**, ส่ง `[]` = ล้าง, ไม่ส่ง field = ไม่เปลี่ยน
+  - `POST /api/v1/dna/scenes` — ส่ง list
+  - `PUT /api/v1/dna/scenes/:id` — ส่ง list = **แทนที่ทั้งหมด**, ส่ง `[]` = ล้าง, ไม่ส่ง field = ไม่เปลี่ยน
 - [ ] เลิกส่ง `characterProfileId` เดี่ยวในโค้ดใหม่ (backend ยังรับอยู่ช่วงเปลี่ยนผ่าน แต่ถ้าส่งใน `PUT` จะแทนที่ list ทั้งหมดด้วยตัวเดียว)
 - [ ] ห้ามมี ID ซ้ำใน list
 - [ ] Handle error:
@@ -91,7 +91,7 @@ Response ของ job มี field ใหม่:
 - [ ] `characterProfileId` ยังมี (= ตัวแรก) แต่ถือว่า deprecated
 
 ### สร้างวิดีโอ
-- [ ] `POST /open/v1/dna/scenes/:id/generate` ไม่ต้องส่งตัวละคร — backend ใช้ตัวละครทั้งหมดของซีน
+- [ ] `POST /api/v1/dna/scenes/:id/generate` ไม่ต้องส่งตัวละคร — backend ใช้ตัวละครทั้งหมดของซีน
 - [ ] ส่ง `characterProfileIds` ใน body เฉพาะเมื่ออยากใช้ชุดอื่นเฉพาะ job นี้ (ไม่เปลี่ยนซีน)
 - [ ] ช่อง action/prompt: แนะนำผู้ใช้ให้ **เรียกตัวละครด้วยชื่อ** เช่น "Elena ยื่นข้าวเหนียวให้ Somchai" (placeholder/hint) เพื่อให้ model จับคู่คำบรรยายกับคนถูก
 - [ ] แสดงคำเตือนเบา ๆ เมื่อเลือก 3 ตัว: "ตัวละครหลายตัวอาจสลับลักษณะกันได้" (model ปัจจุบันใช้ข้อความอย่างเดียว ไม่มีรูปอ้างอิง)
@@ -114,10 +114,10 @@ Endpoint ใหม่ (รายละเอียดใน `video-generation-ap
 
 | Method | Path | Auth | ใช้ทำอะไร |
 |---|---|---|---|
-| `POST` | `/open/v1/jobs/:jobId/shares` | ✅ | สร้าง/ขอ share link (201 ใหม่, 200 มีอยู่แล้ว) |
-| `DELETE` | `/open/v1/shares/:shareId` | ✅ | ยกเลิกลิงก์ (204) |
-| `GET` | `/open/v1/jobs/:jobId/download` | ✅ | URL ดาวน์โหลดไฟล์ (บังคับ save) |
-| `GET` | `/public/v1/shares/:token` | ❌ | ข้อมูลสำหรับหน้าแชร์สาธารณะ |
+| `POST` | `/api/v1/jobs/:jobId/shares` | ✅ | สร้าง/ขอ share link (201 ใหม่, 200 มีอยู่แล้ว) |
+| `DELETE` | `/api/v1/shares/:shareId` | ✅ | ยกเลิกลิงก์ (204) |
+| `GET` | `/api/v1/jobs/:jobId/download` | ✅ | URL ดาวน์โหลดไฟล์ (บังคับ save) |
+| `GET` | `/api/v1/public/shares/:token` | ❌ | ข้อมูลสำหรับหน้าแชร์สาธารณะ |
 
 ### ปุ่ม "แชร์" (หน้าวิดีโอที่เสร็จแล้ว)
 - [ ] แสดงปุ่มเฉพาะ job ที่ `status === "succeeded"`; ถ้าได้ `409 JOB_NOT_SHAREABLE` ให้บอก "วิดีโอยังบันทึกไม่เสร็จ ลองใหม่อีกสักครู่"
@@ -138,7 +138,7 @@ Endpoint ใหม่ (รายละเอียดใน `video-generation-ap
 
 ### หน้าแชร์สาธารณะ `/s/[token]` (ใน ez-gen-web)
 - [ ] สร้าง route `/s/[token]` แบบ **server-side render** (ไม่ต้อง login)
-- [ ] ฝั่ง server เรียก `GET {API}/public/v1/shares/:token`
+- [ ] ฝั่ง server เรียก `GET {API}/api/v1/public/shares/:token`
   - [ ] cache ผลลัพธ์ ~60 วินาที (`fetch(..., { next: { revalidate: 60 } })`) — rate limit ของ backend นับต่อ IP และทุก request จาก Next server มาจาก IP เดียวกัน
   - [ ] 404 → แสดงหน้า "ลิงก์นี้ไม่มีอยู่หรือถูกยกเลิกแล้ว" (HTTP 404)
 - [ ] ใส่ Open Graph/Twitter meta ใน `<head>` (ใช้ `generateMetadata`):
@@ -157,7 +157,7 @@ Endpoint ใหม่ (รายละเอียดใน `video-generation-ap
 
 ## 10. Storyboard preview ต่อซีน
 
-`GET /open/v1/dna/scenes` และ `GET /open/v1/dna/scenes/:id` ส่ง `preview` มาให้แต่ละซีน:
+`GET /api/v1/dna/scenes` และ `GET /api/v1/dna/scenes/:id` ส่ง `preview` มาให้แต่ละซีน:
 
 ```json
 "preview": {

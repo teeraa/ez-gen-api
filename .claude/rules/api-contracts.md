@@ -24,42 +24,55 @@ for field names, HTTP status codes, and error code strings.
 
 ## Response Envelope
 
-Every response, success or error, uses this envelope:
+Every JSON response, success or error, uses one envelope (built by `apps/utils/response.go`;
+always go through `utils.Success` / `utils.Error`, never `c.JSON` directly):
 
-### Success
 ```json
 {
-  "data": { ... },
-  "requestId": "550e8400-e29b-41d4-a716-446655440000"
+  "code": 200,
+  "timestamp": "2026-11-17T15:14:57.510357+07:00",
+  "transactionCode": "77c1f0b2-5474-42cd-a4a7-217129d87bb4",
+  "success": true,
+  "titleMessage": "",
+  "message": "Success",
+  "payload": {}
 }
 ```
+
+| Field | Meaning |
+|---|---|
+| `code` | HTTP status code (number), same as the response status |
+| `timestamp` | Server time, ISO 8601 with microseconds and offset (zone from `APP_TIMEZONE`, default `Asia/Bangkok`) |
+| `transactionCode` | Per-request UUID, also sent as the `X-Request-ID` header |
+| `success` | `true` for 2xx, `false` otherwise |
+| `titleMessage` | Optional UI title; empty unless a handler sets one |
+| `message` | `"Success"` on success; human-readable error text on failure |
+| `payload` | The data on success (`{}` when there is none); `ErrorPayload` on failure |
 
 ### List Success
-```json
-{
-  "data": {
-    "items": [...],
-    "total": 42,
-    "page": 1,
-    "limit": 20
-  },
-  "requestId": "..."
-}
-```
+`payload` is `{ "items": [...], "total": 42, "page": 1, "limit": 20 }`.
 
 ### Error
 ```json
 {
-  "code": "VALIDATION_ERROR",
+  "code": 400,
+  "timestamp": "2026-11-17T15:14:57.510357+07:00",
+  "transactionCode": "...",
+  "success": false,
+  "titleMessage": "",
   "message": "Human-readable description",
-  "details": [
-    { "field": "prompt", "message": "must be at most 2000 characters" }
-  ],
-  "requestId": "..."
+  "payload": {
+    "errorCode": "VALIDATION_ERROR",
+    "details": [{ "field": "prompt", "message": "must be at most 2000 characters" }]
+  }
 }
 ```
 
-`details` is only present for `VALIDATION_ERROR`. All other errors omit `details`.
+`payload.errorCode` is the machine-readable code from the table below.
+`payload.details` is only present for `VALIDATION_ERROR`.
+
+Exceptions with no envelope: `204 No Content`, `304 Not Modified`, and the
+`text/event-stream` AI chat reply.
 
 ### Forbidden Fields in Error Responses
 
@@ -106,6 +119,7 @@ Machine-readable codes used in the `code` field:
 | `UNAUTHORIZED` | 401 | No valid auth token |
 | `VALIDATION_ERROR` | 400 | Field validation failed |
 | `INSUFFICIENT_CREDITS` | 402 | Not enough credits |
+| `INSUFFICIENT_POINTS` | 402 | Not enough points for an AI use; `payload.details` = `{ required, balance }` |
 | `JOB_NOT_FOUND` | 404 | Job not found or belongs to another user |
 | `PROJECT_NOT_FOUND` | 404 | Project not found or belongs to another user |
 | `JOB_NOT_CANCELLABLE` | 409 | Job already in terminal state |
@@ -215,43 +229,45 @@ Limit int `form:"limit" validate:"min=1,max=50"`
 
 ---
 
-## requestId
+## transactionCode
 
-Every response includes `requestId`. This is a UUID v4 generated per-request by
-middleware and stored in `c.Locals("requestID")`.
-
-The helper functions must always include it:
-```go
-func Success(data any, requestID string) fiber.Map {
-    return fiber.Map{"data": data, "requestId": requestID}
-}
-func Error(code, message string, details any, requestID string) fiber.Map {
-    m := fiber.Map{"code": code, "message": message, "requestId": requestID}
-    if details != nil { m["details"] = details }
-    return m
-}
-```
+`transactionCode` is a UUID v4 generated per request by `middlewares.RequestID()`
+and stored in `c.Locals("requestID")`. `utils.Success` / `utils.Error` fill it in.
 
 ---
 
 ## Route Group
 
-Video generation endpoints mount on `/open/v1/`:
-- `POST   /open/v1/jobs`
-- `GET    /open/v1/jobs/:jobId`
-- `DELETE /open/v1/jobs/:jobId`
-- `POST   /open/v1/uploads`
-- `GET    /open/v1/projects`
-- `GET    /open/v1/projects/:projectId`
-- `DELETE /open/v1/projects/:projectId`
-- `GET    /open/v1/credits`
+All authenticated endpoints mount on `/api/v1/`:
+- `POST   /api/v1/jobs`
+- `GET    /api/v1/jobs/:jobId`
+- `DELETE /api/v1/jobs/:jobId`
+- `POST   /api/v1/uploads`
+- `GET    /api/v1/projects`
+- `GET    /api/v1/projects/:projectId`
+- `DELETE /api/v1/projects/:projectId`
+- `GET    /api/v1/credits`
 
-- `POST   /open/v1/jobs/:jobId/shares`
-- `GET    /open/v1/jobs/:jobId/download`
-- `DELETE /open/v1/shares/:shareId`
+- `POST   /api/v1/jobs/:jobId/shares`
+- `GET    /api/v1/jobs/:jobId/download`
+- `DELETE /api/v1/shares/:shareId`
 
 All routes in this group require JWT auth middleware.
 
-The unauthenticated `/public/v1/` group (rate limited per client IP) serves only data
+The unauthenticated `/api/v1/public/` group (rate limited per client IP) serves only data
 reachable through an unguessable share token:
-- `GET    /public/v1/shares/:token`
+- `GET    /api/v1/public/shares/:token`
+
+---
+
+## AI Point Charging
+
+Every AI use is charged from the shared point wallet (`director_point_accounts`).
+Director and Film keep their own job ledgers; everything else goes through
+`facade_open_api` `chargePoints` / `refundPoints` (ledger: `ai_point_charges`,
+`ai_point_entries`, migration 039). Prices come from `AI_*_POINTS` env vars
+(`AI_CHAT_MESSAGE_POINTS=3` per AI chat message). Charge before calling the provider,
+keyed by a ref that names exactly one AI use (request/idempotency id or a fresh UUID),
+and refund when the provider fails or nothing is saved. A failed charge returns
+`402 INSUFFICIENT_POINTS` (synchronous) or a job/shot failure code `INSUFFICIENT_POINTS`
+(background work). New AI features must charge the same way.

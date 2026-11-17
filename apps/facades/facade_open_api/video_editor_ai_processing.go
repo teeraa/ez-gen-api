@@ -210,7 +210,9 @@ func (f *VideoEditorAIFacade) ProcessNext(ctx context.Context) (bool, error) {
 	log.Printf("video_editor_ai: job=%s phase=%s stage=%s failed code=%s err=%v", j.ID, j.Phase, j.Stage, code, e)
 	finish, cleanup := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cleanup()
-	_ = f.repo.UpdateClaim(finish, j, map[string]any{"status": "failed", "stage": "failed", "failure_code": code, "failure_message": message, "retry_at": retry, "attempt_token": nil, "lease_until": nil})
+	if f.repo.UpdateClaim(finish, j, map[string]any{"status": "failed", "stage": "failed", "failure_code": code, "failure_message": message, "retry_at": retry, "attempt_token": nil, "lease_until": nil}) == nil {
+		refundPoints(finish, j.UserID.String(), pointFeatureEditorAnalysis, aiJobPointRef(j))
+	}
 	return true, e
 }
 func (f *VideoEditorAIFacade) cloud(ctx context.Context, j *models.VideoEditorAIJob, prompt any, images []editorai.Image, schema json.RawMessage) ([]byte, error) {

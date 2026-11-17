@@ -11,7 +11,7 @@ import (
 
 const maxUploadBodyBytes = 55 << 20 // 55 MB — covers 50 MB audio + form overhead
 
-// UploadHandler handles POST /open/v1/uploads.
+// UploadHandler handles POST /api/v1/uploads.
 type UploadHandler struct {
 	facade facade_open_api.UploadFacade
 }

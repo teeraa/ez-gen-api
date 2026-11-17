@@ -28,13 +28,17 @@ func TestPipelineValidationErrorResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out struct {
-		Code, Message, RequestID string
-		Details                  []pipelineValidationDetail
+		Message   string
+		RequestID string `json:"transactionCode"`
+		Payload   struct {
+			ErrorCode string
+			Details   []pipelineValidationDetail
+		}
 	}
 	if err = json.Unmarshal(raw, &out); err != nil {
 		t.Fatal(err)
 	}
-	if response.StatusCode != 400 || out.Code != "VALIDATION_ERROR" || out.Message != message || out.RequestID != "fixture-rid" || len(out.Details) != 1 || out.Details[0].Field != "scenePrompt" || out.Details[0].Reason != "prompt_budget" || out.Details[0].Message != message {
+	if response.StatusCode != 400 || out.Payload.ErrorCode != "VALIDATION_ERROR" || out.Message != message || out.RequestID != "fixture-rid" || len(out.Payload.Details) != 1 || out.Payload.Details[0].Field != "scenePrompt" || out.Payload.Details[0].Reason != "prompt_budget" || out.Payload.Details[0].Message != message {
 		t.Fatalf("response %d %s", response.StatusCode, raw)
 	}
 	for _, secret := range []string{"private provider detail", "private user prompt", "https://"} {

@@ -33,7 +33,7 @@ func TestVideoEditorUploadGuardRunsBeforeMultipartParsing(t *testing.T) {
 	// No facade is needed: admitted requests must be rejected before parsing while
 	// the existing two upload slots are occupied.
 	handler.uploads[user] = 2
-	handler.RegisterRoutes(app.Group("/open/v1"))
+	handler.RegisterRoutes(app.Group("/api/v1"))
 	app.Post("/legacy-upload", func(c *fiber.Ctx) error {
 		file, err := c.FormFile("file")
 		if err != nil {
@@ -83,7 +83,7 @@ func TestVideoEditorUploadGuardRunsBeforeMultipartParsing(t *testing.T) {
 		data       []byte
 	}{{"well-formed", writer.FormDataContentType(), valid.Bytes()}, {"malformed", "multipart/form-data; boundary=missing", []byte("not multipart at all")}} {
 		t.Run(tc.name, func(t *testing.T) {
-			request, err := http.NewRequest(http.MethodPost, base+"/open/v1/video-editor/projects/11111111-1111-4111-8111-111111111111/assets", bytes.NewReader(tc.data))
+			request, err := http.NewRequest(http.MethodPost, base+"/api/v1/video-editor/projects/11111111-1111-4111-8111-111111111111/assets", bytes.NewReader(tc.data))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -94,13 +94,15 @@ func TestVideoEditorUploadGuardRunsBeforeMultipartParsing(t *testing.T) {
 			}
 			defer response.Body.Close()
 			var body struct {
-				Code      string `json:"code"`
-				RequestID string `json:"requestId"`
+				Payload struct {
+					ErrorCode string `json:"errorCode"`
+				} `json:"payload"`
+				RequestID string `json:"transactionCode"`
 			}
 			if err = json.NewDecoder(response.Body).Decode(&body); err != nil {
 				t.Fatal(err)
 			}
-			if response.StatusCode != 429 || body.Code != "UPLOAD_BUSY" || body.RequestID == "" {
+			if response.StatusCode != 429 || body.Payload.ErrorCode != "UPLOAD_BUSY" || body.RequestID == "" {
 				t.Fatalf("guard bypassed: status%d body%+v", response.StatusCode, body)
 			}
 		})
