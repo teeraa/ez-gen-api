@@ -334,7 +334,7 @@ func runPipelineHTTPActualWorkersSDKIntegration(t *testing.T, source string) {
 		input.CharacterAssetID = assetID.String()
 	}
 	rejected := input
-	rejected.ScenePrompt = strings.Repeat("ก", 1500)
+	rejected.ScenePrompt = strings.Repeat("ก", 2001)
 	rejected.Dialogue = "สวัสดีครับทุกคน"
 	rejectedBody, _ := json.Marshal(rejected)
 	rejectedStatus, rejectedRaw := pipelineHTTP(t, app, "POST", "/studio-pipelines", rejectedBody)
@@ -350,8 +350,8 @@ func runPipelineHTTPActualWorkersSDKIntegration(t *testing.T, source string) {
 	if err := json.Unmarshal(rejectedRaw, &rejectedOut); err != nil {
 		t.Fatal(err)
 	}
-	expectedMessage := "รายละเอียดฉากและบทพูดรวมกันยาวเกินขีดจำกัด กรุณาย่อฉากหรือบทพูดแล้วลองอีกครั้ง"
-	if rejectedStatus != 400 || rejectedOut.Code != "VALIDATION_ERROR" || rejectedOut.Message != expectedMessage || len(rejectedOut.Details) != 1 || rejectedOut.Details[0].Field != "scenePrompt" || rejectedOut.Details[0].Reason != "prompt_budget" || rejectedOut.Details[0].Message != expectedMessage {
+	expectedMessage := "ฉากและการเคลื่อนไหวยาวเกินขีดจำกัด กรุณาย่อแล้วลองอีกครั้ง"
+	if rejectedStatus != 400 || rejectedOut.Code != "VALIDATION_ERROR" || rejectedOut.Message != expectedMessage || len(rejectedOut.Details) != 1 || rejectedOut.Details[0].Field != "scenePrompt" || rejectedOut.Details[0].Reason != "too_long" || rejectedOut.Details[0].Message != expectedMessage {
 		t.Fatalf("budget validation %d %s", rejectedStatus, rejectedRaw)
 	}
 	if store.p != nil || imageCalls != 0 || videoCalls != 0 {
@@ -360,6 +360,7 @@ func runPipelineHTTPActualWorkersSDKIntegration(t *testing.T, source string) {
 	if bytes.Contains(rejectedRaw, []byte(rejected.ScenePrompt)) || bytes.Contains(rejectedRaw, []byte(rejected.Dialogue)) || bytes.Contains(rejectedRaw, []byte("dialogue exceeds prompt budget")) {
 		t.Fatal("validation leaked user input or compiler diagnostics")
 	}
+	input.ScenePrompt = strings.Repeat("ก", 1500) + "COMPLETE_SCENE_TAIL_ครบ🙂"
 	body, _ := json.Marshal(input)
 	status, raw := pipelineHTTP(t, app, "POST", "/studio-pipelines", body)
 	if status != 201 {
@@ -370,6 +371,9 @@ func runPipelineHTTPActualWorkersSDKIntegration(t *testing.T, source string) {
 	}
 	if e := json.Unmarshal(raw, &out); e != nil {
 		t.Fatal(e)
+	}
+	if out.Data.ScenePrompt != input.ScenePrompt || out.Data.Dialogue != speech || imageCalls != 0 || videoCalls != 0 {
+		t.Fatal("accepted combined input lost text or generated work before worker")
 	}
 	id := out.Data.ID
 	status, raw = pipelineHTTP(t, app, "POST", "/studio-pipelines", body)

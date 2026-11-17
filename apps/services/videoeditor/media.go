@@ -16,6 +16,16 @@ const MaxUploadBytes int64 = 50 << 20
 
 var ErrInvalid = errors.New("invalid video")
 
+// ErrTooLong marks a readable file longer than its kind allows (MaxVideoSeconds for
+// video, MaxAudioSeconds for audio), so the upload can say so instead of "unreadable".
+var ErrTooLong = fmt.Errorf("media too long: %w", ErrInvalid)
+
+const (
+	MaxVideoSeconds = 1200
+	// Music is usually trimmed to a window, so audio files may run longer than the timeline.
+	MaxAudioSeconds = 3600
+)
+
 type Frame struct {
 	Time float64
 	Data []byte
@@ -163,11 +173,17 @@ func Inspect(ctx context.Context, path string) (Media, error) {
 		return inspectImage(ctx, path, image, info.Streams)
 	}
 	duration, e := strconv.ParseFloat(info.Format.Duration, 64)
-	if e != nil || math.IsNaN(duration) || math.IsInf(duration, 0) || duration <= 0 || duration > 1200 {
+	if e != nil || math.IsNaN(duration) || math.IsInf(duration, 0) || duration <= 0 {
 		return Media{}, ErrInvalid
 	}
 	if audioOnly(info.Format.Name, info.Streams) {
+		if duration > MaxAudioSeconds {
+			return Media{}, ErrTooLong
+		}
 		return inspectAudio(ctx, path, info.Format.Name, info.Streams, duration)
+	}
+	if duration > MaxVideoSeconds {
+		return Media{}, ErrTooLong
 	}
 	m := Media{Kind: "video", Duration: duration, MIME: "video/mp4", Frames: []Frame{}}
 	if info.Format.Name == "matroska,webm" {

@@ -2,6 +2,7 @@ package facade_open_api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sort"
@@ -56,7 +57,32 @@ func aiPlanTimingInstruction(evidence []models.EditorAIEvidence, target float64)
 	return out.String()
 }
 
+// aiPlanError keeps which planning check failed, so the job's message can say it.
+type aiPlanError struct{ category string }
+
+func (e *aiPlanError) Error() string { return "planning " + e.category }
+func (e *aiPlanError) Unwrap() error { return editorai.ErrInvalid }
+
 func aiInvalidPlan(jobID, category string) error {
 	log.Printf("video_editor_ai job=%s phase=planning validation=%s", jobID, category)
-	return fmt.Errorf("planning %s: %w", category, editorai.ErrInvalid)
+	return &aiPlanError{category}
+}
+
+// aiPlanFailureMessage is the Thai failure message for a planning check (no internals).
+func aiPlanFailureMessage(e error) (string, bool) {
+	var plan *aiPlanError
+	if !errors.As(e, &plan) {
+		return "", false
+	}
+	switch plan.category {
+	case "invalid_provider_response", "invalid_response_shape":
+		return "AI ส่งแผนตัดต่อกลับมาในรูปแบบที่ใช้ไม่ได้ กดลองใหม่ได้เลย", true
+	case "unknown_or_duplicate_evidence", "invalid_evidence", "overlapping_selection":
+		return "AI เลือกช่วงคลิปที่ซ้ำ ทับกัน หรือไม่มีอยู่จริง กดลองใหม่ได้เลย", true
+	case "invalid_draft_bounds_duration_or_metadata":
+		return "แผนตัดต่อยาวเกินเป้าหมายหรือข้อมูลช่วงคลิปไม่ครบ กดลองใหม่ หรือลดความยาวเป้าหมาย", true
+	case "invalid_composition":
+		return "ใส่ข้อความหรือเสียงประกอบในฉบับร่างไม่ผ่านการตรวจสอบ กดลองใหม่ได้เลย", true
+	}
+	return "แผนตัดต่อไม่ผ่านการตรวจสอบ (" + plan.category + ") กดลองใหม่ได้เลย", true
 }

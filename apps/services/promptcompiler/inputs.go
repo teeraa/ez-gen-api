@@ -5,9 +5,18 @@ import "github.com/ez-gen/ez-gen-api/apps/models"
 const PipelineCinematicVideoVersion = "pipeline-cinematic-live-action-v7"
 const PipelineFilmedHumanVideoVersion = "pipeline-filmed-human-v8"
 
+// FilmedLook selects video-only material and photographic direction for a synthetic scene reference.
+type FilmedLook string
+
+const (
+	FilmedLookNatural   FilmedLook = "natural"
+	FilmedLookCinematic FilmedLook = "cinematic"
+)
+
 // Inputs holds all creative sources passed into the compiler.
 // Every field is optional; the compiler degrades gracefully when absent.
 type Inputs struct {
+	FilmedLook               FilmedLook
 	PipelineRenderingVersion string
 	Dialogue                 string
 	// Characters featured in the scene, in billing order (at most 3).
@@ -67,4 +76,9 @@ type AssetRef struct {
 	StorageKey string
 	Role       string // 'reference' | 'first_frame' | 'last_frame' | 'keyframe'
 	MimeType   string
+	// PreserveScene retains composition and environment for a complete scene reference.
+	PreserveScene bool
+	// PoseCasting marks a characters-only reference on a neutral background: identity and pose
+	// come from the image, environment from the text.
+	PoseCasting bool
 }

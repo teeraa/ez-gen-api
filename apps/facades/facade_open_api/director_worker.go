@@ -9,9 +9,11 @@ import (
 	"github.com/ez-gen/ez-gen-api/apps/models"
 	repo "github.com/ez-gen/ez-gen-api/apps/repositories/repository_open_api"
 	"github.com/ez-gen/ez-gen-api/apps/services/modelark"
+	"github.com/ez-gen/ez-gen-api/apps/services/promptcompiler"
 	"github.com/ez-gen/ez-gen-api/apps/services/videoprocessing"
 	"log"
 	"math"
+	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -37,11 +39,22 @@ type directorShotOutput struct {
 
 // directorPlannerInput is what the text model sees: no storage keys or job metadata.
 type directorPlannerInput struct {
-	Project     dto.DirectorProject `json:"project"`
-	Instruction string              `json:"instruction,omitempty"`
-	Characters  []directorCastBrief `json:"characters"`
-	VisualBible string              `json:"visualBible,omitempty"`
-	Settings    map[string]string   `json:"sceneSettings,omitempty"`
+	Project     directorPlannerProject `json:"project"`
+	Instruction string                 `json:"instruction,omitempty"`
+	Characters  []directorCastBrief    `json:"characters"`
+	VisualBible string                 `json:"visualBible,omitempty"`
+	Props       []directorProp         `json:"props,omitempty"`
+	Settings    map[string]string      `json:"sceneSettings,omitempty"`
+	Series      *directorSeriesBrief   `json:"series,omitempty"`
+}
+
+// directorPlannerProject hides the episode identity fields so standalone planner input stays
+// byte-identical to the pre-series format; episodes get that context through Series instead.
+type directorPlannerProject struct {
+	dto.DirectorProject
+	SeriesID      *string `json:"seriesId,omitempty"`
+	EpisodeNumber *int    `json:"episodeNumber,omitempty"`
+	EpisodeTitle  *string `json:"episodeTitle,omitempty"`
 }
 type directorCastBrief struct {
 	ID          string `json:"id"`
@@ -52,11 +65,15 @@ type directorCastBrief struct {
 const directorPlannerGuide = "Write for a storyboard whose images are generated one shot at a time, so every shot must be self-contained and consistent. " +
 	"Every shot description and prompt must name the scene's location explicitly and name every visible character; a close-up lists only the character in frame. " +
 	"Use each character's supplied name and look exactly; never invent new main characters. " +
-	"Keep each scene in one coherent location unless the story requires a move."
+	"Keep each scene in one coherent location unless the story requires a move. " +
+	"Show at most two characters' faces clearly in one shot and place each explicitly (left/right, foreground/background) with clear space between their heads. " +
+	"Never stage faces touching or overlapping (hugs, kisses, clinches, blade-locks face to face): frame those over the shoulder, from behind one character, or as a close-up of hands and weapons. " +
+	"In wide shots keep crowds small in frame or seen from behind."
 const directorShotGuide = ` "prompt" is an English image-generation prompt of 60-120 words: subject and action, every visible character by name with expression and pose, ` +
 	`foreground/background composition, the scene's location and lighting from sceneSettings, and the visual bible's era and palette. ` +
 	`Never describe a named character's clothing, colors, hair or accessories: refer to them by name only, their fixed look is applied separately. ` +
-	`"description" is a Thai summary of the same shot for the user (1-2 sentences, names the characters). characterAssetIds lists every character visible in the shot.`
+	`"description" is a Thai summary of the same shot for the user (1-2 sentences, names the characters). characterAssetIds lists every character visible in the shot. ` +
+	`When a shot shows a listed prop, use its exact props name in "prompt" and state which hand holds it and which way its tip or handle points.`
 
 func directorSubset(ids, allowed []string) bool {
 	if ids == nil {
@@ -130,6 +147,9 @@ func (f *DirectorFacade) failWith(c context.Context, j *models.DirectorJob, in d
 	}
 	return f.finish(c, j, in, status, definitive, func(d *directorDocument) error {
 		p := &d.Project
+		if j.Kind == "video" && in.FilmedRecipe != "" {
+			directorRecordExperiment(d, directorExperiment{ShotID: in.ShotID, Recipe: in.FilmedRecipe, JobID: j.ID.String(), Status: status, FailureCode: *failure.FailureCode, At: time.Now().UTC()})
+		}
 		switch j.Kind {
 		case "story":
 			p.Story.Status = status
@@ -203,11 +223,19 @@ func directorAnalysisDefinitive(e error) bool {
 	var a *modelark.StoryAnalysisError
 	return errors.As(e, &a) && a.Definitive
 }
+
+// directorWorkerID identifies which API process ran a job when several share one database.
+var directorWorkerID = func() string {
+	host, _ := os.Hostname()
+	return fmt.Sprintf("%s/%d", host, os.Getpid())
+}()
+
 func (f *DirectorFacade) Tick(ctx context.Context) error {
 	j, e := f.store.Claim(ctx)
 	if e != nil {
 		return e
 	}
+	log.Printf("director: job=%s kind=%s claimed worker=%s build=%s", j.ID, j.Kind, directorWorkerID, directorSyntheticVersion)
 	c, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 	var in directorJobInput
@@ -230,7 +258,7 @@ func (f *DirectorFacade) Tick(ctx context.Context) error {
 		valid = doc.Generations[j.TargetID] == in.Generation
 	}
 	if !valid {
-		return f.finish(c, j, in, "cancelled", j.Status != "submitting" && len(j.Output) == 0, func(*directorDocument) error { return nil })
+		return f.finish(c, j, in, "cancelled", j.Status != "submitting" && j.Status != "needs_attention" && len(j.Output) == 0, func(*directorDocument) error { return nil })
 	}
 	// A persisted response can be stored again, but an uncertain external call cannot be repeated.
 	if j.Status == "submitting" && len(j.Output) == 0 {
@@ -264,17 +292,17 @@ func (f *DirectorFacade) Tick(ctx context.Context) error {
 	schema := ""
 	switch j.Kind {
 	case "story":
-		schema = `{"logline":"Thai logline","visualBible":"English, <=500 chars: era/world, architecture, costume rules for background extras only (never restyle named characters), color palette, lighting language","scenes":[{"title":"Thai title <=80 chars","summary":"Thai summary <=1200 chars","mood":"one supplied Thai mood","characterAssetIds":["ids of characters in this scene"],"setting":"English, <=400 chars: exact location, time of day, weather, light sources, key props and background details shared by every shot of the scene"}]}. Exactly one scene per supplied placeholder, same order. ` + directorPlannerGuide
+		schema = `{"logline":"Thai logline","visualBible":"English, <=500 chars: era/world, architecture, costume rules for background extras only (never restyle named characters), color palette, lighting language","props":[{"name":"short English name used verbatim in shot prompts","spec":"English, <=180 chars: real-world physical structure (parts, count of handles/blades/ends, where each part attaches, material, size relative to a person, how it is held or worn)"}],"scenes":[{"title":"Thai title <=80 chars","summary":"Thai summary <=1200 chars","mood":"one supplied Thai mood","characterAssetIds":["ids of characters in this scene"],"setting":"English, <=400 chars: exact location, time of day, weather, light sources, key props and background details shared by every shot of the scene"}]}. Exactly one scene per supplied placeholder, same order. List up to 6 props that characters hold, wear or use repeatedly (weapons, umbrellas, tools, vehicles); omit scenery. ` + directorPlannerGuide
 	case "rewrite":
 		schema = `{"title":"Thai title <=80 chars","summary":"Thai summary <=1200 chars","mood":"one supplied Thai mood","characterAssetIds":["ids of characters in this scene"],"setting":"English, <=400 chars: exact location, time of day, weather, light sources, key props"}. Rewrite target scene only using neighboring scenes for continuity; preserve intended shot count and the visual bible. ` + directorPlannerGuide
 	case "plan":
 		schema = `{"shots":[{"id":"existing placeholder shot UUID","description":"Thai shot description <=600 chars","camera":"one supplied camera","characterAssetIds":["subset of that scene's characters"],"prompt":"English image prompt"}]}. Return exactly all placeholder IDs once in scene/shot order. Vary cameras across a scene.` + directorShotGuide + " " + directorPlannerGuide
 	case "add":
-		schema = `{"description":"Thai shot description <=600 chars","camera":"one supplied camera","characterAssetIds":["subset of that scene's characters"],"prompt":"English image prompt"}. Write only the target new shot, using neighboring shots and scene for continuity. Do not return id.` + directorShotGuide + " " + directorPlannerGuide
+		schema = `{"description":"Thai shot description <=600 chars","camera":"one supplied camera","characterAssetIds":["subset of that scene's characters"],"prompt":"English image prompt"}. Write only the target new shot, using neighboring shots and scene for continuity. When the instruction field is not empty, the new shot must depict exactly what it asks. Do not return id.` + directorShotGuide + " " + directorPlannerGuide
 	default:
 		return f.fail(c, j, in, true)
 	}
-	brief := directorPlannerInput{Project: in.Project, Instruction: in.Instruction, Characters: []directorCastBrief{}, VisualBible: doc.Bible, Settings: doc.Settings}
+	brief := directorPlannerInput{Project: directorPlannerProject{DirectorProject: in.Project}, Instruction: in.Instruction, Characters: []directorCastBrief{}, VisualBible: doc.Bible, Props: doc.Props, Settings: doc.Settings}
 	// Scene settings live on the current scenes (users can edit them); the snapshot may predate an edit.
 	for i := range brief.Project.Scenes {
 		if cur := directorFindScene(&doc.Project, brief.Project.Scenes[i].ID); cur != nil && cur.Setting != "" {
@@ -283,6 +311,9 @@ func (f *DirectorFacade) Tick(ctx context.Context) error {
 	}
 	for _, ch := range in.Characters {
 		brief.Characters = append(brief.Characters, directorCastBrief{ch.ID, ch.Name, ch.Description})
+	}
+	if j.Kind == "story" && current.SeriesID != nil && current.EpisodeNumber != nil {
+		brief.Series = f.seriesBrief(c, current)
 	}
 	b, _ := json.Marshal(brief)
 	cap := f.Capabilities()
@@ -304,6 +335,7 @@ func (f *DirectorFacade) Tick(ctx context.Context) error {
 		var result struct {
 			Logline     string                `json:"logline"`
 			VisualBible string                `json:"visualBible"`
+			Props       []directorProp        `json:"props"`
 			Scenes      []directorSceneOutput `json:"scenes"`
 		}
 		if e = directorDecodeJSON(text, &result); e != nil {
@@ -323,6 +355,7 @@ func (f *DirectorFacade) Tick(ctx context.Context) error {
 		if e = f.progress(c, j, in, func(d *directorDocument) error {
 			d.Project.Story.Logline = &result.Logline
 			d.Bible = directorTruncate(result.VisualBible, 500)
+			d.Props = directorNormalizeProps(result.Props)
 			d.Project.Story.Phase = directorPointer("writing")
 			if len(d.Project.Scenes) > 0 {
 				d.Project.Scenes[0].Status = "writing"
@@ -437,7 +470,7 @@ func (f *DirectorFacade) Tick(ctx context.Context) error {
 		}
 		sc := directorFindScene(&in.Project, sh.SceneID)
 		result.ID = ""
-		if result = f.normalizeShot(result, sc.CharacterAssetIDs); !f.validShot(result, sc.CharacterAssetIDs) {
+		if result = directorFilmedFraming(f.normalizeShot(result, sc.CharacterAssetIDs), in.Project.Style); !f.validShot(result, sc.CharacterAssetIDs) {
 			return invalid(errors.New("added shot empty"))
 		}
 		if e = f.progress(c, j, in, func(d *directorDocument) error {
@@ -582,6 +615,9 @@ func (f *DirectorFacade) directorImage(c context.Context, j *models.DirectorJob,
 			}
 		}
 		stopProgress()
+		if e != nil && directorRateLimited(e) && in.RateLimitRetries < directorRateLimitRetries {
+			return f.directorImageBackoff(c, j, in, e)
+		}
 		if e != nil {
 			known, definitive := storyDefinitiveImageError(e)
 			code, message := "IMAGE_PROVIDER_ERROR", ""
@@ -624,10 +660,7 @@ func (f *DirectorFacade) directorImage(c context.Context, j *models.DirectorJob,
 				sh.Image.Stale = contentHash != storyHash(struct{ Description, Camera string }{sh.Description, sh.Camera})
 				sh.Image.DirectorFailure = dto.DirectorFailure{}
 				directorMarkVideoStale(sh)
-				// The previous shot's clip ends on this image as its last frame.
-				if prev := directorPreviousShot(&d.Project, sh); prev != nil && prev.Video != nil && prev.Video.UsesLastFrame {
-					directorMarkVideoStale(prev)
-				}
+
 				if d.Project.Cover != nil && d.Project.Cover.ShotID != nil && *d.Project.Cover.ShotID == sh.ID {
 					d.Keys[d.Project.Cover.ID] = key
 				}
@@ -654,12 +687,35 @@ const (
 )
 
 type directorVideoTask struct {
-	TaskID      string    `json:"taskId"`
-	SubmittedAt time.Time `json:"submittedAt"`
+	Extension           bool      `json:"extension,omitempty"`
+	TaskID              string    `json:"taskId"`
+	SubmittedAt         time.Time `json:"submittedAt"`
+	SourceClipKey       string    `json:"sourceClipKey,omitempty"`
+	FirstImageKey       string    `json:"firstImageKey,omitempty"`
+	OwnedVideoKey       string    `json:"ownedVideoKey,omitempty"`
+	Recovered           bool      `json:"recovered,omitempty"`
+	PersistenceAttempts int       `json:"persistenceAttempts,omitempty"`
+	// RawFrame marks a realistic/cinematic continuation sent with the previous clip's real last
+	// frame as first_frame; if the provider rejects that image the job falls back to faceless re-casting.
+	RawFrame bool `json:"rawFrame,omitempty"`
 }
 
 func (f *DirectorFacade) directorVideo(c context.Context, j *models.DirectorJob, in directorJobInput) error {
 	now := time.Now().UTC()
+	var extension directorExtensionState
+	if len(j.Output) > 0 {
+		_ = json.Unmarshal(j.Output, &extension)
+	}
+	if extension.Phase != "" {
+		return f.directorVideoExtension(c, j, in, extension)
+	}
+	var synthetic directorSyntheticState
+	if len(j.Output) > 0 {
+		_ = json.Unmarshal(j.Output, &synthetic)
+	}
+	if synthetic.Phase != "" {
+		return f.directorSyntheticVideo(c, j, in, synthetic)
+	}
 	if len(j.Output) == 0 {
 		if !f.videoAvailable() || in.ImageKey == "" || in.VideoModel == "" {
 			return f.fail(c, j, in, true)
@@ -672,95 +728,98 @@ func (f *DirectorFacade) directorVideo(c context.Context, j *models.DirectorJob,
 		if e != nil {
 			return e
 		}
-		request := modelark.CreateTaskRequest{Model: in.VideoModel, Resolution: "1080p"}
-		var attempts [][]modelark.ContentItem
+		sourceClipKey, firstImageKey, rawFrame := "", in.ImageKey, false
+		request := modelark.CreateTaskRequest{Model: in.VideoModel, Resolution: "1080p", ReturnLastFrame: true}
 		if in.DraftTaskID != "" {
+			sourceClipKey = doc.VideoFrames[in.ShotID].SourceClipKey
 			// The provider inherits prompt, frames, ratio and duration from the draft and rejects resubmission.
 			request.Content = []modelark.ContentItem{{Type: modelark.ContentTypeDraftTask, DraftTaskID: in.DraftTaskID}}
 		} else {
-			first, _, e := f.storage.SignedURL(c, in.ImageKey, time.Hour)
-			if e != nil {
-				return f.failWith(c, j, in, true, "REFERENCE_UNAVAILABLE", "เปิดภาพ shot ไม่ได้ กรุณาลองใหม่", e)
-			}
 			sh := directorFindShot(&doc.Project, in.ShotID)
-			if sh == nil {
-				sh = directorFindShot(&in.Project, in.ShotID)
-			}
 			if sh == nil {
 				return f.fail(c, j, in, true)
 			}
-			// Seedance reference mode: storyboard frames first (hard-wired as start/end in the
-			// prompt), then character identity references.
-			frames := []string{first}
-			if in.NextImageKey != "" {
-				last, _, e := f.storage.SignedURL(c, in.NextImageKey, time.Hour)
-				if e != nil {
-					return f.failWith(c, j, in, true, "REFERENCE_UNAVAILABLE", "เปิดภาพ shot ถัดไปไม่ได้ กรุณาลองใหม่", e)
+			prev := directorPreviousShot(&doc.Project, sh)
+			// Realistic/cinematic: only a scene's first shot is cast through Seedream → Seedance; later shots
+			// in the same scene continue from the previous clip's actual last frame for smooth cuts.
+			filmed := in.Project.Style == "realistic" || in.Project.Style == "cinematic"
+			textOnly := prev == nil && filmed && in.FilmedRecipe == "textonly"
+			if filmed && prev == nil && !textOnly {
+				return f.directorSyntheticVideo(c, j, in, synthetic)
+			}
+			// Filmed continuations start exactly on the previous clip's real last frame (first_frame) for a
+			// seamless cut. They never use clip extension: the provider rejects realistic people in a
+			// reference video. A rejected frame falls back to faceless re-casting (directorFilmedRecast).
+			rawFrame = filmed && prev != nil
+			if prev != nil {
+				if model, ok := modelark.ProviderModel(in.VideoModel); ok && model.SupportsVideoExtension && !filmed {
+					return f.directorVideoExtension(c, j, in, directorExtensionState{})
 				}
-				frames = append(frames, last)
+				if directorVideoBusy(prev) {
+					return f.store.Wait(c, j, nil, now.Add(directorVideoPoll))
+				}
+				frame := doc.VideoFrames[prev.ID]
+				if prev.Video == nil || prev.Video.Status != "succeeded" || prev.Video.Stale || frame.Key == "" || frame.ClipKey != doc.Keys[directorVideoTarget(prev.ID)] {
+					return f.failWith(c, j, in, true, "VIDEO_DEPENDENCY_NOT_READY", "กรุณาสร้างวิดีโอ shot ก่อนหน้าใหม่ให้สำเร็จก่อน", nil)
+				}
+				firstImageKey, sourceClipKey = frame.Key, frame.ClipKey
 			}
 			cast := directorFeaturedCast(directorShotCharacters(in.Characters, sh.CharacterAssetIDs), directorShotAction(&doc, sh))
-			refs := []string{}
-			used := []directorCharacter{}
-			for _, ch := range cast {
-				if len(frames)+len(refs) >= directorMaxVideoReferences || ch.Key == "" {
-					break
+			if textOnly {
+				// Experiment A3: no reference image at all; identity and look come from text only.
+				prompt := directorTextOnlyVideoPrompt(&doc, &doc.Project, sh, cast)
+				if e := promptcompiler.ValidateVideoPrompt(prompt); e != nil {
+					return f.failWith(c, j, in, true, "VIDEO_PROMPT_TOO_LONG", "รายละเอียดวิดีโอรวมยาวเกินขีดจำกัด กรุณาย่อข้อความแล้วลองใหม่", nil)
 				}
-				u, _, e := f.storage.SignedURL(c, ch.Key, time.Hour)
-				if e == nil && f.options.ReferenceCheck != nil {
-					e = f.options.ReferenceCheck(c, u)
-				}
+				firstImageKey = ""
+				request.Content = []modelark.ContentItem{{Type: modelark.ContentTypeText, Text: prompt}}
+			} else {
+				first, _, e := f.storage.SignedURL(c, firstImageKey, time.Hour)
 				if e != nil {
-					log.Printf("director: job=%s video reference for character %s unavailable: %s", j.ID, ch.ID, directorCause(e))
-					continue
+					return f.failWith(c, j, in, true, "REFERENCE_UNAVAILABLE", "เปิดเฟรมเริ่มต้นไม่ได้ กรุณาลองใหม่", e)
 				}
-				refs = append(refs, u)
-				used = append(used, ch)
-			}
-			build := func(frames, refs []string, cast []directorCharacter) []modelark.ContentItem {
-				items := []modelark.ContentItem{{Type: modelark.ContentTypeText, Text: directorVideoPrompt(&doc, &doc.Project, sh, cast, len(frames) > 1)}}
-				for _, u := range append(append([]string{}, frames...), refs...) {
-					items = append(items, modelark.ContentItem{Type: modelark.ContentTypeImageURL, URL: u, Role: modelark.RoleReferenceImage})
+				// First-frame conditioning is exclusive with omni-reference image mode.
+				prompt := directorVideoPrompt(&doc, &doc.Project, sh, cast, sourceClipKey != "")
+				if e := promptcompiler.ValidateVideoPrompt(prompt); e != nil {
+					return f.failWith(c, j, in, true, "VIDEO_PROMPT_TOO_LONG", "รายละเอียดวิดีโอรวมยาวเกินขีดจำกัด กรุณาย่อข้อความแล้วลองใหม่", nil)
 				}
-				return items
-			}
-			request.Content = build(frames, refs, used)
-			// Seedance screens every reference for real-looking faces; character sheets are the most
-			// likely to be flagged, then the next frame. Rejection happens at submission and is free,
-			// so fall back to frames only, then the first frame only.
-			attempts = append(attempts, build(frames, nil, nil))
-			if len(frames) > 1 {
-				attempts = append(attempts, build(frames[:1], nil, nil))
+				request.Content = []modelark.ContentItem{
+					{Type: modelark.ContentTypeText, Text: prompt},
+					{Type: modelark.ContentTypeImageURL, URL: first, Role: modelark.RoleFirstFrame},
+				}
 			}
 			request.Ratio, request.DurationSeconds, request.Resolution, request.Draft = in.Ratio, int64(in.Seconds), in.Resolution, in.Draft
+			// Seedance 2.5 locks first-frame tasks to the frame's own ratio and rejects any fixed ratio.
+			if firstImageKey != "" && in.VideoModel == "dreamina-seedance-2-5-260628" {
+				request.Ratio = "adaptive"
+			}
 			if in.Draft {
 				request.Resolution = "480p"
 			}
 		}
+		dependencyChanged := errors.New("video source changed before submission")
 		if e = f.progress(c, j, in, func(d *directorDocument) error {
 			sh := directorFindShot(&d.Project, in.ShotID)
 			if sh == nil || sh.Video == nil {
 				return repo.ErrConflict
 			}
+			if sourceClipKey != "" && in.DraftTaskID == "" {
+				prev := directorPreviousShot(&d.Project, sh)
+				if prev == nil || prev.Video == nil || prev.Video.Status != "succeeded" || prev.Video.Stale || d.Keys[directorVideoTarget(prev.ID)] != sourceClipKey || d.VideoFrames[prev.ID].Key != firstImageKey {
+					return dependencyChanged
+				}
+			}
 			sh.Video.Status = "processing"
 			sh.Video.Progress = 5
 			return nil
 		}); e != nil {
+			if errors.Is(e, dependencyChanged) {
+				return f.failWith(c, j, in, true, "VIDEO_DEPENDENCY_NOT_READY", "วิดีโอ shot ก่อนหน้าเปลี่ยน กรุณารอให้สำเร็จแล้วลองใหม่", nil)
+			}
 			return e
 		}
 		request.HumanFaceMode = f.options.VideoHumanFaceMode
 		id, e := f.video.CreateTask(c, request)
-		for _, fallback := range attempts {
-			if e == nil || !directorVideoReferenceRejected(e) {
-				break
-			}
-			if len(fallback) >= len(request.Content) {
-				continue
-			}
-			log.Printf("director: job=%s video reference rejected with %d images, retrying with %d", j.ID, len(request.Content)-1, len(fallback)-1)
-			request.Content = fallback
-			id, e = f.video.CreateTask(c, request)
-		}
 		if e != nil {
 			d := modelark.VideoFailureDiagnostic(e)
 			code, message := "VIDEO_PROVIDER_ERROR", ""
@@ -768,22 +827,28 @@ func (f *DirectorFacade) directorVideo(c context.Context, j *models.DirectorJob,
 			if errors.As(e, &ve) {
 				code, message = ve.Code, ve.Message
 			}
+			if rawFrame && code == "PROVIDER_IMAGE_REJECTED" && directorFacelessRecipe(in.FilmedRecipe) {
+				return f.directorFilmedRecast(c, j, in)
+			}
 			// Nothing reached the provider when the request failed before submission: refund and allow retry.
 			definitive := d.HTTPStatus >= 400 && d.HTTPStatus < 500 || errors.Is(e, modelark.ErrNotSubmitted)
-			return f.failWith(c, j, in, definitive, code, message, fmt.Errorf("video submit http=%d model=%s ratio=%s seconds=%d resolution=%s draft=%t refine=%t last_frame=%t refs=%d: %w", d.HTTPStatus, in.VideoModel, request.Ratio, request.DurationSeconds, request.Resolution, request.Draft, in.DraftTaskID != "", in.NextImageKey != "", len(request.Content)-1, e))
+			return f.failWith(c, j, in, definitive, code, message, fmt.Errorf("video submit http=%d model=%s ratio=%s seconds=%d resolution=%s draft=%t refine=%t last_frame=%t refs=%d: %w", d.HTTPStatus, in.VideoModel, request.Ratio, request.DurationSeconds, request.Resolution, request.Draft, in.DraftTaskID != "", sourceClipKey != "", len(request.Content)-1, e))
 		}
 		if id == "" {
 			return f.fail(c, j, in, false)
 		}
-		raw, e := json.Marshal(directorVideoTask{TaskID: id, SubmittedAt: now})
+		raw, e := json.Marshal(directorVideoTask{TaskID: id, SubmittedAt: now, SourceClipKey: sourceClipKey, FirstImageKey: firstImageKey, Extension: in.Extension, RawFrame: rawFrame})
 		if e != nil {
 			return e
 		}
 		return f.store.Wait(c, j, raw, now.Add(directorVideoPoll))
 	}
 	var task directorVideoTask
-	if json.Unmarshal(j.Output, &task) != nil || task.TaskID == "" {
+	if json.Unmarshal(j.Output, &task) != nil || task.TaskID == "" && task.OwnedVideoKey == "" {
 		return f.fail(c, j, in, false)
+	}
+	if task.OwnedVideoKey != "" {
+		return f.directorStoredVideo(c, j, in, &task, nil, "")
 	}
 	if f.video == nil || f.fetcher == nil {
 		return f.store.Wait(c, j, j.Output, now.Add(time.Minute))
@@ -813,12 +878,16 @@ func (f *DirectorFacade) directorVideo(c context.Context, j *models.DirectorJob,
 		}
 		return f.store.Wait(c, j, j.Output, now.Add(directorVideoPoll))
 	case modelark.ProviderStatusFailed, modelark.ProviderStatusCancelled:
+		if task.RawFrame && result.ErrorCode == "PROVIDER_IMAGE_REJECTED" && directorFacelessRecipe(in.FilmedRecipe) {
+			return f.directorFilmedRecast(c, j, in)
+		}
 		code, message := "VIDEO_GENERATION_FAILED", "บริการสร้างวิดีโอไม่สำเร็จหรือปฏิเสธเนื้อหาของ shot นี้ กรุณาปรับคำบรรยายหรือภาพแล้วลองใหม่"
-		if result.ErrorCode != "" && result.ErrorCode != "PROVIDER_GENERATION_FAILED" && result.ErrorMessage != "" {
+		switch result.ErrorCode {
+		case "PROVIDER_OUTPUT_REJECTED", "PROVIDER_IMAGE_REJECTED", "PROVIDER_TEXT_REJECTED":
 			code, message = result.ErrorCode, result.ErrorMessage
 		}
 		message += directorProviderHint(0, result.FailureDiagnostic.ProviderCode)
-		return f.failWith(c, j, in, true, code, message, fmt.Errorf("video task status=%s code=%s provider=%s", result.Status, result.ErrorCode, result.FailureDiagnostic.ProviderCode))
+		return f.failWith(c, j, in, true, code, message, fmt.Errorf("video task status=%s code=%s provider=%s", result.Status, result.ErrorCode, directorSafeToken(result.FailureDiagnostic.ProviderCode)))
 	case modelark.ProviderStatusSucceeded:
 		data, kind, e := f.fetcher.Fetch(c, result.VideoURL)
 		if e != nil {
@@ -834,26 +903,153 @@ func (f *DirectorFacade) directorVideo(c context.Context, j *models.DirectorJob,
 		if e = f.storage.Upload(c, key, data, "video/mp4"); e != nil {
 			return f.store.Wait(c, j, j.Output, now.Add(directorVideoRetry))
 		}
-		return f.finish(c, j, in, "succeeded", false, func(d *directorDocument) error {
-			d.Keys[j.TargetID] = key
-			if in.Draft {
-				d.VideoDrafts[in.ShotID] = directorVideoDraft{TaskID: task.TaskID, Provider: in.VideoModel, CreatedAt: task.SubmittedAt}
-			} else {
-				delete(d.VideoDrafts, in.ShotID)
-			}
-			if sh := directorFindShot(&d.Project, in.ShotID); sh != nil && sh.Video != nil {
-				sh.Video.Status = "succeeded"
-				sh.Video.Progress = 100
-				sh.Video.Draft = in.Draft
-				nextChanged := in.NextShotID != "" && d.Keys[in.NextShotID] != in.NextImageKey
-				sh.Video.Stale = in.DraftTaskID == "" && (d.Keys[sh.ID] != in.ImageKey || sh.Description != in.Description || sh.Camera != in.Camera || nextChanged)
-				sh.Video.DirectorFailure = dto.DirectorFailure{}
-			}
-			return nil
-		})
+		task.OwnedVideoKey = key
+		raw, e := json.Marshal(task)
+		if e != nil {
+			return e
+		}
+		if e = f.store.RecordOutput(c, j, raw); e != nil {
+			return e
+		}
+		j.Output = raw
+		return f.directorStoredVideo(c, j, in, &task, data, result.LastFrameURL)
+
 	default:
 		return f.fail(c, j, in, false)
 	}
+}
+
+func (f *DirectorFacade) directorStoredVideo(c context.Context, j *models.DirectorJob, in directorJobInput, task *directorVideoTask, data []byte, providerFrameURL string) error {
+	expected := fmt.Sprintf("director/%s/%s/%s/%s.mp4", j.UserID, j.ProjectID, in.ShotID, j.ID)
+	if task.OwnedVideoKey != expected {
+		return f.failWith(c, j, in, false, "VIDEO_FRAME_RECOVERY_FAILED", "ไม่สามารถกู้คืนวิดีโอที่บันทึกไว้ กรุณาติดต่อผู้ดูแลระบบ", nil)
+	}
+	if task.PersistenceAttempts >= 3 {
+		return f.failWith(c, j, in, false, "VIDEO_FRAME_RECOVERY_FAILED", "เตรียมเฟรมสุดท้ายจากวิดีโอไม่สำเร็จ กรุณาติดต่อผู้ดูแลระบบ", nil)
+	}
+	task.PersistenceAttempts++
+	raw, e := json.Marshal(task)
+	if e != nil {
+		return e
+	}
+	if e = f.store.RecordOutput(c, j, raw); e != nil {
+		return e
+	}
+	j.Output = raw
+	retry := func() error {
+		if task.PersistenceAttempts >= 3 {
+			return f.failWith(c, j, in, false, "VIDEO_FRAME_RECOVERY_FAILED", "เตรียมเฟรมสุดท้ายจากวิดีโอไม่สำเร็จ กรุณาติดต่อผู้ดูแลระบบ", nil)
+		}
+		return f.store.Wait(c, j, j.Output, time.Now().UTC().Add(directorVideoRetry))
+	}
+	if len(data) == 0 {
+		u, _, err := f.storage.SignedURL(c, task.OwnedVideoKey, time.Hour)
+		if err != nil {
+			return retry()
+		}
+		var kind string
+		if f.options.VideoFetch != nil {
+			data, kind, e = f.options.VideoFetch(c, u)
+		} else if f.fetcher != nil {
+			data, kind, e = f.fetcher.Fetch(c, u)
+		} else {
+			return retry()
+		}
+		if e != nil || len(data) == 0 || len(data) > 300<<20 || !strings.HasPrefix(kind, "video/") {
+			return retry()
+		}
+	}
+	if task.Extension {
+		processor, ok := f.options.Processor.(videoprocessing.VideoContinuationProcessor)
+		if !ok {
+			return retry()
+		}
+		if e = processor.ValidateContinuationOutput(c, data, float64(in.Seconds)); e != nil {
+			return f.failWith(c, j, in, false, "VIDEO_EXTENSION_OUTPUT_INVALID", "Video continuation did not return the requested new footage duration", nil)
+		}
+	}
+	var frameData []byte
+	if providerFrameURL != "" && f.fetcher != nil {
+		frameData, _, _ = f.fetcher.Fetch(c, providerFrameURL)
+	}
+	if !storyValidImage(frameData) {
+		extractor, ok := f.options.Processor.(videoprocessing.LastFrameExtractor)
+		if !ok {
+			return retry()
+		}
+		frameData, e = extractor.ExtractLastFrame(c, data)
+		if e != nil || len(frameData) > 32<<20 || !storyValidImage(frameData) {
+			return retry()
+		}
+	}
+	frameKind := http.DetectContentType(frameData)
+	ext := ".png"
+	if frameKind == "image/jpeg" {
+		ext = ".jpg"
+	}
+	frameKey := strings.TrimSuffix(task.OwnedVideoKey, ".mp4") + "-last" + ext
+	if e = f.storage.Upload(c, frameKey, frameData, frameKind); e != nil {
+		return retry()
+	}
+	return f.finish(c, j, in, "succeeded", false, func(d *directorDocument) error {
+		if in.FilmedRecipe != "" {
+			directorRecordExperiment(d, directorExperiment{ShotID: in.ShotID, Recipe: in.FilmedRecipe, JobID: j.ID.String(), Path: directorExperimentPath(task.SourceClipKey), Status: "succeeded", ClipKey: task.OwnedVideoKey, FrameKey: frameKey, At: time.Now().UTC()})
+		}
+		d.Keys[j.TargetID] = task.OwnedVideoKey
+		d.VideoFrames[in.ShotID] = directorVideoFrame{Key: frameKey, ClipKey: task.OwnedVideoKey, SourceClipKey: task.SourceClipKey}
+		if in.Draft && task.TaskID != "" {
+			d.VideoDrafts[in.ShotID] = directorVideoDraft{Extension: task.Extension, TaskID: task.TaskID, Provider: in.VideoModel, CreatedAt: task.SubmittedAt}
+		} else {
+			delete(d.VideoDrafts, in.ShotID)
+		}
+		if sh := directorFindShot(&d.Project, in.ShotID); sh != nil && sh.Video != nil {
+			sh.Video.Status = "succeeded"
+			sh.Video.Progress = 100
+			sh.Video.Draft = in.Draft
+			sourceChanged := false
+			if prev := directorPreviousShot(&d.Project, sh); prev != nil && task.SourceClipKey != "" {
+				sourceChanged = d.Keys[directorVideoTarget(prev.ID)] != task.SourceClipKey || prev.Video == nil || prev.Video.Stale || prev.Video.Status != "succeeded"
+			}
+			sh.Video.Stale = task.Recovered && directorPreviousShot(&d.Project, sh) != nil || sourceChanged || in.DraftTaskID == "" && (d.Keys[sh.ID] != in.ImageKey || sh.Description != in.Description || sh.Camera != in.Camera)
+			sh.Video.DirectorFailure = dto.DirectorFailure{}
+			if task.Recovered {
+				for next := directorNextShot(&d.Project, sh); next != nil; next = directorNextShot(&d.Project, next) {
+					directorMarkVideoStale(next)
+				}
+			}
+		}
+		return nil
+	})
+}
+
+// directorFilmedRecast retries a rejected raw-last-frame continuation through faceless casting of
+// that same frame (no extra charge); continuity then relies on pose and text rather than pixels.
+func (f *DirectorFacade) directorFilmedRecast(c context.Context, j *models.DirectorJob, in directorJobInput) error {
+	log.Printf("director: job=%s kind=video fallback=faceless_recast reason=PROVIDER_IMAGE_REJECTED", j.ID)
+	j.Output = nil
+	return f.directorSyntheticVideo(c, j, in, directorSyntheticState{})
+}
+
+// directorFilmedFraming reframes realistic/cinematic close-ups of two or more characters as
+// over-the-shoulder shots: the provider rejects outputs with several realistic faces in close-up.
+func directorFilmedFraming(s directorShotOutput, style string) directorShotOutput {
+	if (style == "realistic" || style == "cinematic") && s.Camera == "โคลสอัพ" && len(s.CharacterAssetIDs) > 1 {
+		s.Camera = "มุมข้ามไหล่"
+	}
+	return s
+}
+
+// directorFacelessRecipe reports whether filmed shots use faceless casting (A1). It is the default
+// for realistic/cinematic since experiment A (2026-11-09); "pose3d", "clay" and "textonly" opt out.
+func directorFacelessRecipe(recipe string) bool {
+	return recipe == "" || recipe == "faceless"
+}
+
+func directorExperimentPath(sourceClipKey string) string {
+	if sourceClipKey != "" {
+		return "continued"
+	}
+	return "first"
 }
 
 func directorCause(e error) string {
@@ -960,7 +1156,7 @@ func (f *DirectorFacade) alignPlannedShots(shots []directorShotOutput, p *dto.Di
 	valid := []directorShotOutput{}
 	for _, s := range out {
 		sc := directorFindScene(p, directorFindShot(p, s.ID).SceneID)
-		if s = f.normalizeShot(s, sc.CharacterAssetIDs); f.validShot(s, sc.CharacterAssetIDs) {
+		if s = directorFilmedFraming(f.normalizeShot(s, sc.CharacterAssetIDs), p.Style); f.validShot(s, sc.CharacterAssetIDs) {
 			valid = append(valid, s)
 		}
 	}
@@ -1003,6 +1199,62 @@ func directorRetryWithFewerReferences(e error) bool {
 		return true
 	}
 	return false
+}
+
+// directorRateLimitRetries is how many times an image refused for rate limiting goes back to the
+// queue before it fails. Parallel storyboard images can briefly exceed the provider's limit.
+const directorRateLimitRetries = 3
+
+// directorRateLimited reports a provider refusal that says "try later". Such an answer means no
+// image was produced, so submitting the request again cannot charge the user twice.
+func directorRateLimited(e error) bool {
+	d := modelark.ImageFailureDiagnostic(e)
+	if d.HTTPStatus == http.StatusTooManyRequests {
+		return true
+	}
+	switch d.ProviderCode {
+	case "RateLimit", "RateLimitExceeded", "ServerOverloaded":
+		return true
+	}
+	return false
+}
+
+// directorRateLimitDelay grows with each retry and adds jitter so refused images do not return
+// to the provider together: 10-30s, 20-40s, 30-50s.
+func directorRateLimitDelay(attempt int) time.Duration {
+	return time.Duration(attempt)*10*time.Second + time.Duration(rand.Int63n(int64(20*time.Second)))
+}
+
+// directorImageBackoff puts a rate-limited image back in the queue. Wait releases the lease and
+// a later claim (after the delay) generates the image again; the shot shows as queued meanwhile.
+func (f *DirectorFacade) directorImageBackoff(c context.Context, j *models.DirectorJob, in directorJobInput, cause error) error {
+	in.RateLimitRetries++
+	raw, e := json.Marshal(in)
+	if e != nil {
+		return e
+	}
+	j.Snapshot = raw
+	delay := directorRateLimitDelay(in.RateLimitRetries)
+	d := modelark.ImageFailureDiagnostic(cause)
+	log.Printf("director: job=%s image rate limited http=%d code=%s, retry %d/%d in %s", j.ID, d.HTTPStatus, d.ProviderCode, in.RateLimitRetries, directorRateLimitRetries, delay.Round(time.Second))
+	if e = f.progress(c, j, in, func(doc *directorDocument) error {
+		if j.Kind == "cover" {
+			if doc.Project.Cover != nil && doc.Project.Cover.Status == "processing" {
+				doc.Project.Cover.Status = "queued"
+				doc.Project.Cover.Progress = 0
+			}
+			return nil
+		}
+		if sh := directorFindShot(&doc.Project, j.TargetID); sh != nil && sh.Image.Status == "processing" {
+			sh.Image.Status = "queued"
+			sh.Image.Progress = 0
+			directorRecount(&doc.Project)
+		}
+		return nil
+	}); e != nil {
+		return e
+	}
+	return f.store.Wait(c, j, nil, time.Now().Add(delay))
 }
 
 // imageProgress publishes an estimated percentage while the synchronous image call runs,
@@ -1114,7 +1366,7 @@ func (f *DirectorFacade) directorExport(c context.Context, j *models.DirectorJob
 		return f.failWith(c, j, in, true, "EXPORT_UNAVAILABLE", "ยังไม่ได้ตั้งค่าระบบรวมวิดีโอ กรุณาติดต่อผู้ดูแลระบบ", nil)
 	}
 	if len(in.ClipKeys) == 0 || len(in.ClipKeys) > 40 {
-		return f.failWith(c, j, in, true, "VIDEO_INCOMPLETE", "ยังมี shot ที่ไม่มีวิดีโอ กรุณาสร้างวิดีโอให้ครบก่อน export", nil)
+		return f.failWith(c, j, in, true, "VIDEO_INCOMPLETE", "ยังไม่มี shot ที่มีวิดีโอ กรุณาสร้างวิดีโออย่างน้อย 1 shot ก่อน export", nil)
 	}
 	setProgress := func(p int) error {
 		return f.progress(c, j, in, func(d *directorDocument) error {
@@ -1176,7 +1428,10 @@ func (f *DirectorFacade) directorExport(c context.Context, j *models.DirectorJob
 	})
 }
 
-func directorVideoReferenceRejected(e error) bool {
-	var ve *modelark.VideoError
-	return errors.As(e, &ve) && ve.Code == "PROVIDER_IMAGE_REJECTED"
+// directorSafeToken prints only allowlisted provider families; empty means none was reported or recognized.
+func directorSafeToken(family string) string {
+	if family == "" {
+		return "-"
+	}
+	return family
 }

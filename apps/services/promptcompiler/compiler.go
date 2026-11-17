@@ -16,7 +16,17 @@ import (
 	"github.com/ez-gen/ez-gen-api/apps/services/modelark"
 )
 
-var ErrPromptBudget = errors.New("dialogue exceeds prompt budget")
+// VideoPromptRuneLimit is an application safety limit, not a provider hard limit.
+const VideoPromptRuneLimit = 16000
+
+var ErrPromptBudget = errors.New("compiled video prompt exceeds application budget")
+
+func ValidateVideoPrompt(prompt string) error {
+	if utf8.RuneCountInString(prompt) > VideoPromptRuneLimit {
+		return ErrPromptBudget
+	}
+	return nil
+}
 
 // Result is returned by Compile and contains everything needed to
 // (a) submit a generation job and (b) store an immutable effective-inputs snapshot.
@@ -41,8 +51,9 @@ type Result struct {
 // video_generation_jobs.effective_inputs (JSONB). Editing profiles after
 // submission does not change this record.
 type EffectiveInputsSnapshot struct {
-	PipelineRenderingVersion string `json:"pipelineRenderingVersion,omitempty"`
-	Dialogue                 string `json:"dialogue,omitempty"`
+	FilmedLook               FilmedLook `json:"filmedLook,omitempty"`
+	PipelineRenderingVersion string     `json:"pipelineRenderingVersion,omitempty"`
+	Dialogue                 string     `json:"dialogue,omitempty"`
 	// CharacterProfileID/Version mirror Characters[0] for rows written before
 	// multi-character scenes.
 	CharacterProfileID      string              `json:"characterProfileId,omitempty"`
@@ -96,16 +107,12 @@ func Compile(in Inputs, model modelark.ModelConfig) (*Result, error) {
 	// ── 2. Compile text prompt sections ──────────────────────────────────────
 	controls, sections, negativeInstructions := assemblePrompt(in)
 
-	// Protect normal-sized role, environment and negative controls from a long creative brief.
-	// The overall rune budget still applies when control text alone exceeds it.
-	compiledPrompt := truncateRunes(strings.Join(append(controls, sections...), ". "), maxPromptRunes)
+	compiledPrompt := composePrompt(controls, sections)
 	if in.Dialogue != "" {
-		speech := spokenDialogue(in.Dialogue, model.ProviderModelID)
-		budget := maxPromptRunes - utf8.RuneCountInString(speech) - 2
-		if budget < 0 || utf8.RuneCountInString(strings.Join(append(controls, sections...), ". ")) > budget {
-			return nil, ErrPromptBudget
-		}
-		compiledPrompt = speech + ". " + truncateRunes(strings.Join(append(controls, sections...), ". "), budget)
+		compiledPrompt = spokenDialogue(in.Dialogue, model.ProviderModelID) + ". " + compiledPrompt
+	}
+	if err := ValidateVideoPrompt(compiledPrompt); err != nil {
+		return nil, err
 	}
 
 	// ── 3. Build content items (text first, then images in role order) ─────────
@@ -130,6 +137,7 @@ func Compile(in Inputs, model modelark.ModelConfig) (*Result, error) {
 	// ── 4. Build snapshot ─────────────────────────────────────────────────────
 	snap := EffectiveInputsSnapshot{
 		PipelineRenderingVersion: in.PipelineRenderingVersion,
+		FilmedLook:               activeFilmedLook(in),
 		Dialogue:                 in.Dialogue,
 		ModelID:                  in.ModelID,
 		Resolution:               resolution,
@@ -187,7 +195,7 @@ func Compile(in Inputs, model modelark.ModelConfig) (*Result, error) {
 // assemblePrompt builds the control and content sections of the text prompt. Compile and
 // PromptUsage both use it, so a preflight budget always matches what Compile enforces.
 func assemblePrompt(in Inputs) (controls, sections []string, negativeInstructions string) {
-	controls = referenceControls(in.Assets, in.PipelineRenderingVersion)
+	controls = referenceControls(in.Assets, in.PipelineRenderingVersion, activeFilmedLook(in))
 	if in.Scene != nil {
 		if in.Scene.SettingOverride != "" {
 			controls = append(controls, "Scene environment: "+in.Scene.SettingOverride)
@@ -260,15 +268,21 @@ func assemblePrompt(in Inputs) (controls, sections []string, negativeInstruction
 }
 
 // PromptUsage reports the runes the compiled prompt needs (controls, scene, characters and
-// the spoken-dialogue instruction) against the provider limit. Without dialogue Compile
-// truncates an overlong prompt; with dialogue it rejects it with ErrPromptBudget.
+// the spoken-dialogue instruction) against the application safety limit used by Compile.
 func PromptUsage(in Inputs, model modelark.ModelConfig) (used, limit int) {
 	controls, sections, _ := assemblePrompt(in)
-	used = utf8.RuneCountInString(strings.Join(append(controls, sections...), ". "))
+	used = utf8.RuneCountInString(composePrompt(controls, sections))
 	if in.Dialogue != "" {
 		used += utf8.RuneCountInString(spokenDialogue(in.Dialogue, model.ProviderModelID)) + 2
 	}
-	return used, maxPromptRunes
+	return used, VideoPromptRuneLimit
+}
+
+func composePrompt(controls, sections []string) string {
+	if prompt, ok := composeFilmedPrompt(controls, sections); ok {
+		return prompt
+	}
+	return strings.Join(append(controls, sections...), ". ")
 }
 
 func spokenDialogue(dialogue, providerModelID string) string {
@@ -300,7 +314,24 @@ func predominantlyThaiDialogue(text string) bool {
 	return thai > other
 }
 
-func referenceControls(assets []AssetRef, pipelineRenderingVersion string) []string {
+func activeFilmedLook(in Inputs) FilmedLook {
+	if in.PipelineRenderingVersion != PipelineFilmedHumanVideoVersion || (in.FilmedLook != FilmedLookNatural && in.FilmedLook != FilmedLookCinematic) {
+		return ""
+	}
+	for _, asset := range in.Assets {
+		if (asset.PreserveScene || asset.PoseCasting) && !strings.HasPrefix(asset.MimeType, "video/") && toContentRole(asset.Role) == modelark.RoleReferenceImage {
+			return in.FilmedLook
+		}
+	}
+	return ""
+}
+
+func referenceControls(assets []AssetRef, pipelineRenderingVersion string, looks ...FilmedLook) []string {
+	var look FilmedLook
+	if pipelineRenderingVersion == PipelineFilmedHumanVideoVersion && len(looks) > 0 && (looks[0] == FilmedLookNatural || looks[0] == FilmedLookCinematic) {
+		look = looks[0]
+	}
+	sceneLook := false
 	var controls []string
 	imageIndex := 0
 	hasImageSubject := false
@@ -317,15 +348,26 @@ func referenceControls(assets []AssetRef, pipelineRenderingVersion string) []str
 			controls = append(controls, fmt.Sprintf("Image %d: preserve the complete supplied ending frame, including its composition and background, as the video end", imageIndex))
 		case modelark.RoleReferenceImage:
 			hasImageSubject = true
-			if pipelineRenderingVersion == PipelineFilmedHumanVideoVersion {
+			if pipelineRenderingVersion == PipelineFilmedHumanVideoVersion && asset.PoseCasting && look != "" {
+				sceneLook = true
+				controls = append(controls, filmedPoseCastingTemplate(look, imageIndex))
+			} else if pipelineRenderingVersion == PipelineFilmedHumanVideoVersion && asset.PreserveScene && look != "" {
+				sceneLook = true
+				controls = append(controls, filmedTemplate(look, imageIndex))
+			} else if pipelineRenderingVersion == PipelineFilmedHumanVideoVersion && asset.PreserveScene {
+				controls = append(controls, fmt.Sprintf("Image %d: complete scene design and composition guide. Preserve subject placement, pose, camera framing and the scene background/environment while continuing the described action. Preserve face/body geometry, haircut and outfit without beautification or identity drift. Replace CG shading, materials and drawn skin with filmed-human appearance. Re-render the scene naturally; this reference does not guarantee a pixel-exact start frame.", imageIndex))
+			} else if pipelineRenderingVersion == PipelineFilmedHumanVideoVersion {
 				controls = append(controls, fmt.Sprintf("Image %d: casting/design guide for face/body geometry, haircut and outfit only; no beautification or identity drift. Exclude its shading, CG materials, drawn skin, pose and background. Not a texture/style/start frame; follow scene setting, action and camera.", imageIndex))
 			} else {
 				controls = append(controls, fmt.Sprintf("Image %d: use only the subject appearance as a visual reference; exclude its source background. Do not infer the scene environment from this reference. Use the existing scene description and any explicit scene environment override; when neither specifies an environment, no specific replacement environment is prescribed", imageIndex))
 			}
 		}
 	}
+	if hasImageSubject && sceneLook {
+		return controls
+	}
 	if hasImageSubject && pipelineRenderingVersion == PipelineFilmedHumanVideoVersion {
-		controls = append(controls, "Filmed live-action human actor look: anatomically plausible skin with subtle texture and translucency, individual hair and real cloth. Natural eyes, blinks, expressions, spoken lip sync and grounded motion. Motivated practical lighting, natural shadows, optical depth and subtle shutter motion blur. Preserve designed identity as a filmed person, not CG/cartoon/plastic/doll; follow scene framing.")
+		controls = append(controls, filmedHumanControl)
 	} else if hasImageSubject && pipelineRenderingVersion == PipelineCinematicVideoVersion {
 		controls = append(controls, "Reference face/body/hair/clothes identity only, not style. Photoreal live-action film humans: skin microtexture/imperfections, hair/fabric; grounded weight/motion, expressions, blinks, natural lip sync. Turn matte CG to human materials. Motivated lighting, natural shadows, optical depth, subtle motion blur. No CG/cartoon/plastic/doll; follow scene camera/framing.")
 	} else if hasImageSubject && (pipelineRenderingVersion == characterdesign.PipelineRealisticCompilerVersion || pipelineRenderingVersion == characterdesign.PipelineSoftRealisticCompilerVersion || pipelineRenderingVersion == characterdesign.PipelineSemiRealisticCompilerVersion || pipelineRenderingVersion == characterdesign.PipelinePolished3DCompilerVersion || pipelineRenderingVersion == characterdesign.PipelineStylized3DCompilerVersion) {
@@ -348,7 +390,6 @@ func resolveMode(assets []AssetRef) (string, error) {
 }
 
 const (
-	maxPromptRunes           = 2000
 	maxCharacterSectionRunes = 750
 )
 

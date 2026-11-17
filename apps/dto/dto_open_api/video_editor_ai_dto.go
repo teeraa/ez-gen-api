@@ -29,6 +29,7 @@ type VideoEditorAICapabilitiesDTO struct {
 	CloudNotice            string                   `json:"cloudNotice"`
 	ConnectionMode         string                   `json:"connectionMode"`
 	SupportedOptions       EditorAISupportedOptions `json:"supportedOptions"`
+	InstructionEdits       bool                     `json:"instructionEdits"`
 }
 type VideoEditorAIJobDTO struct {
 	AutoCompose       bool                        `json:"autoCompose"`
@@ -62,4 +63,28 @@ type VideoEditorAIJobDTO struct {
 }
 type VideoEditorAIJobsDTO struct {
 	Items []VideoEditorAIJobDTO `json:"items"`
+}
+
+type VideoEditorAIEditOperationDTO struct {
+	Tool        string `json:"tool"`
+	Target      string `json:"target"`
+	Description string `json:"description"`
+}
+
+// VideoEditorAIEditProposalDTO is exactly the body for PUT /projects/:id (with
+// revision = baseRevision). ImageLayers is omitted only when the image-layer schema
+// is not installed, because PUT would then reject the field.
+type VideoEditorAIEditProposalDTO struct {
+	Title       string                          `json:"title"`
+	AspectRatio string                          `json:"aspectRatio"`
+	Segments    []models.VideoEditorSegment     `json:"segments"`
+	AudioClips  []models.VideoEditorAudioClip   `json:"audioClips"`
+	TextLayers  []models.VideoEditorTextLayer   `json:"textLayers"`
+	ImageLayers *[]models.VideoEditorImageLayer `json:"imageLayers,omitempty"`
+}
+type VideoEditorAIEditPreviewDTO struct {
+	BaseRevision int                             `json:"baseRevision"`
+	Summary      string                          `json:"summary"`
+	Operations   []VideoEditorAIEditOperationDTO `json:"operations"`
+	Proposal     VideoEditorAIEditProposalDTO    `json:"proposal"`
 }

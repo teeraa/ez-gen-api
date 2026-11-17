@@ -537,10 +537,16 @@ Scene camera/setting overrides are sent even without a style profile, and scene
 camera overrides retain precedence over style camera settings. Negative DNA tags
 are included in the actual text content under `Constraints:`; no unsupported
 provider negative-prompt field is added. Role/background controls, scene overrides
-and negative constraints precede the creative brief within the existing
-2,000-rune prompt budget. Normal-sized controls survive long briefs; control text
-that alone exceeds the budget can still be truncated. Character DNA and
-consistency notes remain part of the creative input under existing limits.
+and negative constraints precede the creative brief. Compiled video prompts use
+an application safety cap of16,000 Unicode code points and are rejected explicitly
+instead of silently truncating the final prompt. This is not a provider hard limit;
+provider guidance separately recommends concise prompts of up to500 Chinese
+characters or1000 English words. `PromptUsage` and compilation enforce the same
+application cap, including dialogue and its encoded controls. General job requests
+whose compiled prompt exceeds it return HTTP422 `PROMPT_TOO_LONG` before job
+persistence/provider submission. Raw public prompt limits (including the existing
+2000-character request field), image prompts and deliberate character DNA/consistency
+summary limits remain unchanged.
 
 Only newly compiled submissions use these instructions. Replaying an existing
 job with the same request and idempotency key returns that stored job without

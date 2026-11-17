@@ -50,17 +50,49 @@ type EditorAIConcept struct {
 	Summary        string  `json:"summary"`
 	Duration       float64 `json:"duration"`
 }
+
+// EditorAIDraftSegment carries the same optional effect fields as a timeline
+// VideoEditorSegment; zero values mean unchanged.
 type EditorAIDraftSegment struct {
-	ID         string  `json:"id"`
-	AssetID    string  `json:"assetId"`
-	Start      float64 `json:"start"`
-	End        float64 `json:"end"`
-	Volume     float64 `json:"volume"`
-	Title      string  `json:"title"`
-	Reason     string  `json:"reason"`
-	EvidenceID string  `json:"evidenceId"`
+	ID      string  `json:"id"`
+	AssetID string  `json:"assetId"`
+	Start   float64 `json:"start"`
+	End     float64 `json:"end"`
+	Volume  float64 `json:"volume"`
+	Speed   float64 `json:"speed,omitempty"`
+	FadeIn  float64 `json:"fadeIn,omitempty"`
+	FadeOut float64 `json:"fadeOut,omitempty"`
+	VideoEditorClipLook
+	VideoEditorTransition
+	Title      string `json:"title"`
+	Reason     string `json:"reason"`
+	EvidenceID string `json:"evidenceId"`
+}
+
+// TimelineSegment is the timeline segment that applying this draft segment produces.
+func (s EditorAIDraftSegment) TimelineSegment() VideoEditorSegment {
+	return VideoEditorSegment{ID: s.ID, AssetID: s.AssetID, Start: s.Start, End: s.End, Volume: s.Volume, Speed: s.Speed, FadeIn: s.FadeIn, FadeOut: s.FadeOut, VideoEditorClipLook: s.VideoEditorClipLook, VideoEditorTransition: s.VideoEditorTransition}
+}
+
+// EditorAITextStyle is an AI-chosen caption or title look; zero values keep the
+// server default for that field.
+type EditorAITextStyle struct {
+	Color        string  `json:"color,omitempty"`
+	OutlineColor string  `json:"outlineColor,omitempty"`
+	OutlineWidth int     `json:"outlineWidth,omitempty"`
+	BoxColor     string  `json:"boxColor,omitempty"`
+	BoxOpacity   float64 `json:"boxOpacity,omitempty"`
+	Animation    string  `json:"animation,omitempty"`
+	Font         string  `json:"font,omitempty"`
+	Y            float64 `json:"y,omitempty"`
+	FontSize     int     `json:"fontSize,omitempty"`
+}
+type EditorAITextStyles struct {
+	Caption *EditorAITextStyle `json:"caption,omitempty"`
+	Title   *EditorAITextStyle `json:"title,omitempty"`
 }
 type EditorAIDraft struct {
+	TextStyles       *EditorAITextStyles    `json:"textStyles,omitempty"`
 	TextLayers       []VideoEditorTextLayer `json:"textLayers,omitempty"`
 	AudioClips       []VideoEditorAudioClip `json:"audioClips,omitempty"`
 	CompositionNotes []string               `json:"compositionNotes,omitempty"`

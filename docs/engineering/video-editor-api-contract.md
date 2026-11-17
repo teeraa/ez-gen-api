@@ -20,6 +20,10 @@ Browser calls go through the Next proxy `/api/proxy/video-editor`.
   `audio/mp4|audio/x-m4a|audio/m4a|audio/aac|video/mp4|video/quicktime` for M4A, or
   `application/octet-stream`; a declared type contradicting the inspected container
   is `INVALID_FILE_TYPE`. An MP4 holding only audio becomes an audio asset.
+  Video files may run at most 20 minutes and audio files 60 minutes (music is usually
+  trimmed to a window); longer readable files fail with `MEDIA_TOO_LONG` (422). A failed
+  upload keeps the kind its declared MIME suggests (audio/*, image/*, else video) so it is
+  listed in the library tab it was sent from.
 - Up to 100 source assets per project; at most two processing uploads per user.
   The handler also bounds simultaneous per-user multipart parsing/processing.
 - Both save and export accept at most 20 segments and 1,200 seconds total.
@@ -105,6 +109,11 @@ AI-owned generated tracks while preserving unmarked manual tracks.
 | POST | `/projects` | `{requestId,title}` → Project; 201 created, 200 replay |
 | GET | `/projects/:id` | Project with ready signed media/frames |
 | PUT | `/projects/:id` | `{revision,title,aspectRatio,segments,audioClips?,textLayers?}` → Project with revision + 1 |
+| POST | `/projects/:id/uploads` | `{clientUploadId, name, mime, size}` → 201 `{uploadId, chunkSize: 5242880, chunks, size}`. Chunked upload for files above one request body: video/audio up to `capabilities.maxSourceBytes` (`EDITOR_MAX_SOURCE_MB`, default 500), images up to `maxUploadBytes`. At most 2 open sessions per user (429 `UPLOAD_BUSY`); sessions expire after 2 h idle and live in API process memory (one instance; lost on restart). Chunks are written to `$TMPDIR/ez-gen-uploads`. |
+| PUT | `/projects/:id/uploads/:uid/chunks/:index` | raw `application/octet-stream` body of exactly `chunkSize` bytes (the last chunk: the remainder) → `{received}`. Re-sending a chunk overwrites it. 422 for a wrong length or index, 404 `UPLOAD_SESSION_NOT_FOUND` for an unknown/expired session or another user's. |
+| POST | `/projects/:id/uploads/:uid/complete` | → the asset (201 created, 200 existing). 409 `UPLOAD_INCOMPLETE` with `details.missing: [index…]` when chunks are missing. A file ≤ `maxUploadBytes` (50 MB, what storage keeps per object on the Supabase Free plan) is stored exactly like `POST /assets`. A larger one is reserved as `processing` (30 min lease) and compressed in the background: video → H.264/AAC MP4, only scaled down (longest side 1280/960/854/640 by available bitrate), ≤ 30 fps, bitrate chosen so the file fits 92% of the limit (one tighter retry if it overshoots); audio → AAC. The stored file's hash and size replace the original's. Too long to fit even at 150 kbit/s video → the asset fails `FILE_TOO_LARGE` with a Thai message; the editor's asset polling shows the result. |
+| DELETE | `/projects/:id/uploads/:uid` | drops a session and its temporary file. |
+| DELETE | `/projects/:id` | → 200 `{id, deleted:true}`. Soft-deletes the project (it leaves the list and every project route then answers 404) and, in the same transaction, cancels its unfinished AI jobs (`queued`, `processing`, `awaiting_concept`, `review` → `cancelled`); a running worker stops via its claim check. This frees the per-user `AI_BUSY` slot held by a stuck job. 404 for a missing or another user's project |
 | GET | `/projects/:id/assets` | `{items:Asset[]}` |
 | POST | `/projects/:id/assets` | Multipart `file`, `clientUploadId` → Asset; 201 processed, 200 replay |
 | GET | `/projects/:id/exports` | `{items:Export[]}`, newest first, most recent 100 |
@@ -176,6 +185,7 @@ FFmpeg `drawtext` from a temporary text file with expansion disabled.
 | 413 | `FILE_TOO_LARGE` | Input exceeds 50 MiB |
 | 422 | `VALIDATION_ERROR` | Invalid timeline/project/export data |
 | 422 | `INVALID_FILE_TYPE` | Unsupported container/codec/track or invalid video |
+| 422 | `MEDIA_TOO_LONG` | Readable media longer than 20 min (video) or 60 min (audio) |
 | 503 | `MEDIA_UNAVAILABLE` | Required media runtime unavailable, including text export without drawtext/Thai font |
 | 503 | `STORAGE_UNAVAILABLE` | Storage write/sign failed |
 | 500 | `INTERNAL_ERROR` | Unexpected failure with no internal detail disclosure |
@@ -223,7 +233,8 @@ Capability `clipEffects: true` (absent on older backends) gates every field belo
 
 - Capability `clipStyles: true` gates segment looks, transitions and text styles; the web client never sends them otherwise (older servers would drop them silently).
 - Segment look (all optional, flat on the segment): `brightness`/`contrast`/`saturation` −1..1 → FFmpeg `eq` brightness·0.3, contrast 1+c/2, saturation 1+s (−1 = greyscale); `fit: "cover"` fills by cropping (default letterbox); `zoom` 1..3; `panX`/`panY` −1..1 pick the visible part (−1 = left/top). Preview uses an SVG filter with the same formula and the same scale→pad→crop geometry.
-- Segment `transition` (`fade`, `fadeblack`, `fadewhite`, `wipeleft`, `wiperight`, `slideleft`, `slideright`, `circleopen`) with `transitionDuration` 0.1..2 s, at most half of this and the previous segment; never on the first. The segment starts that much earlier, so the total is Σ(timeline lengths) − Σ(transitions). Export: `xfade` + `acrossfade` (tri), `concat` where a clip has none; with no transitions the legacy single `concat` is unchanged.
-- Text style: `outlineWidth` 0..20 px@1080 with `outlineColor`; `boxOpacity` 0..1 with `boxColor` (box padding = round(0.3·font px) + outline); `animation` `fade` | `slide` (0.3 s or a third of short layers; slide rises 4% of the height). Style is painted outside the measured text box, so clamping is unchanged.
+- Segment `zoomTo` (optional, 1..3, 0/absent = none): the zoom moves from `zoom` (default 1) to `zoomTo` over the segment's played length with smoothstep easing u²(3−2u); the export rescales every frame onto the w×h canvas exactly like the static scale→pad→crop (centre what is smaller, pan what overflows), and the Web preview uses the same curve.
+- Segment `transition` (`fade`, `fadeblack`, `fadewhite`, `wipeleft`, `wiperight`, `slideleft`, `slideright`, `circleopen`, `slideup`, `slidedown`, `smoothleft`, `smoothright`, `zoomin`, `hblur`, `pixelize`, `fadegrays`, `radial`) with `transitionDuration` 0.1..2 s, at most half of this and the previous segment; never on the first. The segment starts that much earlier, so the total is Σ(timeline lengths) − Σ(transitions). Export: `xfade` + `acrossfade` (tri), `concat` where a clip has none; with no transitions the legacy single `concat` is unchanged.
+- Text style: `outlineWidth` 0..20 px@1080 with `outlineColor`; `boxOpacity` 0..1 with `boxColor` (box padding = round(0.3·font px) + outline); `accentText` (a phrase inside one line, ≤100 chars, every occurrence; dropped on save when no longer in the text) with `accentColor` #RRGGBB draws that phrase in a second colour; the box has rounded corners of radius min(0.6·font px, half the box) on its outer edge (export rasterizes boxed or accented layers with the same pad/position as drawtext); `font` absent | `heavy` (bundled Kanit ExtraBold, SIL OFL; the Web preview loads the same file from `/fonts/kanit-extrabold.ttf`, and when the configured `FFMPEG_FONT_FILE` is missing or cannot draw Thai text the export falls back to bundled Kanit Regular); `animation` `fade` | `slide` | `pop` (pop also grows from 60% with an 18% overshoot around the text centre: scale = 0.6+0.4u+0.18·sin(πu), u = entrance progress; 0.3 s or a third of short layers; slide rises 4% of the height). Style is painted outside the measured text box, so clamping is unchanged.
 - Image layers (capability `imageLayers: true`, requires **migration 028**): assets of kind `image` (PNG/JPEG/WebP stills ≤ 4096 px, decoded on upload); `Project.imageLayers: {id, assetId, start, end, x, y, width, opacity}[]` max 20 — centre x/y 0..1, width 0.02..1 of the frame width, opacity 0.05..1. Overlaid under text; clipped to the video like text.
 - Ripple delete (client only): deleting a video clip shifts later audio/text/image items left by the amount the video got shorter.

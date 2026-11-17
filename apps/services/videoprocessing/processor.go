@@ -84,6 +84,9 @@ type ClipLook struct {
 	Zoom       float64
 	PanX       float64
 	PanY       float64
+	// ZoomTo (1..3, 0 = none) animates the zoom from Zoom to ZoomTo over the clip
+	// (eased), e.g. a slow push-in on a speaker.
+	ZoomTo float64
 }
 
 // TextLayer describes a text burn-in over one clip in the merged video.
@@ -119,10 +122,18 @@ type TextLayer struct {
 
 	// Editor-only styling. OutlineWidth is px at the 1080 reference (0 = none) in
 	// OutlineColor (hex, no "#"); BoxOpacity > 0 draws a BoxColor background box;
-	// Animation "fade" fades in/out and "slide" also rises into place.
+	// Animation "fade" fades in/out, "slide" also rises into place and "pop" also grows
+	// from 60% with a slight overshoot.
 	OutlineWidth int
 	OutlineColor string
 	BoxColor     string
 	BoxOpacity   float64
 	Animation    string
+	// Font "" uses the configured font (or bundled Kanit Regular when it lacks Thai);
+	// "heavy" uses bundled Kanit ExtraBold. Editor layers only.
+	Font string
+	// AccentText (a phrase within one line, every occurrence) is drawn in AccentColor
+	// (hex, no "#"), e.g. a golden second line or keyword in a white title.
+	AccentText  string
+	AccentColor string
 }

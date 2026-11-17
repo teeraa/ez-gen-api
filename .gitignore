@@ -36,3 +36,12 @@ coverage.html
 /models/
 __pycache__/
 *.py[cod]
+
+# Local Python runtime for Typhoon ASR
+/typhoon-venv/
+
+# Local Supabase (scripts/local-supabase)
+.env.remote
+.env.local-supabase
+.local-supabase/
+.env.bak*

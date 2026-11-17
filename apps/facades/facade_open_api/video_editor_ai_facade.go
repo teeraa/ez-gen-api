@@ -31,10 +31,11 @@ type VideoEditorAIFacade struct {
 	options  EditorAIOptions
 	mu       sync.Mutex
 	cancels  map[string]context.CancelFunc
+	edits    *aiEditLimiter
 }
 
 func NewVideoEditorAIFacade(r *repo.VideoEditorAIRepository, editor *VideoEditorFacade, p editorai.Provider, a editorai.Transcriber, options EditorAIOptions) *VideoEditorAIFacade {
-	return &VideoEditorAIFacade{repo: r, editor: editor, provider: p, asr: a, options: options, cancels: map[string]context.CancelFunc{}}
+	return &VideoEditorAIFacade{repo: r, editor: editor, provider: p, asr: a, options: options, cancels: map[string]context.CancelFunc{}, edits: newAIEditLimiter()}
 }
 func aiJSON(v any) datatypes.JSON { b, _ := json.Marshal(v); return datatypes.JSON(b) }
 func aiInput(j *models.VideoEditorAIJob) models.EditorAIInput {
@@ -63,7 +64,7 @@ func (f *VideoEditorAIFacade) Capabilities() dto.VideoEditorAICapabilitiesDTO {
 	if f.options.Fixture {
 		mode = "fixture"
 	}
-	return dto.VideoEditorAICapabilitiesDTO{AutoCompose: true, Available: available, UnavailableReason: reason, TranscriptionAvailable: a, AnalysisAvailable: p, MaxAssets: 8, MaxSourceDuration: 600, MaxFrames: 24, MaxTargetDuration: 120, MaxSegments: 20, MaxJobsPerDay: 20, MaxCloudCalls: 6, CloudNotice: "การวิเคราะห์จะส่งภาพตัวอย่างและข้อความถอดเสียงไปยัง Google บริการฟรีอาจใช้ข้อมูลเพื่อปรับปรุงผลิตภัณฑ์ กรุณาใช้เฉพาะข้อมูลที่เปิดเผยได้", ConnectionMode: mode, SupportedOptions: dto.EditorAISupportedOptions{RemoveSilence: true, Subtitles: true, Music: true}}
+	return dto.VideoEditorAICapabilitiesDTO{AutoCompose: true, Available: available, UnavailableReason: reason, TranscriptionAvailable: a, AnalysisAvailable: p, MaxAssets: 8, MaxSourceDuration: 600, MaxFrames: 24, MaxTargetDuration: 120, MaxSegments: 20, MaxJobsPerDay: 20, MaxCloudCalls: 6, CloudNotice: "การวิเคราะห์จะส่งภาพตัวอย่างและข้อความถอดเสียงไปยัง Google บริการฟรีอาจใช้ข้อมูลเพื่อปรับปรุงผลิตภัณฑ์ กรุณาใช้เฉพาะข้อมูลที่เปิดเผยได้", ConnectionMode: mode, SupportedOptions: dto.EditorAISupportedOptions{RemoveSilence: true, Subtitles: true, Music: true}, InstructionEdits: f.instructionEditsAvailable()}
 }
 func aiDTO(j *models.VideoEditorAIJob) dto.VideoEditorAIJobDTO {
 	in := aiInput(j)
@@ -283,15 +284,20 @@ func validateAIDraft(d *models.EditorAIDraft, in models.EditorAIInput, known map
 		sources[s.ID] = s
 	}
 	seen := map[string]bool{}
-	duration := 0.0
 	for _, s := range d.Segments {
 		a, ok := sources[s.AssetID]
 		if !ok || !veID(s.ID) || seen[s.ID] || known != nil && !known[s.ID] || !aiFinite(s.Start) || !aiFinite(s.End) || !aiFinite(s.Volume) || s.Start < 0 || s.End <= s.Start || s.End > a.Duration+.001 || s.Volume < 0 || s.Volume > 1 || strings.TrimSpace(s.Title) == "" || utf8.RuneCountInString(s.Title) > 200 || utf8.RuneCountInString(s.Reason) > 2000 {
 			return editorai.ErrInvalid
 		}
 		seen[s.ID] = true
-		duration += s.End - s.Start
 	}
+	// Effects are optional: values the editor validators reject become unchanged rather
+	// than failing the draft.
+	sanitizeAIDraftEffects(d.Segments)
+	if known == nil {
+		aiFitTargetDuration(d.Segments, in.TargetDuration)
+	}
+	duration := aiDraftDuration(d.Segments)
 	if duration > 1200 || known == nil && duration > in.TargetDuration+.05 {
 		return editorai.ErrInvalid
 	}
@@ -318,10 +324,17 @@ func (f *VideoEditorAIFacade) UpdateDraft(ctx context.Context, id, user string, 
 		return dto.VideoEditorAIJobDTO{}, repo.ErrAIDraft
 	}
 	known := map[string]bool{}
+	evidence := map[string]string{}
 	for _, s := range old.Segments {
 		known[s.ID] = true
+		evidence[s.ID] = s.EvidenceID
 	}
-	d := models.EditorAIDraft{Revision: in.DraftRevision, Segments: in.Segments}
+	segments := append([]models.EditorAIDraftSegment{}, in.Segments...)
+	for i := range segments {
+		// Evidence IDs are server-issued provenance; a manual edit cannot rewrite them.
+		segments[i].EvidenceID = evidence[segments[i].ID]
+	}
+	d := models.EditorAIDraft{Revision: in.DraftRevision, Segments: segments, TextStyles: sanitizeAITextStyles(old.TextStyles)}
 	if e = validateAIDraft(&d, aiInput(j), known); e != nil {
 		return dto.VideoEditorAIJobDTO{}, e
 	}
@@ -370,7 +383,17 @@ func (f *VideoEditorAIFacade) Apply(ctx context.Context, id, user string, in req
 		if draft.Revision == 1 {
 			known = nil
 		}
+		stored := aiDraftTimeline(draft.Segments)
 		if e = validateAIDraft(&draft, aiInput(j), known); e != nil {
+			return dto.VideoEditorProjectDTO{}, e
+		}
+		assets, e := f.editor.repo.Assets(ctx, j.ProjectID.String(), user)
+		if e != nil {
+			return dto.VideoEditorProjectDTO{}, e
+		}
+		// The repository applies the stored segments verbatim, so they must already be
+		// exactly what the timeline validator accepts.
+		if e = validateVESegments(stored, assets); e != nil {
 			return dto.VideoEditorProjectDTO{}, e
 		}
 		if aiInput(j).AutoCompose {
@@ -378,10 +401,6 @@ func (f *VideoEditorAIFacade) Apply(ctx context.Context, id, user string, in req
 				return dto.VideoEditorProjectDTO{}, e
 			}
 			current, e := f.editor.repo.Project(ctx, j.ProjectID.String(), user)
-			if e != nil {
-				return dto.VideoEditorProjectDTO{}, e
-			}
-			assets, e := f.editor.repo.Assets(ctx, j.ProjectID.String(), user)
 			if e != nil {
 				return dto.VideoEditorProjectDTO{}, e
 			}

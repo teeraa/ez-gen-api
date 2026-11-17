@@ -51,6 +51,17 @@ func (h *VideoEditorAIHandler) RegisterRoutes(r fiber.Router) {
 		}
 		return utils.Success(c, status, d)
 	})
+	g.Post("/projects/:id/ai-edits/preview", func(c *fiber.Ctx) error {
+		var in req.PreviewVideoEditorAIEdit
+		if c.BodyParser(&in) != nil {
+			return aiHTTPError(c, f.ErrAIEditInput)
+		}
+		d, e := h.facade.PreviewEdit(c.Context(), c.Params("id"), veUser(c), in)
+		if e != nil {
+			return aiHTTPError(c, e)
+		}
+		return utils.Success(c, 200, d)
+	})
 	g.Get("/projects/:id/ai-jobs", func(c *fiber.Ctx) error {
 		d, e := h.facade.List(c.Context(), c.Params("id"), veUser(c))
 		if e != nil {
@@ -119,7 +130,25 @@ func (h *VideoEditorAIHandler) RegisterRoutes(r fiber.Router) {
 }
 func aiHTTPError(c *fiber.Ctx, e error) error {
 	status, code, message := 0, "", ""
+	var rate *editorai.RateError
 	switch {
+	case errors.Is(e, f.ErrAIEditInput):
+		status, code, message = 400, "VALIDATION_ERROR", "คำสั่งแก้ไขต้องมี 1–500 ตัวอักษร และระบุ revision ของโปรเจกต์"
+	case errors.Is(e, f.ErrAIEditNoChanges):
+		status, code, message = 422, "AI_EDIT_NO_CHANGES", "AI ไม่พบการแก้ไขที่ใช้ได้จากคำสั่งนี้ กรุณาลองอธิบายใหม่"
+		// The model's own Thai explanation (already plain-text and bounded) is more useful.
+		var reason *f.AIEditNoChangesError
+		if errors.As(e, &reason) && reason.Reason != "" {
+			message = reason.Reason
+		}
+	case errors.Is(e, f.ErrAIEditBaseInvalid):
+		status, code, message = 422, "AI_EDIT_BASE_INVALID", "ไทม์ไลน์ที่บันทึกไว้ไม่ผ่านการตรวจสอบ กรุณาแก้ไขและบันทึกโปรเจกต์ก่อนใช้ AI แก้ไข"
+	case errors.Is(e, f.ErrAIEditBusy):
+		status, code, message = 429, "AI_RATE_LIMITED", "มีคำขอแก้ไขด้วย AI ที่กำลังประมวลผล กรุณารอสักครู่"
+	case errors.As(e, &rate):
+		status, code, message = 429, "AI_RATE_LIMITED", "โควตาวิเคราะห์เต็มชั่วคราว กรุณาลองใหม่ภายหลัง"
+	case errors.Is(e, f.ErrAIEditProvider):
+		status, code, message = 503, "AI_PROVIDER_UNAVAILABLE", "บริการ AI ไม่ตอบสนอง กรุณาลองใหม่"
 	case errors.Is(e, repo.ErrAIBusy):
 		status, code, message = 409, "AI_BUSY", "มีงานวิเคราะห์ที่ยังไม่เสร็จ กรุณารอหรือยกเลิกงานเดิม"
 	case errors.Is(e, repo.ErrAIDaily):

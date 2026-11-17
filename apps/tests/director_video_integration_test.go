@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/png"
 	"os"
 	"strings"
 	"sync"
@@ -27,6 +29,11 @@ func (f *directorTestFetcher) Fetch(_ context.Context, raw string) ([]byte, stri
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.urls = append(f.urls, raw)
+	if strings.Contains(raw, "frame.png") {
+		var b bytes.Buffer
+		_ = png.Encode(&b, image.NewRGBA(image.Rect(0, 0, 2, 2)))
+		return b.Bytes(), "image/png", nil
+	}
 	return []byte("\x00\x00\x00\x18ftypmp42fixture-video"), "video/mp4", nil
 }
 
@@ -45,21 +52,36 @@ func (d *directorFixture) shots(p dto.DirectorProject) []dto.DirectorShot {
 	return out
 }
 
+// Continuity lifecycle tests isolate frame chaining from the separate synthetic scene preparation path.
+func (d *directorFixture) continuityBoard() dto.DirectorProject {
+	d.t.Helper()
+	p := d.board()
+	if e := d.db.Exec("UPDATE director_projects SET document=jsonb_set(document, '{project,style}', '\"anime\"') WHERE id=?", p.ID).Error; e != nil {
+		d.t.Fatal(e)
+	}
+	return d.get(p.ID)
+}
+
+func newDirectorVideoFixtureWith(t *testing.T, video modelark.Client, fetcher directorVideoFetcher, configure ...func(*facade.DirectorOptions)) *directorFixture {
+	defaults := func(o *facade.DirectorOptions) { o.Processor = &directorTestMerger{}; o.VideoFetch = fetcher.Fetch }
+	return newDirectorFixtureWith(t, video, fetcher, append([]func(*facade.DirectorOptions){defaults}, configure...)...)
+}
+
 func TestDirectorPostgresVideoLifecycle(t *testing.T) {
 	video := modelark.NewMockClient()
 	video.NextTaskID = "cgt-director-fixture-task"
 	fetcher := &directorTestFetcher{}
-	d := newDirectorFixtureWith(t, video, fetcher)
+	d := newDirectorVideoFixtureWith(t, video, fetcher)
 
 	status, b, _ := d.http("GET", "/capabilities", nil, nil)
 	var caps struct {
 		Data dto.DirectorCapabilities `json:"data"`
 	}
-	if status != 200 || json.Unmarshal(b, &caps) != nil || !caps.Data.VideoEnabled || len(caps.Data.Models.Video) == 0 || caps.Data.Models.Video[0].ID != "seedance-2-0-fast" || caps.Data.Models.Video[0].Name != "Seedance 2.0 Fast" {
+	if status != 200 || json.Unmarshal(b, &caps) != nil || !caps.Data.VideoEnabled || len(caps.Data.Models.Video) == 0 || caps.Data.Models.Video[0].ID != "seedance-2-5" || caps.Data.Models.Video[0].Name != "Seedance 2.5" {
 		t.Fatalf("video capabilities: %d %s", status, b)
 	}
 
-	p := d.board()
+	p := d.continuityBoard()
 	path := "/projects/" + p.ID
 	before := d.balance()
 	p = d.action(p, "/video")
@@ -72,22 +94,20 @@ func TestDirectorPostgresVideoLifecycle(t *testing.T) {
 
 	d.tick()
 	d.tick()
-	if len(video.CreatedRequests) != 2 {
+	if len(video.CreatedRequests) != 1 {
 		t.Fatalf("submissions: %d", len(video.CreatedRequests))
 	}
 	r := video.CreatedRequests[0]
-	if r.Model != "dreamina-seedance-2-0-fast-260128" || r.Ratio != "16:9" || r.DurationSeconds != 5 || r.Resolution != "720p" || len(r.Content) != 3 || r.Content[1].Role != modelark.RoleReferenceImage || r.Content[2].Role != modelark.RoleReferenceImage || !strings.Contains(r.Content[0].Text, "Image 1 is the exact first frame") || !strings.Contains(r.Content[0].Text, "Image 2 is the exact last frame") || !strings.HasPrefix(r.Content[1].URL, "https://owned.test/") || r.Content[1].URL == r.Content[2].URL || !strings.Contains(r.Content[0].Text, "last frame") {
+	if r.Model != "dreamina-seedance-2-5-260628" || len(r.Content) != 2 || r.Content[1].Role != modelark.RoleFirstFrame || !r.ReturnLastFrame || !strings.Contains(r.Content[0].Text, "exact first frame") || strings.Contains(r.Content[0].Text, "exact last frame") {
 		t.Fatalf("video request: %+v", r)
 	}
-	if last := video.CreatedRequests[1]; len(last.Content) != 2 || last.Draft {
-		t.Fatalf("last shot of a scene must use only its first frame: %+v", last)
-	}
+
 	// Waiting jobs are not resubmitted while the provider is still running.
 	video.SetTask(video.NextTaskID, &modelark.TaskResult{ProviderTaskID: video.NextTaskID, Status: modelark.ProviderStatusRunning})
 	d.expireWaits()
 	d.tick()
 	d.tick()
-	if len(video.CreatedRequests) != 2 {
+	if len(video.CreatedRequests) != 1 {
 		t.Fatal("running task was submitted again")
 	}
 	p = d.get(p.ID)
@@ -95,9 +115,11 @@ func TestDirectorPostgresVideoLifecycle(t *testing.T) {
 		t.Fatalf("processing state: %+v", v)
 	}
 
-	video.SetTask(video.NextTaskID, &modelark.TaskResult{ProviderTaskID: video.NextTaskID, Status: modelark.ProviderStatusSucceeded, VideoURL: "https://provider.test/out.mp4"})
+	video.SetTask(video.NextTaskID, &modelark.TaskResult{ProviderTaskID: video.NextTaskID, Status: modelark.ProviderStatusSucceeded, LastFrameURL: "https://provider.test/frame.png", VideoURL: "https://provider.test/out.mp4"})
 	d.expireWaits()
 	d.tick()
+	d.tick()
+	d.expireWaits()
 	d.tick()
 	status, b, _ = d.http("GET", path, nil, nil)
 	if status != 200 || bytes.Contains(b, []byte(video.NextTaskID)) || bytes.Contains(b, []byte("provider.test")) {
@@ -111,11 +133,11 @@ func TestDirectorPostgresVideoLifecycle(t *testing.T) {
 	}
 	stored := 0
 	for key := range d.media.objects {
-		if strings.HasSuffix(key, ".mp4") {
+		if strings.HasSuffix(key, ".mp4") && !strings.HasSuffix(key, "-tail.mp4") {
 			stored++
 		}
 	}
-	if stored != 2 || len(fetcher.urls) != 2 {
+	if stored != 2 || len(fetcher.urls) != 5 {
 		t.Fatalf("stored %d fetched %d", stored, len(fetcher.urls))
 	}
 	d.wantError("POST", path+"/video", map[string]any{"revision": p.Revision, "idempotencyKey": uuid.NewString()}, 409, "VIDEO_UP_TO_DATE")
@@ -127,7 +149,7 @@ func TestDirectorPostgresVideoLifecycle(t *testing.T) {
 
 	video.NextTaskID = "cgt-director-fixture-failed"
 	before = d.balance()
-	p = d.project("POST", path+"/video", map[string]any{"revision": edited.Revision, "idempotencyKey": uuid.NewString(), "shotIds": []string{shots[1].ID}})
+	p = d.project("POST", path+"/video", map[string]any{"revision": edited.Revision, "idempotencyKey": uuid.NewString(), "shotIds": []string{shots[0].ID}})
 	if d.balance() != before-20 {
 		t.Fatal("single shot video not charged")
 	}
@@ -136,15 +158,29 @@ func TestDirectorPostgresVideoLifecycle(t *testing.T) {
 	d.expireWaits()
 	d.tick()
 	p = d.get(p.ID)
-	failed := d.shots(p)[1].Video
+	failed := d.shots(p)[0].Video
 	if failed == nil || failed.Status != "failed" || !failed.CanRetry || failed.PointsRefunded != 20 || d.balance() != before {
 		t.Fatalf("provider failure: %+v balance %d", failed, d.balance())
+	}
+	if failed.FailureCode == nil || *failed.FailureCode != "VIDEO_GENERATION_FAILED" {
+		t.Fatalf("unclassified provider failure must stay generic: %+v", failed)
+	}
+
+	video.NextTaskID = "cgt-director-fixture-output-policy"
+	p = d.project("POST", path+"/video", map[string]any{"revision": p.Revision, "idempotencyKey": uuid.NewString(), "shotIds": []string{shots[0].ID}})
+	d.tick()
+	video.SetTask(video.NextTaskID, &modelark.TaskResult{ProviderTaskID: video.NextTaskID, Status: modelark.ProviderStatusFailed, ErrorCode: "PROVIDER_OUTPUT_REJECTED", ErrorMessage: "output policy fixture", FailureDiagnostic: modelark.GenerationFailureDiagnostic{Phase: "generation", ProviderCode: "OutputVideoSensitiveContentDetected"}})
+	d.expireWaits()
+	d.tick()
+	policy := d.shots(d.get(p.ID))[0].Video
+	if policy == nil || policy.Status != "failed" || policy.FailureCode == nil || *policy.FailureCode != "PROVIDER_OUTPUT_REJECTED" || policy.FailureMessage == nil || *policy.FailureMessage != "output policy fixture" || policy.PointsRefunded != 20 {
+		t.Fatalf("policy rejection must surface its specific reason: %+v", policy)
 	}
 }
 
 func TestDirectorPostgresVideoRejectsUnsupportedRatio(t *testing.T) {
-	d := newDirectorFixtureWith(t, modelark.NewMockClient(), &directorTestFetcher{})
-	p := d.board()
+	d := newDirectorVideoFixtureWith(t, modelark.NewMockClient(), &directorTestFetcher{})
+	p := d.continuityBoard()
 	p = d.project("PATCH", "/projects/"+p.ID+"/storyboard-settings", map[string]any{"revision": p.Revision, "videoModelId": "seedance-2-0"})
 	if p.Storyboard.VideoModelID != "seedance-2-0" {
 		t.Fatal("video model not saved")
@@ -189,8 +225,8 @@ func TestDirectorPostgresImagesSurviveUnusableShotPlan(t *testing.T) {
 func TestDirectorPostgresSeedance25DraftThenFinal(t *testing.T) {
 	video := modelark.NewMockClient()
 	video.NextTaskID = "cgt-director-draft"
-	d := newDirectorFixtureWith(t, video, &directorTestFetcher{})
-	p := d.board()
+	d := newDirectorVideoFixtureWith(t, video, &directorTestFetcher{})
+	p := d.continuityBoard()
 	path := "/projects/" + p.ID
 	d.wantError("POST", path+"/video", map[string]any{"revision": p.Revision, "idempotencyKey": uuid.NewString(), "draft": true}, 422, "DRAFT_NOT_SUPPORTED")
 	p = d.project("PATCH", path+"/storyboard-settings", map[string]any{"revision": p.Revision, "videoModelId": "seedance-2-5"})
@@ -202,10 +238,10 @@ func TestDirectorPostgresSeedance25DraftThenFinal(t *testing.T) {
 	}
 	d.tick()
 	r := video.CreatedRequests[0]
-	if r.Model != "dreamina-seedance-2-5-260628" || !r.Draft || r.Resolution != "480p" || len(r.Content) != 3 {
+	if r.Model != "dreamina-seedance-2-5-260628" || !r.Draft || r.Resolution != "480p" || len(r.Content) != 2 {
 		t.Fatalf("draft request: %+v", r)
 	}
-	video.SetTask(video.NextTaskID, &modelark.TaskResult{ProviderTaskID: video.NextTaskID, Status: modelark.ProviderStatusSucceeded, VideoURL: "https://provider.test/draft.mp4"})
+	video.SetTask(video.NextTaskID, &modelark.TaskResult{ProviderTaskID: video.NextTaskID, Status: modelark.ProviderStatusSucceeded, LastFrameURL: "https://provider.test/frame.png", VideoURL: "https://provider.test/draft.mp4"})
 	d.expireWaits()
 	d.tick()
 	status, b, _ := d.http("GET", path, nil, nil)
@@ -227,7 +263,7 @@ func TestDirectorPostgresSeedance25DraftThenFinal(t *testing.T) {
 	if final.Model != "dreamina-seedance-2-5-260628" || final.Draft || final.Resolution != "1080p" || final.Ratio != "" || final.DurationSeconds != 0 || len(final.Content) != 1 || final.Content[0].Type != modelark.ContentTypeDraftTask || final.Content[0].DraftTaskID != "cgt-director-draft" {
 		t.Fatalf("final request: %+v", final)
 	}
-	video.SetTask(video.NextTaskID, &modelark.TaskResult{ProviderTaskID: video.NextTaskID, Status: modelark.ProviderStatusSucceeded, VideoURL: "https://provider.test/final.mp4"})
+	video.SetTask(video.NextTaskID, &modelark.TaskResult{ProviderTaskID: video.NextTaskID, Status: modelark.ProviderStatusSucceeded, LastFrameURL: "https://provider.test/frame.png", VideoURL: "https://provider.test/final.mp4"})
 	d.expireWaits()
 	d.tick()
 	p = d.get(p.ID)
@@ -296,7 +332,7 @@ func TestDirectorPostgresPointsBalance(t *testing.T) {
 
 func TestDirectorPostgresSceneSettingIsEditableAndMarksImagesStale(t *testing.T) {
 	d := newDirectorFixture(t)
-	p := d.board()
+	p := d.continuityBoard()
 	sc := p.Scenes[0]
 	p = d.project("PATCH", "/projects/"+p.ID+"/scenes/"+sc.ID, map[string]any{"revision": p.Revision, "setting": "misty bamboo forest at dawn"})
 	if p.Scenes[0].Setting != "misty bamboo forest at dawn" {
@@ -341,14 +377,14 @@ func TestDirectorPostgresResponsesNeverSendNullArrays(t *testing.T) {
 func TestDirectorPostgresVideoNotSubmittedIsRefundedAndRetryable(t *testing.T) {
 	video := modelark.NewMockClient()
 	video.CreateErr = fmt.Errorf("%w: missing AI usage owner", modelark.ErrNotSubmitted)
-	d := newDirectorFixtureWith(t, video, &directorTestFetcher{})
-	p := d.board()
-	shot := d.shots(p)[1]
+	d := newDirectorVideoFixtureWith(t, video, &directorTestFetcher{})
+	p := d.continuityBoard()
+	shot := d.shots(p)[0]
 	before := d.balance()
 	p = d.project("POST", "/projects/"+p.ID+"/video", map[string]any{"revision": p.Revision, "idempotencyKey": uuid.NewString(), "shotIds": []string{shot.ID}})
 	d.tick()
 	p = d.get(p.ID)
-	v := d.shots(p)[1].Video
+	v := d.shots(p)[0].Video
 	if v == nil || v.Status != "failed" || !v.CanRetry || v.PointsRefunded != 20 || d.balance() != before {
 		t.Fatalf("a request that never reached the provider must refund and allow retry: %+v balance %d", v, d.balance())
 	}
@@ -377,25 +413,28 @@ func TestDirectorPostgresExportMergesShotClipsInOrder(t *testing.T) {
 	video := modelark.NewMockClient()
 	merger := &directorTestMerger{}
 	fetched := []string{}
-	d := newDirectorFixtureWith(t, video, &directorTestFetcher{}, func(o *facade.DirectorOptions) {
+	d := newDirectorVideoFixtureWith(t, video, &directorTestFetcher{}, func(o *facade.DirectorOptions) {
 		o.Processor = merger
 		o.VideoFetch = func(_ context.Context, u string) ([]byte, string, error) {
 			fetched = append(fetched, u)
 			return []byte("clip:" + u), "video/mp4", nil
 		}
 	})
-	p := d.board()
+	p := d.continuityBoard()
 	path := "/projects/" + p.ID
 	d.wantError("POST", path+"/export", map[string]any{"revision": p.Revision, "idempotencyKey": uuid.NewString()}, 409, "VIDEO_INCOMPLETE")
 	p = d.action(p, "/video")
 	d.tick()
 	d.tick()
-	video.SetTask(video.NextTaskID, &modelark.TaskResult{ProviderTaskID: video.NextTaskID, Status: modelark.ProviderStatusSucceeded, VideoURL: "https://provider.test/out.mp4"})
+	video.SetTask(video.NextTaskID, &modelark.TaskResult{ProviderTaskID: video.NextTaskID, Status: modelark.ProviderStatusSucceeded, LastFrameURL: "https://provider.test/frame.png", VideoURL: "https://provider.test/out.mp4"})
 	d.expireWaits()
 	d.tick()
 	d.tick()
+	d.expireWaits()
+	d.tick()
 	p = d.get(p.ID)
 	before := d.balance()
+	fetched = nil
 	p = d.action(p, "/export")
 	if p.Export == nil || p.Export.Status != "queued" || p.Export.ClipCount != 2 || d.balance() != before {
 		t.Fatalf("export admission (free): %+v balance %d", p.Export, d.balance())
@@ -421,7 +460,7 @@ func TestDirectorPostgresExportMergesShotClipsInOrder(t *testing.T) {
 	video.NextTaskID = "cgt-second"
 	p = d.project("POST", path+"/video", map[string]any{"revision": p.Revision, "idempotencyKey": uuid.NewString(), "shotIds": []string{shots[0].ID}})
 	d.tick()
-	video.SetTask(video.NextTaskID, &modelark.TaskResult{ProviderTaskID: video.NextTaskID, Status: modelark.ProviderStatusSucceeded, VideoURL: "https://provider.test/again.mp4"})
+	video.SetTask(video.NextTaskID, &modelark.TaskResult{ProviderTaskID: video.NextTaskID, Status: modelark.ProviderStatusSucceeded, LastFrameURL: "https://provider.test/frame.png", VideoURL: "https://provider.test/again.mp4"})
 	d.expireWaits()
 	d.tick()
 	if p = d.get(p.ID); p.Export == nil || !p.Export.Stale {
@@ -429,43 +468,9 @@ func TestDirectorPostgresExportMergesShotClipsInOrder(t *testing.T) {
 	}
 }
 
-// directorFaceScreen rejects any submission with more than maxImages references, like
-// Seedance's real-face screening rejecting one of the supplied references.
-type directorFaceScreen struct {
-	*modelark.MockClient
-	maxImages int
-	sizes     []int
+func (m *directorTestMerger) PrepareContinuation(context.Context, []byte) ([]byte, error) {
+	return []byte("fixture-three-second-tail"), nil
 }
-
-func (s *directorFaceScreen) CreateTask(ctx context.Context, req modelark.CreateTaskRequest) (string, error) {
-	images := 0
-	for _, item := range req.Content {
-		if item.Type == modelark.ContentTypeImageURL {
-			images++
-		}
-	}
-	s.sizes = append(s.sizes, images)
-	if images > s.maxImages {
-		return "", &modelark.VideoError{Code: "PROVIDER_IMAGE_REJECTED", Message: "fixture face screen"}
-	}
-	return s.MockClient.CreateTask(ctx, req)
-}
-
-func TestDirectorPostgresVideoFallsBackWhenReferenceRejected(t *testing.T) {
-	screen := &directorFaceScreen{MockClient: modelark.NewMockClient(), maxImages: 1}
-	d := newDirectorFixtureWith(t, screen, &directorTestFetcher{}, func(o *facade.DirectorOptions) { o.VideoHumanFaceMode = "relaxed" })
-	p := d.board()
-	shot := d.shots(p)[0]
-	p = d.project("POST", "/projects/"+p.ID+"/video", map[string]any{"revision": p.Revision, "idempotencyKey": uuid.NewString(), "shotIds": []string{shot.ID}})
-	d.tick()
-	if len(screen.sizes) != 2 || screen.sizes[0] != 2 || screen.sizes[1] != 1 {
-		t.Fatalf("reference attempts: %v", screen.sizes)
-	}
-	accepted := screen.CreatedRequests[len(screen.CreatedRequests)-1]
-	if accepted.HumanFaceMode != "relaxed" || strings.Contains(accepted.Content[0].Text, "Image 2 is the exact last frame") {
-		t.Fatalf("fallback request: %+v", accepted)
-	}
-	if v := d.shots(d.get(p.ID))[0].Video; v == nil || v.Status != "processing" {
-		t.Fatalf("fallback must be accepted and processing: %+v", v)
-	}
+func (m *directorTestMerger) ValidateContinuationOutput(context.Context, []byte, float64) error {
+	return nil
 }

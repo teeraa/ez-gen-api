@@ -83,11 +83,11 @@ func TestRealEditorTextBoxOutlineAndFade(t *testing.T) {
 	p := styleProcessor(t)
 	// A full-opacity red box behind white text, fading in over the first 0.3 s.
 	out := styledRender(t, p, TextLayer{Text: "BOX", StartTime: 0, EndTime: 1, X: .5, Y: .5, FontSize: 120, Color: "FFFFFF", BoxColor: "FF0000", BoxOpacity: 1, Animation: "fade"})
-	// Sample just outside the glyphs but inside the box padding (left of centre band).
-	if px := region(t, out, "0.6", 526, 294, 12, 12); px[0] < 150 || px[1] > 80 {
+	// Sample just outside the glyphs but inside the box padding (left of centre band, below the rounded corner).
+	if px := region(t, out, "0.6", 526, 340, 12, 12); px[0] < 150 || px[1] > 80 {
 		t.Fatalf("box colour missing beside the text: %v", px)
 	}
-	if px := region(t, out, "0", 526, 294, 12, 12); px[0] > 60 {
+	if px := region(t, out, "0", 526, 340, 12, 12); px[0] > 60 {
 		t.Fatalf("fade-in should start transparent: %v", px)
 	}
 	// An outline-only layer stays transparent between glyph strokes and frame edges.

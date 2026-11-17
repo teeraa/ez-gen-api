@@ -136,6 +136,10 @@ type DirectorProject struct {
 	CoverImageExpiresAt *time.Time         `json:"coverImageExpiresAt"`
 	CreatedAt           time.Time          `json:"createdAt"`
 	UpdatedAt           time.Time          `json:"updatedAt"`
+	// Episode fields come from the project row, not the stored document; null for standalone projects.
+	SeriesID      *string `json:"seriesId"`
+	EpisodeNumber *int    `json:"episodeNumber"`
+	EpisodeTitle  *string `json:"episodeTitle"`
 }
 type DirectorSummary struct {
 	ID                  string     `json:"id"`
@@ -152,6 +156,9 @@ type DirectorSummary struct {
 	CoverImageURL       *string    `json:"coverImageUrl"`
 	CoverImageExpiresAt *time.Time `json:"coverImageExpiresAt"`
 	UpdatedAt           time.Time  `json:"updatedAt"`
+	SeriesID            *string    `json:"seriesId"`
+	EpisodeNumber       *int       `json:"episodeNumber"`
+	EpisodeTitle        *string    `json:"episodeTitle"`
 }
 type DirectorList struct {
 	Items []DirectorSummary `json:"items"`
@@ -219,4 +226,30 @@ type DirectorCapabilities struct {
 
 type DirectorPoints struct {
 	Balance int64 `json:"balance"`
+}
+
+type DirectorSeries struct {
+	ID                  string     `json:"id"`
+	Revision            int        `json:"revision"`
+	Name                string     `json:"name"`
+	Mode                string     `json:"mode"`
+	AspectRatio         string     `json:"aspectRatio"`
+	Style               string     `json:"style"`
+	Resolution          string     `json:"resolution"`
+	CharacterAssetIDs   []string   `json:"characterAssetIds"`
+	EpisodeCount        int        `json:"episodeCount"`
+	CoverImageURL       *string    `json:"coverImageUrl"`
+	CoverImageExpiresAt *time.Time `json:"coverImageExpiresAt"`
+	CreatedAt           time.Time  `json:"createdAt"`
+	UpdatedAt           time.Time  `json:"updatedAt"`
+}
+type DirectorSeriesDetail struct {
+	DirectorSeries
+	Episodes []DirectorSummary `json:"episodes"`
+}
+type DirectorSeriesList struct {
+	Items []DirectorSeries `json:"items"`
+	Total int64            `json:"total"`
+	Page  int              `json:"page"`
+	Limit int              `json:"limit"`
 }

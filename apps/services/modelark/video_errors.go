@@ -59,6 +59,12 @@ func videoFailure(code string, status int) *VideoError {
 	case family == "OutputVideoSensitiveContentDetected":
 		e.Code = "PROVIDER_OUTPUT_REJECTED"
 		e.Message = "ผู้ให้บริการไม่อนุญาตวิดีโอที่สร้างตามนโยบายเนื้อหา กรุณาปรับฉากหรือภาพอ้างอิงแล้วสร้างคำขอใหม่"
+	case family == "InputTextSensitiveContentDetected":
+		e.Code = "PROVIDER_TEXT_REJECTED"
+		e.Message = "บริการวิดีโอปฏิเสธคำบรรยายจากการตรวจเนื้อหา กรุณาปรับคำบรรยายฉากแล้วลองใหม่"
+	case family == "InputVideoSensitiveContentDetected":
+		e.Code = "PROVIDER_VIDEO_REJECTED"
+		e.Message = "บริการวิดีโอปฏิเสธวิดีโออ้างอิงจากการตรวจเนื้อหา (มักเกิดกับใบหน้าคนสมจริง) กรุณาสร้างใหม่"
 	case family == "InputImageSensitiveContentDetected":
 		e.Code = "PROVIDER_IMAGE_REJECTED"
 		e.Message = "บริการวิดีโอปฏิเสธภาพอ้างอิงจากการตรวจเนื้อหา กรุณาเปลี่ยนภาพ หากเป็นภาพใบหน้าคนจริง ให้ใช้ภาพหรือ asset ที่โมเดลอนุญาต"

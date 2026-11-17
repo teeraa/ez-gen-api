@@ -30,3 +30,8 @@ type ApplyVideoEditorAIDraft struct {
 type RetryVideoEditorAIJob struct {
 	RequestID string `json:"requestId"`
 }
+
+type PreviewVideoEditorAIEdit struct {
+	Instruction string `json:"instruction"`
+	Revision    int    `json:"revision"`
+}

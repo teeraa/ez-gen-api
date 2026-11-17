@@ -13,6 +13,7 @@ import (
 	"github.com/ez-gen/ez-gen-api/apps/services/videoeditor"
 	"github.com/google/uuid"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -27,7 +28,47 @@ const aiSystem = "You are a video editor creating coherent, faithful stories fro
 
 var visionSchema = json.RawMessage(`{"type":"object","required":["visuals"],"properties":{"visuals":{"type":"array","items":{"type":"object","required":["assetId","summary","frames"],"properties":{"assetId":{"type":"string"},"summary":{"type":"string"},"frames":{"type":"array","items":{"type":"object","required":["time","description"],"properties":{"time":{"type":"number"},"description":{"type":"string"}}}}}}}}}`)
 var conceptSchema = json.RawMessage(`{"type":"object","required":["concepts"],"properties":{"concepts":{"type":"array","minItems":2,"maxItems":3,"items":{"type":"object","required":["title","summary","duration"],"properties":{"title":{"type":"string"},"summary":{"type":"string"},"duration":{"type":"number"},"durationReason":{"type":"string"}}}}}}`)
-var planSchemaTemplate = json.RawMessage(`{"type":"object","required":["segments"],"properties":{"durationReason":{"type":"string"},"segments":{"type":"array","minItems":1,"maxItems":20,"items":{"type":"object","required":["evidenceId","title","reason"],"properties":{"evidenceId":{"type":"string"},"title":{"type":"string"},"reason":{"type":"string"}}}}}}`)
+
+// Effect ranges and enums mirror the manual editor validators (veValidSpeed, veValidFades,
+// veTransitions, veValidTransition, veValidLook, normalizeVETextLayers); the server still
+// re-validates every value and drops what they reject.
+var planSchemaTemplate = json.RawMessage(`{"type":"object","required":["segments"],"properties":{"durationReason":{"type":"string"},"captionStyle":` + aiTextStyleSchema + `,"titleStyle":` + aiTextStyleSchema + `,"segments":{"type":"array","minItems":1,"maxItems":20,"items":{"type":"object","required":["evidenceId","title","reason"],"properties":{"evidenceId":{"type":"string"},"title":{"type":"string"},"reason":{"type":"string"},` + aiSegmentEffectSchema + `}}}}}`)
+
+// aiStructuredOutputTokens fits up to 20 Thai titles/reasons with effect fields (or 20
+// edit operations); the 8192 default can truncate such responses (finishReason MAX_TOKENS).
+const aiStructuredOutputTokens = 32768
+
+// Gemini structured output schemas here use only: type, properties, required, items,
+// enum, minimum, maximum, minItems, maxItems, description (see aiSchemaKeywords).
+const aiSegmentEffectSchema = `"speed":{"type":"number","minimum":0.25,"maximum":4},"fadeIn":{"type":"number","minimum":0,"maximum":10},"fadeOut":{"type":"number","minimum":0,"maximum":10},"transition":{"type":"string","enum":["fade","fadeblack","fadewhite","wipeleft","wiperight","slideleft","slideright","circleopen","zoomin","hblur","smoothleft","smoothright","slideup","slidedown","pixelize","fadegrays","radial"]},"transitionDuration":{"type":"number","minimum":0.1,"maximum":2},"brightness":{"type":"number","minimum":-1,"maximum":1},"contrast":{"type":"number","minimum":-1,"maximum":1},"saturation":{"type":"number","minimum":-1,"maximum":1},"fit":{"type":"string","enum":["cover"]},"zoom":{"type":"number","minimum":1,"maximum":3},"zoomTo":{"type":"number","minimum":1,"maximum":3},"panX":{"type":"number","minimum":-1,"maximum":1},"panY":{"type":"number","minimum":-1,"maximum":1}`
+const aiTextStyleSchema = `{"type":"object","properties":{"color":{"type":"string","description":"#RRGGBB"},"outlineColor":{"type":"string","description":"#RRGGBB"},"outlineWidth":{"type":"integer","minimum":0,"maximum":20},"boxColor":{"type":"string","description":"#RRGGBB"},"boxOpacity":{"type":"number","minimum":0,"maximum":1},"animation":{"type":"string","enum":["fade","slide","pop"]},"font":{"type":"string","enum":["heavy"]},"y":{"type":"number","minimum":0,"maximum":1},"fontSize":{"type":"integer","minimum":12,"maximum":200}}}`
+
+const aiPlanEffectInstruction = " Optional editing tools per selected window (omit a field to leave it unchanged; use them only when they serve the story and style): speed 0.25-4 (above 1 shortens the timeline; below 1 lengthens it and is removed if the total would exceed targetDuration), fadeIn/fadeOut seconds 0-10 (together within the window's played length), transition into this window from the previous one (fade, fadeblack, fadewhite, wipeleft, wiperight, slideleft, slideright, slideup, slidedown, smoothleft, smoothright, circleopen, radial, zoomin, hblur, pixelize, fadegrays; prefer fade or a quick zoomin/hblur on fast-paced shorts) with transitionDuration 0.1-2 seconds and at most half of this and the previous window's played length; never on the first selected window; a transition overlaps the windows and shortens the total. Picture look: brightness/contrast/saturation -1..1, fit cover to fill the frame, zoom 1-3, zoomTo 1-3 to move the zoom from zoom to zoomTo across the window (a slow push-in, e.g. zoom 1 → zoomTo 1.15 on a talking head; use it sparingly), panX/panY -1..1. Optional captionStyle and titleStyle choose caption/title colours (#RRGGBB), outlineColor with outlineWidth 1-20, boxColor with boxOpacity 0-1, animation fade, slide or pop (pop grows the text in with a bounce; good for hook titles and keywords), font heavy (extra-bold Thai display font, the short-form look; use it for titles in fun styles), vertical position y 0-1 and fontSize 12-200 at 1080p. The server validates every value with the manual editor's rules and drops any invalid value to unchanged."
+
+type aiPlanPart struct {
+	EvidenceID         string  `json:"evidenceId"`
+	Title              string  `json:"title"`
+	Reason             string  `json:"reason"`
+	Speed              float64 `json:"speed"`
+	FadeIn             float64 `json:"fadeIn"`
+	FadeOut            float64 `json:"fadeOut"`
+	Transition         string  `json:"transition"`
+	TransitionDuration float64 `json:"transitionDuration"`
+	Brightness         float64 `json:"brightness"`
+	Contrast           float64 `json:"contrast"`
+	Saturation         float64 `json:"saturation"`
+	Fit                string  `json:"fit"`
+	Zoom               float64 `json:"zoom"`
+	PanX               float64 `json:"panX"`
+	PanY               float64 `json:"panY"`
+	ZoomTo             float64 `json:"zoomTo"`
+}
+
+func (p aiPlanPart) apply(s *models.EditorAIDraftSegment) {
+	s.Speed, s.FadeIn, s.FadeOut = p.Speed, p.FadeIn, p.FadeOut
+	s.VideoEditorTransition = models.VideoEditorTransition{Transition: p.Transition, TransitionDuration: p.TransitionDuration}
+	s.VideoEditorClipLook = models.VideoEditorClipLook{Brightness: p.Brightness, Contrast: p.Contrast, Saturation: p.Saturation, Fit: p.Fit, Zoom: p.Zoom, PanX: p.PanX, PanY: p.PanY, ZoomTo: p.ZoomTo}
+}
 
 func validateAICapacity(evidence []models.EditorAIEvidence, in models.EditorAIInput) error {
 	sources := map[string]float64{}
@@ -122,8 +163,13 @@ func (f *VideoEditorAIFacade) ProcessNext(ctx context.Context) (bool, error) {
 	defer close(watcherDone)
 	go watchAIClaim(ctx, watcherDone, cancel, func(checkCtx context.Context) (bool, error) { return f.repo.ClaimLive(checkCtx, j) })
 	in := aiInput(j)
-	if !f.Capabilities().Available || in.ModelSignature != f.provider.Signature() || in.ASRSignature != f.asr.Signature() {
+	configChanged := false
+	if !f.Capabilities().Available {
 		e = editorai.ErrUnavailable
+	} else if in.ModelSignature != f.provider.Signature() || in.ASRSignature != f.asr.Signature() {
+		// The job was created under another model/ASR configuration (e.g. .env changed and
+		// the API restarted); its caches and budget assumptions no longer apply.
+		configChanged, e = true, editorai.ErrUnavailable
 	} else if j.Phase == "analysis" {
 		e = f.analyze(ctx, j, in)
 	} else {
@@ -140,6 +186,9 @@ func (f *VideoEditorAIFacade) ProcessNext(ctx context.Context) (bool, error) {
 		code, message = "ASR_UNAVAILABLE", "ไม่สามารถถอดเสียงได้ กรุณาตรวจบริการถอดเสียง"
 	case errors.Is(e, editorai.ErrInvalid):
 		code, message = "AI_INVALID_RESULT", "ผลวิเคราะห์ไม่ผ่านการตรวจสอบ กรุณาเริ่มวิเคราะห์ใหม่"
+		if plan, ok := aiPlanFailureMessage(e); ok {
+			message = plan
+		}
 	case errors.Is(e, editorai.ErrTooLarge):
 		code, message = "AI_INPUT_TOO_LARGE", "ข้อมูลวิเคราะห์มีขนาดมากเกินไป กรุณาเลือกคลิปให้น้อยลง"
 	case errors.Is(e, repo.ErrAIBudget):
@@ -147,7 +196,18 @@ func (f *VideoEditorAIFacade) ProcessNext(ctx context.Context) (bool, error) {
 	case errors.As(e, &rate):
 		code, message = "AI_RATE_LIMITED", "โควตาวิเคราะห์เต็มชั่วคราว กรุณาลองใหม่ภายหลัง"
 		retry = &rate.RetryAt
+	case configChanged:
+		message = "การตั้งค่าโมเดลวิเคราะห์หรือถอดเสียงเปลี่ยนหลังสร้างงานนี้ กรุณาเริ่มวิเคราะห์ใหม่"
+	case errors.Is(e, editorai.ErrUnavailable):
+		message = "ระบบวิเคราะห์หรือถอดเสียงยังไม่พร้อมใช้งาน กรุณาตรวจการตั้งค่าแล้วลองใหม่"
+	case errors.Is(e, ErrVEStorage):
+		message = "ดาวน์โหลดคลิปต้นฉบับจากที่เก็บไฟล์ไม่สำเร็จ กรุณาลองใหม่"
+	case errors.Is(e, context.Canceled), errors.Is(e, context.DeadlineExceeded):
+		message = "งานวิเคราะห์ถูกหยุดหรือใช้เวลานานเกินกำหนด กรุณาลองใหม่"
 	}
+	// Server log only: job id, phase, the stage reached and the error chain (sentinels,
+	// no prompts, transcripts, keys or signed URLs).
+	log.Printf("video_editor_ai: job=%s phase=%s stage=%s failed code=%s err=%v", j.ID, j.Phase, j.Stage, code, e)
 	finish, cleanup := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cleanup()
 	_ = f.repo.UpdateClaim(finish, j, map[string]any{"status": "failed", "stage": "failed", "failure_code": code, "failure_message": message, "retry_at": retry, "attempt_token": nil, "lease_until": nil})
@@ -169,6 +229,7 @@ func (f *VideoEditorAIFacade) cloud(ctx context.Context, j *models.VideoEditorAI
 func (f *VideoEditorAIFacade) sourceFile(ctx context.Context, s models.EditorAISource, dir string) (string, error) {
 	u, _, e := f.editor.storage.SignedURL(ctx, s.Key, time.Hour)
 	if e != nil {
+		log.Printf("video_editor_ai: source asset=%s signed url failed: %v", s.ID, e)
 		return "", ErrVEStorage
 	}
 	request, e := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
@@ -177,10 +238,12 @@ func (f *VideoEditorAIFacade) sourceFile(ctx context.Context, s models.EditorAIS
 	}
 	res, e := f.editor.client.Do(request)
 	if e != nil {
+		log.Printf("video_editor_ai: source asset=%s download failed (network)", s.ID)
 		return "", ErrVEStorage
 	}
 	defer res.Body.Close()
 	if res.StatusCode != 200 {
+		log.Printf("video_editor_ai: source asset=%s download status=%d", s.ID, res.StatusCode)
 		return "", ErrVEStorage
 	}
 	data, e := io.ReadAll(io.LimitReader(res.Body, videoeditor.MaxUploadBytes+1))
@@ -189,6 +252,7 @@ func (f *VideoEditorAIFacade) sourceFile(ctx context.Context, s models.EditorAIS
 	}
 	hash := sha256.Sum256(data)
 	if hex.EncodeToString(hash[:]) != s.Hash {
+		log.Printf("video_editor_ai: source asset=%s content hash differs from the job snapshot", s.ID)
 		return "", ErrVEStorage
 	}
 	path := filepath.Join(dir, s.ID+".source")
@@ -566,8 +630,8 @@ func (f *VideoEditorAIFacade) plan(ctx context.Context, j *models.VideoEditorAIJ
 		return e
 	}
 	prompt := aiPlanningPrompt{"planning", in.Brief, selected, in.TargetDuration, evidence, visuals, compactAITranscripts(transcripts), "Create one coherent complete video for the selected concept, using targetDuration as the authoritative requested duration even if concept.duration is shorter. Read transcripts and supplied candidate boundaries together. Candidates preserve original speech/context segments and may be longer than six seconds; there is no six-second shot limit. First identify distinct source-supported story beats: an understandable opening, development, key point and ending. For a 60-second result, roughly 3-6 meaningful editorial units is a soft pacing guide when the supplied material supports it, not a minimum count or fixed shot duration. Select complementary units that advance the story rather than automatically choosing one long span. Keep setup, question-answer relationships, references, negation, chronology and a complete supported ending. Retain a long shot when splitting would harm meaning or no useful change is supported; never manufacture cuts merely to meet a count. Preserve fictional/satirical attribution and do not join unrelated advertisements, songs or outros unless requested. Select only supplied evidenceId windows, at most20 unique IDs, with no overlapping source footage. Never invent, change or split timestamps. Sum actual end-start durations and aim for 95-100 percent of targetDuration when supported. Compare individual speech/pause contexts and short or medium runs against longer candidates. Remove redundant or irrelevant passages when supported, retain necessary bridges, and use genuinely supplied angles or scenes when relevant. Adjacent selections with different story roles remain separate for review, but splitting the same continuous footage into rows does not itself create a visual change. Do not invent B-roll, speaker turns or scene changes from sparse frames. Never divide the duration budget among concepts. Whole-context candidates are not guaranteed sentence/word-aligned; partial-context fallback candidates explicitly cannot establish which words lie inside them. Sparse frames do not prove continuous action. Do not cut dependent thoughts or pretend repeated source context proves every candidate contains the same sentence. If a coherent result closer to target is not supported, return the closest suitable shorter plan with durationReason in Thai explaining the actual content or boundary limitation. A shorter result is permitted and will not block user approval; do not claim source footage is insufficient merely because you selected less. Return empty durationReason when meeting the target. Return a specific title and reason for each selected window explaining its distinct story role, pacing and connection to neighboring units; do not repeat generic labels across unrelated beats. Do not invent speech, filler, subtitles or music in the selection response. The server may separately compose captions from exact source transcripts and use owned audio assets. sum(end-start)<=targetDuration."}
-	prompt.Instruction += aiPlanTimingInstruction(evidence, in.TargetDuration)
-	raw, e := f.cloud(ctx, j, prompt, nil, aiPlanSchema(evidence, in.TargetDuration))
+	prompt.Instruction += aiPlanEffectInstruction + aiPlanTimingInstruction(evidence, in.TargetDuration)
+	raw, e := f.cloud(editorai.WithMaxOutputTokens(ctx, aiStructuredOutputTokens), j, prompt, nil, aiPlanSchema(evidence, in.TargetDuration))
 	if e != nil {
 		if errors.Is(e, editorai.ErrInvalid) {
 			return aiInvalidPlan(j.ID.String(), "invalid_provider_response")
@@ -575,12 +639,10 @@ func (f *VideoEditorAIFacade) plan(ctx context.Context, j *models.VideoEditorAIJ
 		return e
 	}
 	var result struct {
-		DurationReason string `json:"durationReason"`
-		Segments       []struct {
-			EvidenceID string `json:"evidenceId"`
-			Title      string `json:"title"`
-			Reason     string `json:"reason"`
-		} `json:"segments"`
+		DurationReason string           `json:"durationReason"`
+		CaptionStyle   *aiWireTextStyle `json:"captionStyle"`
+		TitleStyle     *aiWireTextStyle `json:"titleStyle"`
+		Segments       []aiPlanPart     `json:"segments"`
 	}
 	if aiDecode(raw, &result) != nil {
 		return aiInvalidPlan(j.ID.String(), "invalid_response_shape")
@@ -604,8 +666,11 @@ func (f *VideoEditorAIFacade) plan(ctx context.Context, j *models.VideoEditorAIJ
 			return aiInvalidPlan(j.ID.String(), "unknown_or_duplicate_evidence")
 		}
 		seen[part.EvidenceID] = true
-		draft.Segments = append(draft.Segments, models.EditorAIDraftSegment{ID: uuid.NewString(), AssetID: window.AssetID, Start: window.Start, End: window.End, Volume: volume, Title: part.Title, Reason: part.Reason, EvidenceID: window.ID})
+		segment := models.EditorAIDraftSegment{ID: uuid.NewString(), AssetID: window.AssetID, Start: window.Start, End: window.End, Volume: volume, Title: part.Title, Reason: part.Reason, EvidenceID: window.ID}
+		part.apply(&segment)
+		draft.Segments = append(draft.Segments, segment)
 	}
+	draft.TextStyles = sanitizeAITextStyles(&models.EditorAITextStyles{Caption: result.CaptionStyle.style(), Title: result.TitleStyle.style()})
 	if aiSelectedOverlap(draft.Segments) {
 		return aiInvalidPlan(j.ID.String(), "overlapping_selection")
 	}
@@ -626,7 +691,18 @@ func (f *VideoEditorAIFacade) plan(ctx context.Context, j *models.VideoEditorAIJ
 		return aiInvalidPlan(j.ID.String(), "duration_reason_too_long")
 	}
 	if in.AutoCompose {
-		composeAIDraft(&draft, in, j.ID.String(), transcripts)
+		sources, byAsset := map[string]models.EditorAISource{}, map[string]models.EditorAITranscript{}
+		for _, s := range in.Sources {
+			sources[s.ID] = s
+		}
+		for _, t := range transcripts {
+			byAsset[t.AssetID] = t
+		}
+		extra, windows := f.partialCaptions(ctx, sources, draft.Segments, byAsset, aiStoryWindowLimit)
+		composeAIDraftWith(&draft, in, j.ID.String(), transcripts, extra)
+		if windows > 0 {
+			draft.CompositionNotes = append(draft.CompositionNotes, fmt.Sprintf("ถอดเสียงใหม่ %d ช่วงที่การตัดคร่อมกลางประโยค เพื่อใส่ซับเฉพาะคำที่อยู่ในช่วงตัด (เวลาซับในช่วงนั้นเป็นค่าประมาณ)", windows))
+		}
 		if err := validateAIComposition(draft, in, j.ID.String()); err != nil {
 			return aiInvalidPlan(j.ID.String(), "invalid_composition")
 		}

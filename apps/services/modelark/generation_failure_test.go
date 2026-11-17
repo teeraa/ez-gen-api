@@ -13,6 +13,8 @@ import (
 func TestSDKTerminalGenerationFailureIsBoundedAndDistinct(t *testing.T) {
 	for _, tc := range []struct{ name, providerCode, want, wantFamily string }{
 		{"output_policy", "OutputVideoSensitiveContentDetected.PolicyViolation", "PROVIDER_OUTPUT_REJECTED", "OutputVideoSensitiveContentDetected"},
+		{"input_text_policy", "InputTextSensitiveContentDetected.PolicyViolation", "PROVIDER_TEXT_REJECTED", "InputTextSensitiveContentDetected"},
+		{"internal_family_kept_for_diagnostics", "InternalServiceError.Busy", "PROVIDER_GENERATION_FAILED", "InternalServiceError"},
 		{"input_policy_unchanged", "InputImageSensitiveContentDetected.PolicyViolation", "PROVIDER_IMAGE_REJECTED", "InputImageSensitiveContentDetected"},
 		{"unknown", "private-secret-code", "PROVIDER_GENERATION_FAILED", ""},
 		{"missing_error", "", "PROVIDER_GENERATION_FAILED", ""},

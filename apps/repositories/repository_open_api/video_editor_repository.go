@@ -53,6 +53,25 @@ func (r *VideoEditorRepository) Project(ctx context.Context, id, user string) (*
 	e := r.db.WithContext(ctx).Where("id=? AND user_id=?", id, user).First(&p).Error
 	return &p, veError(e)
 }
+
+// DeleteProject soft-deletes a project and cancels its unfinished AI jobs in the same
+// transaction, so a stuck job cannot keep blocking the user's next analysis (the
+// per-user busy check counts jobs in every project). A running worker observes the
+// cancellation through its claim check and stops.
+func (r *VideoEditorRepository) DeleteProject(ctx context.Context, id, user string) error {
+	return veError(r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var p models.VideoEditorProject
+		if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=? AND user_id=?", id, user).First(&p).Error; e != nil {
+			return e
+		}
+		if tx.Migrator().HasTable("video_editor_ai_jobs") {
+			if e := tx.Table("video_editor_ai_jobs").Where("project_id=? AND user_id=? AND status IN ('queued','processing','awaiting_concept','review')", id, user).Updates(map[string]any{"status": "cancelled", "stage": "cancelled", "attempt_token": nil, "lease_until": nil, "retry_at": nil, "updated_at": time.Now()}).Error; e != nil {
+				return e
+			}
+		}
+		return tx.Delete(&p).Error
+	}))
+}
 func (r *VideoEditorRepository) Projects(ctx context.Context, user string, page, limit int) ([]models.VideoEditorProject, int64, error) {
 	out := []models.VideoEditorProject{}
 	var n int64
@@ -152,7 +171,7 @@ func (r *VideoEditorRepository) CompleteAsset(ctx context.Context, a *models.Vid
 	if a.Kind == "" {
 		a.Kind = "video"
 	}
-	res := r.db.WithContext(ctx).Model(&models.VideoEditorAsset{}).Where("id=? AND user_id=? AND attempt_token=? AND status='processing'", a.ID, a.UserID, a.AttemptToken).Updates(map[string]any{"status": "ready", "kind": a.Kind, "duration": a.Duration, "width": a.Width, "height": a.Height, "has_audio": a.HasAudio, "source_key": a.SourceKey, "frames": a.Frames, "lease_until": nil, "updated_at": time.Now(), "failure_code": "", "failure_message": ""})
+	res := r.db.WithContext(ctx).Model(&models.VideoEditorAsset{}).Where("id=? AND user_id=? AND attempt_token=? AND status='processing'", a.ID, a.UserID, a.AttemptToken).Updates(map[string]any{"status": "ready", "content_hash": a.ContentHash, "size_bytes": a.SizeBytes, "kind": a.Kind, "duration": a.Duration, "width": a.Width, "height": a.Height, "has_audio": a.HasAudio, "source_key": a.SourceKey, "frames": a.Frames, "lease_until": nil, "updated_at": time.Now(), "failure_code": "", "failure_message": ""})
 	if res.Error != nil {
 		return res.Error
 	}

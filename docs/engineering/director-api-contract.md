@@ -238,8 +238,11 @@ interface DirectorProjectSummary {
   sceneCount: number; totalShots: number; completedImages: number;
   coverImageUrl: string | null; coverImageExpiresAt: string | null;
   updatedAt: string;
+  seriesId: string | null; episodeNumber: number | null; episodeTitle: string | null; // ดู §16
 }
 ```
+
+`DirectorProject` มีสามฟิลด์ `seriesId`, `episodeNumber`, `episodeTitle` เหมือนกัน (มีเสมอ เป็น `null` สำหรับโปรเจกต์เดี่ยว)
 
 ---
 
@@ -247,10 +250,10 @@ interface DirectorProjectSummary {
 
 | Method | Path | Body | Response | หมายเหตุ |
 |---|---|---|---|---|
-| GET | `/projects?page=1&limit=20&search=` | – | `{ items: DirectorProjectSummary[], total, page, limit }` | เรียงตาม `updatedAt desc`, limit ≤ 50, search ≤ 80 ตัวอักษร (ค้นจากชื่อ) |
+| GET | `/projects?page=1&limit=20&search=` | – | `{ items: DirectorProjectSummary[], total, page, limit }` | เรียงตาม `updatedAt desc`, limit ≤ 50, search ≤ 80 ตัวอักษร (ค้นจากชื่อ) **คืนเฉพาะโปรเจกต์เดี่ยว (`seriesId = null`)** ตอนของซีรีส์ดูผ่าน `GET /series/:id` |
 | POST | `/projects` | `{ name, aspectRatio, style, resolution, idempotencyKey }` | `DirectorProject` | modal "สร้างโปรเจกต์ใหม่" เปิดที่ขั้น `idea` ค่าเริ่มต้น `sceneCount: 3`, genre และโมเดลที่เป็น `default` |
 | GET | `/projects/:id` | – | `DirectorProject` | ใช้ poll |
-| PATCH | `/projects/:id` | `{ revision, name?, aspectRatio?, style?, resolution?, step? }` | `DirectorProject` | ดูกฎด้านล่าง |
+| PATCH | `/projects/:id` | `{ revision, name?, aspectRatio?, style?, resolution?, step?, episodeTitle? }` | `DirectorProject` | ดูกฎด้านล่าง |
 | DELETE | `/projects/:id` | – | `204` | soft delete ยกเลิกงานที่ค้าง และไม่ลบ asset ตัวละครในคลัง |
 
 กฎของ `PATCH /projects/:id`
@@ -258,6 +261,7 @@ interface DirectorProjectSummary {
 - `step` **ไม่เพิ่ม revision** เพราะเป็นแค่สถานะการนำทาง
 - `aspectRatio`, `style`, `resolution` แก้ได้เฉพาะตอน `storyboard.status = idle` ถ้าแก้หลังจากนั้นให้ตอบ `409 DIRECTOR_STATE_CONFLICT` โดยข้อความแนะนำให้สร้างสตอรี่บอร์ดใหม่
 - ถ้าแก้ `style` ระหว่างที่มี cover แบบ `generated` อยู่ ให้ตั้ง `cover = null` (ภาพปกไม่ตรงสไตล์แล้ว)
+- `episodeTitle` (0–120 ตัวอักษร, ค่าว่าง/ช่องว่างล้วน = `null`) ใช้ได้เฉพาะตอนของซีรีส์ และเพิ่ม revision; ส่งให้โปรเจกต์เดี่ยวได้ `400 VALIDATION_ERROR` field `episodeTitle` การแก้ `episodeTitle` ไม่เปลี่ยน `name`
 
 ---
 
@@ -378,12 +382,33 @@ UI แสดงแถว "อ้างอิงโทนภาพ: ภาพป�
 
 ### วิดีโอ
 - `POST /projects/:id/video` `{ revision, idempotencyKey, shotIds?: string[], draft?: boolean, finalize?: boolean }` → `DirectorProject` (revision ไม่เปลี่ยน)
-- เฟรม (Seedance reference mode): ทุกภาพส่งเป็น `reference_image` — Image 1 = ภาพ shot นี้ (prompt บังคับเป็นเฟรมแรก), Image 2 = ภาพ shot ถัดไปในฉากเดียวกัน (ถ้าสำเร็จแล้ว, prompt บังคับเป็นเฟรมสุดท้าย), ภาพถัดไป = ภาพตัวละครที่ถูกเอ่ยชื่อ (หน้า รูปร่าง ชุดเท่านั้น) รวมไม่เกิน 6 ภาพ เพื่อให้คลิปต่อกันได้ (`video.usesLastFrame`); shot สุดท้ายของฉากใช้ first frame อย่างเดียว ได้ภาพ shot ถัดไปใหม่ → วิดีโอ shot ก่อนหน้า `stale`
+- Frame continuity source: the first shot of each scene uses its own storyboard image. Each subsequent shot uses the **actual final frame of its preceding completed video in the same scene**, copied into durable storage. The next storyboard image is no longer an end-frame target. `video.usesLastFrame` means deriving the clip from that preceding final frame. First shots and models without video-extension support send this image as the provider's `first_frame`, with no additional reference images: first-frame and omni-reference modes cannot be mixed. Source clip/frame identity is rechecked before submission and on completion.
+
+- Video extension for normal (non-filmed-synthetic) styles: first shots retain `first_frame`; subsequent shots on Seedance 2.0 Fast, 2.0 and 2.5 use ONLY the preceding current video's last **3 seconds** as a single `reference_video`. The local FFmpeg tail is MP4, 30 FPS, short edge 720, with audio preserved when present. No cumulative chain/full-history reference or image roles are mixed into extension requests. Other unsupported models retain first-frame behavior. Missing local continuation support fails explicitly before provider submission.
+- Extension prompts explicitly say “Extend Video1 forward” and request ONLY 5 seconds of new footage after its final frame, preserving motion/camera/lighting without replaying the input. Seedance 2.5 extension uses `ratio: adaptive`; 2.0/fast use the saved project ratio. Draft2.5 remains480p; finalization inherits its accepted draft without preparing or sending a new tail. App points remain unchanged; upstream video-reference usage may increase provider cost.
+- Provider guidance describes extension output as usually new footage, not an unconditional concatenation contract. We never blindly subtract the reference length. New output must decode and measure the requested duration within0.1 seconds; unexpected combined input+output becomes `needs_attention` with `VIDEO_EXTENSION_OUTPUT_INVALID`. Duration validation cannot detect semantically repeated footage of the same length, and local mocked requests do not guarantee live visual continuity.
+- Extension preparation and its owned tail key/source clip/frame are checkpointed through preparing/ready/submitting phases. Local preparation retries use the same source; source changes block paid submission. A durable submitting marker with uncertain outcome is never automatically resubmitted. Accepted tasks checkpoint the provider handle before releasing the lease, then checkpoint owned output before local duration/frame validation. Draft/refinement retain extension lineage and output validation. Existing jobs/clips keep their original generation inputs.
+- v10 (2026-11-08): for `realistic` and `cinematic`, every shot (first or later) is prepared from its OWN storyboard frame as a characters-only stylized 3D pose-casting image on a plain light-gray background (`director-pose-casting-3d-v1`); the environment is supplied as text (`Scene environment:`) in the video prompt, the reference is used only for identity, outfit and pose (`director-pose-casting-v1`), and the user's base block is omitted in this mode. These shots no longer depend on the previous clip (no VIDEO_DEPENDENCY_NOT_READY, `usesLastFrame=false`). Earlier history follows.
+- 2026-11-09: for `realistic` and `cinematic`, only the **first shot of each scene** goes through the Seedream pose-casting → Seedance path above. Every later shot in the same scene continues from its predecessor exactly like the other styles (clip extension on models with `SupportsVideoExtension`, otherwise the actual final frame as `first_frame`), reports `video.usesLastFrame: true`, and requires the predecessor video to have succeeded. A new scene starts again from its own storyboard frame and camera.
+- For `realistic` and `cinematic` (v2–v9), a private synthetic 3D scene is generated from that selected source before video submission. Later shots derive it from the actual preceding video frame, never from their independent storyboard still. Director image preparation uses its own `CompileDirectorFilmedScene`. v8 (`director-filmed-scene-cg-v1`, near-photoreal CG faces) was rejected by Seedance reference-image moderation in live testing, so v9 (`director-filmed-scene-stylized-v2`, user-directed 2026-11-08) keeps faces clearly stylized and non-photographic (clean painted skin, no pores) while hair silhouette, fabric structure and scene lighting stay real; realism is produced only by the video prompt; the shared `CompilePipelineStylizedScene` used elsewhere is unchanged; video compilation uses `pipeline-filmed-human-v8`. The video receives this one synthetic reference only, with cast descriptions as text; raw cast images and raw photoreal frames are excluded. The visible storyboard remains unchanged. Re-rendering preserves intended composition/identity rather than guaranteeing an exact frame match or live-provider acceptance.
+- Director video rendering now opts into a typed filmed look: `realistic` selects natural photographic exposure/color and available light; `cinematic` selects motivated photographic key/fill/practical lighting with restrained film color and plausible optical depth. Both replace the synthetic reference's CG materials with subtle skin texture/pores at normal shot scale, attentive moist eyes/blinks, individual hair, real fabric, grounded weight and restrained expressions. Preserve fictional broad identity, age, build, clothing, composition and scene time of day; do not invent a real-person identity or apply blanket beauty retouching, bokeh or extreme color grading. The original synthetic image prepass is unchanged. The video-only controls request natural-scale skin pores/uneven roughness/localized restrained highlights and individual strands/flyaways while preserving identity and composition; no new image treatment is requested.
+- Compiled video text (controls, selected scene content, negative constraints and dialogue) is no longer silently cut at2000 characters. Its application safety cap is16000 Unicode code points, not tokens/words or a verified provider hard limit. Provider guidance separately recommends concise prompts (up to500 Chinese characters or1000 English words). Over-cap Director jobs fail explicitly with `VIDEO_PROMPT_TOO_LONG` before video submission; filmed preparation validates before image generation and refunds the reservation on this definitive failure. Original image prompts, raw public input limits and intentional character-summary caps remain unchanged. Prepared/submitted jobs retain their frozen text.
+- Look controls apply only to the opted-in filmed `PreserveScene` reference path and precede the creative brief inside the compiled-video application safety budget of16000 Unicode code points. Empty/unknown look values and other pipelines retain their previous behavior; explicit first frames do not opt into reinterpretation. New Director requests use `director-scene-3d-v9/director-filmed-scene-stylized-v2/.../director-user-filmed-template-v1/director-filmed-layout-v4/director-filmed-neutral-v1`; the lead sentence tells the model the reference is stylized CG concept art for design/layout only and to cast each character as a real person with the same apparent age, build, hairstyle and outfit. Art-style words in shot/cast/setting text (e.g. 3D, CGI, Pixar, anime, cartoon, stylized, illustration, การ์ตูน, สามมิติ, อนิเมะ) are removed for these two styles before both the image prepass and the video prompt. The compiled video prompt starts with one lead sentence (live-action output; the reference is a CG previsualization for identity/layout/composition only), followed by the product owner's full video template verbatim, laid out as (1) base block with the reference index adapted to `Image 1`, (2) ONLY the selected `REALISTIC` or `CINEMATIC` mode block, (3) a `Shot:` section — scene environment, action, cast descriptions, camera and continuation note, one per line, untrimmed — and (4) `Negative constraints:` with the user's list last, as prompt text (no separate `negative_prompt` field). v6 placed shot context after the negative list without separation; prepared v6 jobs keep their frozen text; the whole compiled prompt is validated against the 16000 code-point application budget before the paid synthetic image call, failing with `VIDEO_PROMPT_TOO_LONG`. Prepared jobs carrying known v2–v8 fingerprints resume their frozen request without regenerating the image or changing prompts; a checkpoint whose synthetic key or request shape cannot be verified stops with `VIDEO_SYNTHETIC_REFERENCE_UNVERIFIED` before any provider call. Already submitted videos are unaffected. Local tests establish prompt construction and selection, not a verified live improvement in photographic realism or provider acceptance.
+- Synthetic preparation adds one image-provider operation per newly submitted video job, without a separate application point debit. Source key, image model, style, compiler versions and request are frozen per job; generated bytes are checkpointed before upload. Upload/signing retries reuse that checkpoint. There is no cross-job synthetic cache: a newly requested regeneration can incur another image-provider operation. Ambiguous image/video submission results become `needs_attention` and are never automatically resubmitted. Definitive preparation failure refunds the video reservation under the existing refund lifecycle; invalid preparation never falls back to raw images.
+- For first-frame fallback, other styles send exactly one strict `first_frame` image; selected cast descriptions remain text, without Image 2 labels or raw character references. Draft generation uses synthetic preparation for the two filmed styles; draft finalization inherits the accepted draft and does not regenerate an intermediate or resubmit its prompt/frames. Existing clips/already submitted jobs retain their original inputs; generate new clips to exercise this correction. Local request tests prove conditioning semantics, not guaranteed visual smoothness from a generative provider.
+- Batch jobs follow storyboard order, regardless of `shotIds` order; each dependent clip waits for its predecessor's video and durable frame before provider submission. New scenes start with their own shot image.
+- Selecting a later shot without a valid, current predecessor video/frame (including legacy clips without saved frames) returns `409 VIDEO_DEPENDENCY_NOT_READY`; regenerate the preceding clip first. If a batch predecessor fails, dependent jobs fail before provider submission and refund their reserved points.
+- Refinement cannot change its inherited draft frames: finalizing a dependent shot requires its saved draft source to match the current completed predecessor. Finalizing both predecessor and dependent together returns `409 VIDEO_DEPENDENCY_NOT_READY` before charging; finalize the predecessor, regenerate dependent drafts against that result, then finalize them. Legacy dependent drafts without source lineage require regeneration. Stale clips block new exports (`409 VIDEO_INCOMPLETE`) and mark existing exports stale.
+- Every video request asks for `return_last_frame`. Missing, invalid or unavailable provider frames fall back to decoding the **actual final frame of the generated video locally with FFmpeg**. The uploaded owned-video key and source lineage are checkpointed before frame persistence; retries read that owned video and never resubmit paid generation. Production requires a processor implementing `videoprocessing.LastFrameExtractor` (the existing FFmpeg processor does). Frame persistence is limited to three persisted attempts, then `needs_attention` with `VIDEO_FRAME_RECOVERY_FAILED`; no additional charge/refund occurs.
+- On restart/poll, only current, unrefunded video jobs stuck at `VIDEO_LAST_FRAME_MISSING` are automatically claimed for local recovery. The deterministic owned video key is checkpointed atomically with its lease; other attention failures are untouched. No provider task is created or polled. Missing owned media stops after the bounded attempts. Deleted projects/shots and superseded generations are excluded.
+- Legacy failure completion cleared provider/source metadata. Recovered later shots are visible as `succeeded` with `stale=true` when their source lineage cannot be proven; subsequent clips in that scene become stale and exports require review/regeneration. Recovered legacy drafts without a provider draft handle cannot be finalized. Current checkpointed jobs retain their actual source lineage.
+
+
 - `draft: true` (เฉพาะโมเดลที่ `supportsDraft`, ตอนนี้ Seedance 2.5): 480p ราคา `draftPointsPerUnit` → `video.draft = true`; `finalize: true` ทำฉบับเต็ม 1080p จาก draft ที่ยังไม่หมดอายุ (`video.canFinalize`, ไม่ส่ง `shotIds` = ทุก shot ที่ทำได้) ราคาเต็ม; โมเดลไม่รองรับ → `422 DRAFT_NOT_SUPPORTED`, ไม่มี draft ที่ใช้ได้ → `409 DRAFT_NOT_AVAILABLE`
 - ไม่ส่ง `shotIds` = ทุก shot ที่ยังไม่มีวิดีโอสำเร็จหรือวิดีโอ `stale` (ไม่มีเลย → `409 VIDEO_UP_TO_DATE`); ส่ง `shotIds` = สร้างใหม่เฉพาะ shot ที่ระบุ
 - เงื่อนไข: ภาพของทุก shot ที่จะใช้ต้อง `succeeded` (`409 STORYBOARD_INCOMPLETE`), shot ไม่มีงานค้าง (`409 SHOT_BUSY`), โมเดล `storyboard.videoModelId` รองรับสัดส่วนของโปรเจกต์ (`422 MODEL_NOT_SUPPORTED`)
 - ตัดพอยต์ `videoModel.pointsPerUnit` ต่อ shot; provider ล้มเหลวแบบชัดเจนคืนพอยต์และ `canRetry = true`
-- ความยาว 5 วินาทีต่อ shot (ปรับตามขั้นต่ำ/สูงสุดของโมเดล), ความละเอียดตามโปรเจกต์แต่ไม่เกินที่โมเดลรองรับ, ภาพ shot เป็น first frame
+- ความยาว 5 วินาทีต่อ shot (ปรับตามขั้นต่ำ/สูงสุดของโมเดล), ความละเอียดตามโปรเจกต์แต่ไม่เกินที่โมเดลรองรับ, first frame ตามลำดับต่อเนื่องข้างต้น
 - ระหว่างมีวิดีโอค้าง: สร้างเนื้อเรื่องใหม่/สตอรี่บอร์ดใหม่/เขียนฉากใหม่ → `409 DIRECTOR_STATE_CONFLICT`, ลบ/สร้างภาพ shot นั้นใหม่ → `409 SHOT_BUSY`
 - แก้ description/camera หรือได้ภาพใหม่หลังวิดีโอสำเร็จ → `video.stale = true`
 
@@ -442,6 +467,8 @@ Worker: ใช้กฎเดียวกับ Story Flow คือ lease ใ�
 | 409 | `COVER_IN_PROGRESS` / `SCENE_BUSY` / `SHOT_BUSY` | มีงานค้างอยู่ | ปิดปุ่มไว้จนงานเสร็จ |
 | 409 | `SHOT_LIMIT` / `LAST_SHOT` | เกินหรือต่ำกว่าขีดจำกัด | ปิดปุ่ม |
 | 409 | `DIRECTOR_STATE_CONFLICT` | action ไม่ตรงกับ state | โหลดใหม่ |
+| 409 | `SERIES_BUSY` | ลบซีรีส์ขณะมีตอนที่มีงาน queued/submitting/waiting | แจ้งให้รองานเสร็จก่อนลบ |
+| 409 | `EPISODE_LIMIT` | ซีรีส์มีตอนที่ 999 แล้ว | ปิดปุ่มสร้างตอน |
 | 429 | `RATE_LIMITED` | เกินโควตาต่อนาที/งานพร้อมกัน | แสดง `Retry-After` |
 | 409 | `VIDEO_UP_TO_DATE` / `STORYBOARD_INCOMPLETE` | ไม่มี shot ต้องสร้างวิดีโอ / ภาพยังไม่ครบ | ปิดปุ่ม |
 | 422 | `MODEL_NOT_SUPPORTED` | โมเดลวิดีโอไม่รองรับสัดส่วนโปรเจกต์ | ให้เลือกโมเดลอื่น |
@@ -653,3 +680,84 @@ When a media URL expires or an image load fails, refresh the project with an
 project data, not the lifetime of signed URLs; sending the unchanged ETag may
 correctly return 304 and cannot supply fresh URLs. Normal progress polling may
 still use conditional GETs.
+
+---
+
+## 16. Series & episodes — 2026-11-08
+
+A series (UI label "โปรเจกต์") groups episodes. Each episode **is** an ordinary
+`director_projects` row, so every `/projects/:id/...` endpoint (idea, cover, story,
+storyboard, shots, video, export, PATCH, DELETE) works unchanged on an episode.
+Migration: `migrations/030_director_series.sql` (`director_series`,
+`director_series_receipts`, `director_projects.series_id/episode_number/episode_title`,
+unique `(series_id, episode_number)` among live rows). All routes are under
+`/open/v1/director`, JWT, user-scoped, envelope `{data, requestId}`.
+
+```ts
+interface DirectorSeries {
+  id: string; revision: number; name: string;
+  aspectRatio: string; style: string; resolution: string;
+  characterAssetIds: string[];          // never null
+  episodeCount: number;                 // live episodes
+  coverImageUrl: string | null;         // cover of the lowest-numbered episode that has one
+                                        // (its succeeded cover, else its first succeeded shot image)
+  coverImageExpiresAt: string | null;
+  createdAt: string; updatedAt: string;
+}
+interface DirectorSeriesDetail extends DirectorSeries {
+  episodes: DirectorProjectSummary[];   // ordered by episodeNumber asc, never null
+}
+```
+
+`GET /series` computes `episodeCount` and the cover key in SQL and signs one URL per
+series; it never decodes episode documents. `GET /series/:id` decodes each episode to
+build its summary but signs only each summary's cover URL (no shot, video or export URLs).
+
+| Method | Path | Body | Response |
+|---|---|---|---|
+| POST | `/series` | `{ name, mode?, aspectRatio, style, resolution, characterAssetIds?, idempotencyKey }` | `201 DirectorSeries` |
+| GET | `/series?page=1&limit=20&mode=director` | – | `200 { items: DirectorSeries[], total, page, limit }` newest `updatedAt` first, `limit` 1–50, only series of `mode` (default `director`) |
+| GET | `/series/:id` | – | `200 DirectorSeriesDetail` (`Cache-Control: private, no-cache`, no ETag) |
+| PATCH | `/series/:id` | `{ revision, name?, aspectRatio?, style?, resolution?, characterAssetIds? }` | `200 DirectorSeries` |
+| DELETE | `/series/:id` | – | `204` |
+| POST | `/series/:id/episodes` | `{ title?, idempotencyKey }` | `201 DirectorProject` |
+
+Validation (`400 VALIDATION_ERROR`, `details[0].field`): `name` 1–120 runes (not blank);
+`aspectRatio`/`style`/`resolution` use the capability enums (unavailable resolutions such
+as `4k` rejected); `characterAssetIds` ≤ 4 unique UUIDs of the caller's `character` assets
+with an image; `title` 0–120 runes; `idempotencyKey` UUID; unknown body fields rejected.
+
+Rules
+- **Ownership**: another user's series id, a malformed id, or a deleted series → `404 PROJECT_NOT_FOUND` (same code as projects).
+- **Idempotency** (POST `/series`, POST `/series/:id/episodes`): same key + same body returns the same resource with `201` — for `/series` its current state, for `/series/:id/episodes` the episode document as it was at creation (identical to `POST /projects` replay; reload with `GET /projects/:id` for the latest); same key + different body → `409 IDEMPOTENCY_CONFLICT`; replaying after deletion → `404`. Series keys and project/episode keys are separate namespaces.
+- **PATCH** requires `revision`; a stale one → `409 REVISION_CONFLICT` with `details.currentRevision`. A PATCH that changes any field increments `revision` and `updatedAt`; a PATCH with only `revision` changes neither. Changing defaults never rewrites existing episodes.
+- **Episode creation**: `episodeNumber = max(live episode numbers) + 1` (so deleting the last episode frees its number), assigned under the owner's Director lock and the series row lock; concurrent creates get distinct numbers. The episode starts at `step: "idea"` with `aspectRatio`/`style`/`resolution` copied from the series and `idea.characterAssetIds` copied from the series cast (assets that no longer exist or are not characters are dropped). `episodeTitle` = trimmed `title` or `null`. `name` = the title, or `"<series name> ตอนที่ N"`; because project names are limited to 80 runes, the title is clipped to 80 runes and the series-name part is shortened so the suffix ` ตอนที่ N` is always kept. Above 999 episodes → `409 EPISODE_LIMIT`.
+- **DELETE**: if any live episode has a Director job in `queued`, `submitting` or `waiting` → `409 SERIES_BUSY` and nothing changes; otherwise the series and all its episodes are soft-deleted in one transaction.
+- **Mode** (2026-11-12, `migrations/032_director_series_mode.sql`): `DirectorSeries.mode` is `"director"` (ผู้กำกับ) or `"film"` (สร้างหนัง). `POST /series` defaults it to `director`; any other value → `400 VALIDATION_ERROR` field `mode`. It is fixed at creation: `PATCH` with a different `mode` → `400` field `mode` (the same value is accepted and ignored). `GET /series` lists only the requested mode (unknown → `400` field `mode`). Detail, episodes, jobs, points and deletion are shared and ignore mode. Existing rows are `director`.
+- **Legacy**: projects created before series keep `seriesId: null`, appear only in `GET /projects`, and behave exactly as before.
+
+Story context: when an episode's story (`POST /projects/:id/story`) runs, the planner input
+gains a `series` object — a fixed English note that this is one episode, the series name
+(≤120 runes), this episode's number and title (≤120 runes), and up to 5 nearest earlier live
+episodes (lower `episodeNumber`) as `{number, title, logline}` in ascending order (title falls
+back to the episode name; logline ≤300 runes, from the stored story). This adds at most
+≈2.5k runes. If the lookup fails the story runs without it. Standalone projects' planner
+input is byte-identical to the pre-series format (golden test
+`TestDirectorStandaloneStoryPromptByteIdentical`). Scene rewrite, shot planning, image and
+video prompts are unchanged.
+
+## Props registry, face and object integrity, defaults — 2026-11-09
+
+- New projects default to `seedance-2-5` (first entry of the video model list); existing projects keep their stored model.
+- Story generation requires at least one reference character (`characterAssetIds`, validation field `characterAssetIds`).
+- The story planner now also returns `props` (≤6, each `{name, spec}`; spec ≤180 chars of real-world physical structure). They are stored privately in the project document, reset when the story is replaced, and passed to the shot planner.
+- Image, first-frame video, extension and realistic/cinematic pose-casting prompts restate the structure of up to two props named in the shot, plus fixed object-integrity (one handle/hilt, scabbard is a separate sheath, no duplicated or bent parts) and face-integrity rules.
+- Planner guidance limits shots to two clearly visible faces, requires explicit left/right placement, and stages face-to-face contact over the shoulder or as hand/weapon close-ups.
+
+
+## Experiment A outcome — faceless casting default (2026-11-09)
+
+- Realistic/cinematic now default to the A1 "faceless" recipe: the Seedream prepass keeps pose, costume and props photographically but blurs every face; faces come from the character text. Project setting `filmedRecipe` (`storyboard-settings`) can opt into `pose3d` (previous stylized-3D casting), `clay` or `textonly`; `GET /projects/:id/experiments` lists clips per recipe.
+- Later shots in a realistic/cinematic scene never use clip extension (the provider rejects realistic people in a reference video with HTTP 400). They start on the previous clip's actual last frame as `first_frame` for a seamless cut (task `rawFrame`). If the provider rejects that frame (`PROVIDER_IMAGE_REJECTED`, at submit or as a task failure), the same job falls back once, at no extra charge, to faceless re-casting of that frame (reference-image mode, weaker continuity), keeping source-clip lineage checks.
+- Planned realistic/cinematic close-ups with two or more characters are reframed as over-the-shoulder shots, because outputs with several realistic faces in close-up are rejected (`OutputVideoSensitiveContentDetected`).
+- `InputVideoSensitiveContentDetected` maps to `PROVIDER_VIDEO_REJECTED`; extension submit failures now log provider code and param.

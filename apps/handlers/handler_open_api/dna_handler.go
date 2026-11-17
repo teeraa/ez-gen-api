@@ -338,6 +338,8 @@ func (h *DNAHandler) SelectSceneOutput(c *fiber.Ctx) error {
 
 func mapFacadeError(c *fiber.Ctx, err error) error {
 	switch {
+	case errors.Is(err, facade_open_api.ErrVideoPromptBudget):
+		return utils.Error(c, fiber.StatusUnprocessableEntity, "PROMPT_TOO_LONG", "รายละเอียดวิดีโอรวมยาวเกินขีดจำกัด กรุณาย่อข้อความแล้วลองใหม่", nil)
 	case errors.Is(err, facade_open_api.ErrNotFound):
 		return utils.Error(c, fiber.StatusNotFound, "NOT_FOUND", "resource not found", nil)
 	case errors.Is(err, facade_open_api.ErrUnauthorized):

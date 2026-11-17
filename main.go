@@ -17,6 +17,7 @@ import (
 	"github.com/ez-gen/ez-gen-api/apps/services/editorai"
 	"github.com/ez-gen/ez-gen-api/apps/services/gemini"
 	"github.com/ez-gen/ez-gen-api/apps/services/modelark"
+	"github.com/ez-gen/ez-gen-api/apps/services/seedaudio"
 	"github.com/ez-gen/ez-gen-api/apps/services/storage"
 	"github.com/ez-gen/ez-gen-api/apps/services/videoprocessing"
 	"github.com/ez-gen/ez-gen-api/middlewares"
@@ -189,16 +190,27 @@ func main() {
 	facade_open_api.ConfigureExportProduction(exportFacade, productionRepo)
 	productionFacade.ConfigureProcessor(videoProcessor)
 	handler_open_api.NewProductionHandler(productionFacade).RegisterRoutes(openV1)
-	videoEditorFacade := facade_open_api.NewVideoEditorFacade(repository_open_api.NewVideoEditorRepository(database), storageClient, videoProcessor)
+	voiceClient := seedaudio.New(cfg.VoiceAPIKey, cfg.VoiceBaseURL)
+	videoEditorFacade := facade_open_api.NewVideoEditorFacade(repository_open_api.NewVideoEditorRepository(database), storageClient, videoProcessor).WithMaxSourceBytes(cfg.EditorMaxSourceMB << 20).WithVoice(voiceClient)
 	handler_open_api.NewVideoEditorHandler(videoEditorFacade).RegisterRoutes(openV1)
+	// Voice menu (/open/v1/voice): text-to-speech with seed-audio-1.0 and a saved history.
+	handler_open_api.NewVoiceHandler(facade_open_api.NewVoiceFacade(repository_open_api.NewVoiceRepository(database), storageClient, voiceClient), 10).RegisterRoutes(openV1)
 	editorTranscriber := editorai.SelectTranscriber(cfg.EditorASRProvider, &editorai.LocalASR{Python: cfg.WhisperPython, Runner: cfg.WhisperRunner, Model: cfg.WhisperModelPath, Version: cfg.WhisperModelVersion, Device: cfg.WhisperDevice, Compute: cfg.WhisperComputeType, Language: cfg.WhisperLanguage}, &editorai.TyphoonASR{Python: cfg.TyphoonPython, Runner: cfg.TyphoonRunner, Model: cfg.TyphoonModelPath, Version: cfg.TyphoonModelVersion})
 	editorAIFacade := facade_open_api.NewVideoEditorAIFacade(repository_open_api.NewVideoEditorAIRepository(database), videoEditorFacade, editorai.NewGemini(cfg.GeminiAPIKey, cfg.GeminiModel, cfg.GeminiModelVersion), editorTranscriber, facade_open_api.EditorAIOptions{Enabled: cfg.EditorAIEnabled})
 	handler_open_api.NewVideoEditorAIHandler(editorAIFacade).RegisterRoutes(openV1)
+	chatCaller := editorai.SelectToolCaller(cfg.EditorAIChatProvider, editorai.NewGemini(cfg.GeminiAPIKey, cfg.GeminiModel, cfg.GeminiModelVersion), editorai.NewClaude(cfg.AnthropicAPIKey, cfg.ClaudeModel))
+	// EDITOR_AI_CHAT_MODELS lets the user pick a model per message; without it the single
+	// provider above is the only choice. That provider stays the default when listed.
+	chatCallers := editorai.ParseChatModels(cfg.EditorAIChatModels, cfg.GeminiAPIKey, cfg.GeminiModelVersion, cfg.AnthropicAPIKey)
+	handler_open_api.NewVideoEditorAIChatHandler(facade_open_api.NewVideoEditorAIChatFacade(editorAIFacade, repository_open_api.NewVideoEditorAIChatRepository(database), chatCallers, chatCaller, cfg.EditorAIChatEnabled)).RegisterRoutes(openV1)
 	storyFacade := facade_open_api.NewStoryFlowFacade(repository_open_api.NewStoryFlowRepository(database, cfg.MaxConcurrentJobsPerUser), studioRepo, modelRegistry, modelark.NewImageClient(cfg.ArkImageAPIKey, cfg.ArkImageBaseURL, cfg.ArkImageModel), modelark.NewStoryFlowAnalyzer(cfg.ArkStoryAnalysisAPIKey, cfg.ArkStoryAnalysisBaseURL), modelark.NewClient(cfg.ArkAPIKey, cfg.ArkBaseURL), storageClient, mediaFetcher, videoProcessor, facade_open_api.StoryFlowOptions{AnalysisModel: cfg.ArkStoryAnalysisModel, ImageModel: imageModel, Enabled: cfg.ArkAPIKey != "" && cfg.ArkStoryAnalysisAPIKey != "", ExportAvailable: productionFacade.Capabilities().Export.Available})
 	handler_open_api.NewStoryFlowHandler(storyFacade, cfg.RateLimitJobsPerMinute).RegisterRoutes(openV1)
 	directorAnalyzer, directorAnalysisModel, directorStoryReady := directorStoryPlanner(cfg)
-	directorFacade := facade_open_api.NewDirectorFacade(repository_open_api.NewDirectorRepository(database, cfg.MaxConcurrentJobsPerUser), studioRepo, storageClient, directorAnalyzer, modelark.NewImageClient(cfg.ArkImageAPIKey, cfg.ArkImageBaseURL, cfg.ArkImageModel), modelRegistry, modelark.NewClient(cfg.ArkAPIKey, cfg.ArkBaseURL), mediaFetcher, facade_open_api.DirectorOptions{Enabled: imageEnabled && directorStoryReady, AnalysisModel: directorAnalysisModel, ImageModel: imageModel, StoryPoints: cfg.DirectorStoryPoints, ImagePoints: cfg.DirectorImagePoints, VideoPoints: cfg.DirectorVideoPoints, DraftPoints: cfg.DirectorDraftPoints, MaxImageReferences: cfg.DirectorImageRefs, VideoHumanFaceMode: cfg.DirectorFaceMode, SampleBaseURL: cfg.DirectorSampleBaseURL, VideoEnabled: cfg.ArkAPIKey != "", ReferenceCheck: storage.Reachable, LookDescriber: directorLookDescriber(directorAnalyzer), Processor: videoProcessor, VideoFetch: func(c context.Context, u string) ([]byte, string, error) { return storage.FetchVideo(c, u, 300<<20) }, ImageFetch: func(c context.Context, u string) ([]byte, string, error) { return storage.FetchImage(c, u, 7<<20) }})
+	directorFacade := facade_open_api.NewDirectorFacade(repository_open_api.NewDirectorRepository(database, cfg.MaxConcurrentJobsPerUser).SetMaxParallel(cfg.DirectorProjectParallel), studioRepo, storageClient, directorAnalyzer, modelark.NewImageClient(cfg.ArkImageAPIKey, cfg.ArkImageBaseURL, cfg.ArkImageModel), modelRegistry, modelark.NewClient(cfg.ArkAPIKey, cfg.ArkBaseURL), mediaFetcher, facade_open_api.DirectorOptions{Enabled: imageEnabled && directorStoryReady, AnalysisModel: directorAnalysisModel, ImageModel: imageModel, StoryPoints: cfg.DirectorStoryPoints, ImagePoints: cfg.DirectorImagePoints, VideoPoints: cfg.DirectorVideoPoints, DraftPoints: cfg.DirectorDraftPoints, MaxImageReferences: cfg.DirectorImageRefs, VideoHumanFaceMode: cfg.DirectorFaceMode, SampleBaseURL: cfg.DirectorSampleBaseURL, VideoEnabled: cfg.ArkAPIKey != "", ReferenceCheck: storage.Reachable, LookDescriber: directorLookDescriber(directorAnalyzer), Processor: videoProcessor, VideoFetch: func(c context.Context, u string) ([]byte, string, error) { return storage.FetchVideo(c, u, 300<<20) }, ImageFetch: func(c context.Context, u string) ([]byte, string, error) { return storage.FetchImage(c, u, 7<<20) }})
 	handler_open_api.NewDirectorHandler(directorFacade, cfg.RateLimitJobsPerMinute).RegisterRoutes(openV1)
+	// สร้างหนัง (film menu): separate tables, routes and worker; shares the point wallet and prices.
+	filmFacade := facade_open_api.NewFilmFacade(repository_open_api.NewFilmRepository(database), storageClient, modelark.NewImageClient(cfg.ArkImageAPIKey, cfg.ArkImageBaseURL, cfg.ArkImageModel), modelark.NewClient(cfg.ArkAPIKey, cfg.ArkBaseURL), mediaFetcher, facade_open_api.FilmOptions{Enabled: imageEnabled, ImageModel: imageModel, ImagePoints: cfg.DirectorImagePoints, VideoPoints: cfg.DirectorVideoPoints, DraftPoints: cfg.DirectorDraftPoints, VideoEnabled: cfg.ArkAPIKey != "", ReferenceCheck: storage.Reachable, Processor: videoProcessor, Analyzer: directorAnalyzer, AnalysisModel: directorAnalysisModel, PlanPoints: cfg.DirectorStoryPoints, VideoFetch: func(c context.Context, u string) ([]byte, string, error) { return storage.FetchVideo(c, u, 300<<20) }})
+	handler_open_api.NewFilmHandler(filmFacade, cfg.RateLimitJobsPerMinute).RegisterRoutes(openV1)
 
 	// Jobs
 	jobHandler := handler_open_api.NewJobHandler(jobFacade)
@@ -219,6 +231,17 @@ func main() {
 	dnaHandler.RegisterRoutes(dnaGroup)
 	jobHandler.RegisterSceneRoutes(dnaGroup)
 
+	// Prompt library (/open/v1/prompts) and Skills (/open/v1/skills) menus
+	handler_open_api.NewLibraryHandler(facade_open_api.NewLibraryFacade(repository_open_api.NewLibraryRepository(database))).RegisterRoutes(openV1)
+
+	// Marketplace menu (/open/v1/marketplace). Manual phase: posts and sales are logged by the user,
+	// no platform API is called. AI suggestions reuse the Director story planner's text model.
+	marketplaceOptions := facade_open_api.MarketplaceOptions{}
+	if directorStoryReady {
+		marketplaceOptions = facade_open_api.MarketplaceOptions{Analyzer: directorAnalyzer, AnalysisModel: directorAnalysisModel}
+	}
+	handler_open_api.NewMarketplaceHandler(facade_open_api.NewMarketplaceFacade(repository_open_api.NewMarketplaceRepository(database), uploadRepo, storageClient, marketplaceOptions), 6).RegisterRoutes(openV1)
+
 	// ── Background workers ────────────────────────────────────────────────────
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -232,7 +255,8 @@ func main() {
 	pollInterval := time.Duration(cfg.ArkPollIntervalSeconds) * time.Second
 	go crons.NewPipelineWorker(pipelineFacade).Start(ctx)
 	go crons.NewStoryFlowWorker(storyFacade).Start(ctx)
-	go crons.NewDirectorWorker(directorFacade).Start(ctx)
+	go crons.NewDirectorWorker(directorFacade, cfg.DirectorWorkers).Start(ctx)
+	go crons.NewFilmWorker(filmFacade, 2).Start(ctx)
 	poller := crons.NewJobPoller(jobRepo, jobFacade, pollInterval, 20)
 	go poller.Start(ctx)
 

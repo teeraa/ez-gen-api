@@ -4,7 +4,7 @@ Owner: Agent A (coordinator). Created 2026-10-15.
 
 ## Scope and loading
 
-The main agent is Coordinator A. Eight project agents live in `.codex/agents/*.toml`.
+The main agent is Coordinator A. Nine project agents live in `.codex/agents/*.toml`.
 Each standalone definition supplies `name`, `description`, `developer_instructions`.
 No model, reasoning effort, permissions or global user config is overridden.
 See https://learn.chatgpt.com/docs/agent-configuration/subagents (checked 2026-10-15).
@@ -27,11 +27,12 @@ is installed by this setup.
 | api-implementer | Scoped API implementation | Assigned implementation files |
 | database-reviewer | Schema, migration or query change | None |
 | modelark-specialist | Provider behavior or client change | Only assigned provider files |
+| video-prompt-specialist | Director realistic/cinematic prompt, synthetic prepass, provider rejection diagnosis | Only assigned prompt/synthetic files |
 | security-reviewer | Auth, input, upload, external call or disclosure change | None |
 | verification-engineer | Acceptance checks and regression tests | Only assigned test files |
 | independent-auditor | Every completed implementation before acceptance | None |
 
-The eight roles are capabilities, not eight simultaneous processes. Use only the
+The nine roles are capabilities, not nine simultaneous processes. Use only the
 relevant specialists. Respect runtime concurrency limits; one writer per file.
 A assigns all changes under the ownership map. Reviewers return findings to A;
 they do not silently modify another owner's deliverable.

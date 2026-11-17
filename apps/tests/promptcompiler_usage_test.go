@@ -21,7 +21,7 @@ func TestPromptUsageMatchesCompileBudget(t *testing.T) {
 		}
 		for _, dialogue := range []string{"สวัสดีครับ วันนี้อากาศดีมาก", "Hello there, nice to meet you"} {
 			// Walk the scene length across the limit; the two must flip at the same point.
-			for sceneLen := 1300; sceneLen <= 2000; sceneLen += 7 {
+			for sceneLen := promptcompiler.VideoPromptRuneLimit - 1200; sceneLen <= promptcompiler.VideoPromptRuneLimit; sceneLen += 7 {
 				in := promptcompiler.Inputs{Dialogue: dialogue, ModelID: m.InternalID, Quality: "standard",
 					Scene:  &promptcompiler.SceneInputs{Description: strings.Repeat("ก", sceneLen)},
 					Assets: []promptcompiler.AssetRef{{Role: "reference", MimeType: "image/png", StorageKey: "generated/image.png"}}}

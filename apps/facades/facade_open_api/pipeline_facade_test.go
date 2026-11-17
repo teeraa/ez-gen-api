@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	dto "github.com/ez-gen/ez-gen-api/apps/dto/dto_open_api"
 	"github.com/ez-gen/ez-gen-api/apps/models"
 	repo "github.com/ez-gen/ez-gen-api/apps/repositories/repository_open_api"
@@ -380,7 +379,7 @@ func TestPipelinePrevalidationAndImmutableModel(t *testing.T) {
 		t.Fatal("invalid style persisted", e)
 	}
 	bad = in
-	bad.ScenePrompt = fmt.Sprintf("%02000d", 0)
+	bad.ScenePrompt = strings.Repeat("ก", 2001)
 	bad.Dialogue = "ข้อความ"
 	if _, e := f.Create(context.Background(), user, bad); !errors.Is(e, ErrValidation) {
 		t.Fatal("scene would truncate", e)

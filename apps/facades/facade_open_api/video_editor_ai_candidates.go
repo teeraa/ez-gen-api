@@ -24,6 +24,8 @@ func buildAIEvidence(in models.EditorAIInput, transcripts []models.EditorAITrans
 		sourceStart := len(out)
 		seen := map[string]bool{}
 		add := func(start, end float64, description string) {
+			// ASR ends may run up to 0.1 s past the probed duration; windows must stay inside it.
+			end = math.Min(end, source.Duration)
 			if len(out)-sourceStart >= limit || end <= start || end-start > in.TargetDuration+.001 {
 				return
 			}
@@ -184,8 +186,9 @@ func aiMergeAdjacent(segments []models.EditorAIDraftSegment) []models.EditorAIDr
 	for _, segment := range segments {
 		if len(out) > 0 {
 			previous := &out[len(out)-1]
-			if previous.AssetID == segment.AssetID && math.Abs(previous.End-segment.Start) < .000001 && previous.Volume == segment.Volume && previous.Title == segment.Title && previous.Reason == segment.Reason {
+			if previous.AssetID == segment.AssetID && math.Abs(previous.End-segment.Start) < .000001 && previous.Volume == segment.Volume && previous.Title == segment.Title && previous.Reason == segment.Reason && aiMergeableEffects(*previous, segment) {
 				previous.End = segment.End
+				previous.FadeOut = segment.FadeOut
 				continue
 			}
 		}

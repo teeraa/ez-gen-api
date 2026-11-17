@@ -11,11 +11,13 @@ import (
 	"github.com/ez-gen/ez-gen-api/apps/models"
 	repo "github.com/ez-gen/ez-gen-api/apps/repositories/repository_open_api"
 	req "github.com/ez-gen/ez-gen-api/apps/requests/request_open_api"
+	"github.com/ez-gen/ez-gen-api/apps/services/seedaudio"
 	"github.com/ez-gen/ez-gen-api/apps/services/videoeditor"
 	"github.com/ez-gen/ez-gen-api/apps/services/videoprocessing"
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"os"
@@ -59,6 +61,12 @@ type VideoEditorFacade struct {
 	textRetry   time.Duration // tests only; zero means veTextRetry
 	schemaOK    atomic.Bool
 	imageOK     atomic.Bool
+	// Chunked uploads (see video_editor_large_upload.go).
+	maxSource   int64
+	uploads     *veUploadSessions
+	uploadsOnce sync.Once
+	// Text-to-speech for the audio library (nil = off); see video_editor_voice.go.
+	voice *seedaudio.Client
 }
 
 const (
@@ -147,7 +155,7 @@ func (f *VideoEditorFacade) Capabilities() dto.VideoEditorCapabilitiesDTO {
 		available = false
 		reason = "ระบบตัดต่อยังไม่พร้อมใช้งาน ฐานข้อมูลยังไม่ได้อัปเดต (migration 024)"
 	}
-	return dto.VideoEditorCapabilitiesDTO{Available: available, UnavailableReason: reason, MaxUploadBytes: videoeditor.MaxUploadBytes, MaxSegments: 20, MaxDuration: 1200, AspectRatios: []string{"9:16", "16:9", "1:1"}, Resolutions: []string{"720p", "1080p"}, MaxAudioClips: veMaxAudioClips, MaxTextLayers: veMaxTextLayers, TextOverlays: available && f.TextOverlays(), TextTransforms: true, AudioFormats: []string{"mp3", "wav", "m4a"}, ClipEffects: true, ClipStyles: true, ImageLayers: available && f.imageReady(context.Background()), MaxImageLayers: veMaxImageLayers, ImageFormats: []string{"png", "jpg", "webp"}}
+	return dto.VideoEditorCapabilitiesDTO{Available: available, UnavailableReason: reason, MaxUploadBytes: videoeditor.MaxUploadBytes, MaxSourceBytes: f.MaxSourceBytes(), ChunkedUploads: true, MaxSegments: 20, MaxDuration: 1200, AspectRatios: []string{"9:16", "16:9", "1:1"}, Resolutions: []string{"720p", "1080p"}, MaxAudioClips: veMaxAudioClips, MaxTextLayers: veMaxTextLayers, TextOverlays: available && f.TextOverlays(), TextTransforms: true, AudioFormats: []string{"mp3", "wav", "m4a"}, ClipEffects: true, ClipStyles: true, ImageLayers: available && f.imageReady(context.Background()), MaxImageLayers: veMaxImageLayers, ImageFormats: []string{"png", "jpg", "webp"}, Voice: available && f.VoiceAvailable()}
 }
 func veID(v string) bool    { _, e := uuid.Parse(v); return e == nil }
 func veTitle(v string) bool { return strings.TrimSpace(v) != "" && utf8.RuneCountInString(v) <= 200 }
@@ -259,6 +267,14 @@ func (f *VideoEditorFacade) Project(ctx context.Context, id, user string) (dto.V
 	d.Assets, e = f.Assets(ctx, id, user)
 	return d, e
 }
+
+// DeleteProject removes a project from the user's list and cancels its unfinished AI jobs.
+func (f *VideoEditorFacade) DeleteProject(ctx context.Context, id, user string) error {
+	if !veID(id) || !veID(user) {
+		return repo.ErrNotFound
+	}
+	return f.repo.DeleteProject(ctx, id, user)
+}
 func (f *VideoEditorFacade) Assets(ctx context.Context, id, user string) ([]dto.VideoEditorAssetDTO, error) {
 	if !veID(id) || !veID(user) {
 		return nil, repo.ErrNotFound
@@ -359,7 +375,7 @@ func validateVESegments(segments []models.VideoEditorSegment, assets []models.Vi
 		if !veID(s.ID) || seen[s.ID] || !ok || !veFinite(s.Start) || !veFinite(s.End) || !veFinite(s.Volume) || s.Start < 0 || s.Start >= s.End || s.End > a.Duration+.001 || s.Volume < 0 || s.Volume > 1 {
 			return ErrVEInvalid
 		}
-		if !veFinite(s.Speed) || s.Speed != 0 && (s.Speed < veMinSpeed || s.Speed > veMaxSpeed) || !veValidFades(s.FadeIn, s.FadeOut, s.TimelineLength()) || !veValidLook(s.VideoEditorClipLook) {
+		if !veValidSpeed(s.Speed) || !veValidFades(s.FadeIn, s.FadeOut, s.TimelineLength()) || !veValidLook(s.VideoEditorClipLook) {
 			return ErrVEInvalid
 		}
 		if !veValidTransition(segments, i) {
@@ -382,13 +398,19 @@ const (
 	veMaxFade  = 10
 )
 
+// veValidSpeed: 0 means 1×; otherwise within the editor's speed range.
+func veValidSpeed(speed float64) bool {
+	return veFinite(speed) && (speed == 0 || speed >= veMinSpeed && speed <= veMaxSpeed)
+}
+
 // veValidFades: each fade is 0..10 s and the two together fit inside the item.
 func veValidFades(in, out, length float64) bool {
 	return veFinite(in) && veFinite(out) && in >= 0 && out >= 0 && in <= veMaxFade && out <= veMaxFade && in+out <= length+.001
 }
 
 // Transition names are FFmpeg xfade transitions the preview can reproduce.
-var veTransitions = map[string]bool{"fade": true, "fadeblack": true, "fadewhite": true, "wipeleft": true, "wiperight": true, "slideleft": true, "slideright": true, "circleopen": true}
+var veTransitions = map[string]bool{"fade": true, "fadeblack": true, "fadewhite": true, "wipeleft": true, "wiperight": true, "slideleft": true, "slideright": true, "circleopen": true,
+	"zoomin": true, "hblur": true, "smoothleft": true, "smoothright": true, "slideup": true, "slidedown": true, "pixelize": true, "fadegrays": true, "radial": true}
 
 // veValidTransition: none on the first segment; otherwise a known type lasting 0.1..2 s
 // and at most half of this and the previous segment, so neighbouring transitions never meet.
@@ -403,14 +425,14 @@ func veValidTransition(segments []models.VideoEditorSegment, i int) bool {
 	return s.TransitionDuration <= math.Min(s.TimelineLength(), segments[i-1].TimelineLength())/2+.001
 }
 
-// veValidLook: colour adjustments and pan are -1..1, zoom 1..3 (0 = 1), fit "" or "cover".
+// veValidLook: colour adjustments and pan are -1..1, zoom and zoomTo 1..3 (0 = 1 / none), fit "" or "cover".
 func veValidLook(l models.VideoEditorClipLook) bool {
 	for _, v := range []float64{l.Brightness, l.Contrast, l.Saturation, l.PanX, l.PanY} {
 		if !veFinite(v) || v < -1 || v > 1 {
 			return false
 		}
 	}
-	return veFinite(l.Zoom) && (l.Zoom == 0 || l.Zoom >= 1 && l.Zoom <= 3) && (l.Fit == "" || l.Fit == "cover")
+	return veFinite(l.Zoom) && (l.Zoom == 0 || l.Zoom >= 1 && l.Zoom <= 3) && veFinite(l.ZoomTo) && (l.ZoomTo == 0 || l.ZoomTo >= 1 && l.ZoomTo <= 3) && (l.Fit == "" || l.Fit == "cover")
 }
 
 // veAudioSource: audio clips may use an audio asset, or the sound track of a video
@@ -484,8 +506,16 @@ func normalizeVETextLayers(layers []models.VideoEditorTextLayer) ([]models.Video
 		}
 		if l.OutlineWidth < 0 || l.OutlineWidth > 20 || l.OutlineWidth > 0 && !veColor.MatchString(l.OutlineColor) || l.OutlineWidth == 0 && l.OutlineColor != "" ||
 			!veFinite(l.BoxOpacity) || l.BoxOpacity < 0 || l.BoxOpacity > 1 || l.BoxOpacity > 0 && !veColor.MatchString(l.BoxColor) || l.BoxOpacity == 0 && l.BoxColor != "" ||
-			l.Animation != "" && l.Animation != "fade" && l.Animation != "slide" {
+			l.Animation != "" && l.Animation != "fade" && l.Animation != "slide" && l.Animation != "pop" || l.Font != "" && l.Font != videoprocessing.TextFontHeavy {
 			return nil, ErrVEInvalid
+		}
+		l.AccentText = strings.TrimSpace(l.AccentText)
+		if l.AccentText != "" && (!veColor.MatchString(l.AccentColor) || strings.Contains(l.AccentText, "\n") || utf8.RuneCountInString(l.AccentText) > 100) || l.AccentText == "" && l.AccentColor != "" {
+			return nil, ErrVEInvalid
+		}
+		// An accent phrase removed by a later text edit is dropped instead of failing the save.
+		if l.AccentText != "" && !strings.Contains(text, l.AccentText) {
+			l.AccentText, l.AccentColor = "", ""
 		}
 		seen[l.ID] = true
 		l.Text = text
@@ -604,7 +634,7 @@ func (f *VideoEditorFacade) Upload(ctx context.Context, id, user, uploadID, name
 	}
 	h := sha256.Sum256(data)
 	lease := time.Now().Add(130 * time.Second)
-	a := models.VideoEditorAsset{UserID: uuid.MustParse(user), ProjectID: uuid.MustParse(id), ClientUploadID: uuid.MustParse(uploadID), ContentHash: hex.EncodeToString(h[:]), Name: name, Kind: "video", Status: "processing", SizeBytes: int64(len(data)), Frames: datatypes.JSON("[]"), AttemptToken: uuid.New(), LeaseUntil: &lease}
+	a := models.VideoEditorAsset{UserID: uuid.MustParse(user), ProjectID: uuid.MustParse(id), ClientUploadID: uuid.MustParse(uploadID), ContentHash: hex.EncodeToString(h[:]), Name: name, Kind: veDeclaredKind(mime), Status: "processing", SizeBytes: int64(len(data)), Frames: datatypes.JSON("[]"), AttemptToken: uuid.New(), LeaseUntil: &lease}
 	reserved, e := f.repo.ReserveAsset(ctx, &a)
 	if e != nil {
 		return dto.VideoEditorAssetDTO{}, false, e
@@ -616,12 +646,7 @@ func (f *VideoEditorFacade) Upload(ctx context.Context, id, user, uploadID, name
 	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 	fail := func(err error) (dto.VideoEditorAssetDTO, bool, error) {
-		code := "STORAGE_UNAVAILABLE"
-		message := "บันทึกไฟล์ไม่สำเร็จ กรุณาลองใหม่"
-		if errors.Is(err, ErrVEType) {
-			code = "INVALID_FILE_TYPE"
-			message = "ไม่สามารถอ่านไฟล์วิดีโอหรือเสียงนี้ได้"
-		}
+		code, message := veUploadFailure(err)
 		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = f.repo.FailAsset(cleanup, a.ID.String(), user, a.AttemptToken, code, message)
@@ -636,32 +661,47 @@ func (f *VideoEditorFacade) Upload(ctx context.Context, id, user, uploadID, name
 	if e = os.WriteFile(path, data, 0600); e != nil {
 		return fail(ErrVEMedia)
 	}
+	if e = f.storeAsset(ctx, &a, user, id, path, mime, data); e != nil {
+		return fail(e)
+	}
+	d, e := f.assetDTO(ctx, &a)
+	return d, true, e
+}
+
+// storeAsset inspects the file at path (whose bytes are data), stores it with its
+// thumbnails and marks the reserved asset ready. Errors are the sentinels Upload maps.
+func (f *VideoEditorFacade) storeAsset(ctx context.Context, a *models.VideoEditorAsset, user, id, path, mime string, data []byte) error {
 	media, e := videoeditor.Inspect(ctx, path)
+	if errors.Is(e, videoeditor.ErrTooLong) {
+		return ErrVEMediaTooLong
+	}
 	if e != nil {
-		return fail(ErrVEType)
+		log.Printf("video_editor: inspect asset=%s name=%q declared=%s failed: %v", a.ID, a.Name, mime, e)
+		return ErrVEType
 	}
 	if !veMIMECompatible(media.MIME, mime) {
-		return fail(ErrVEType)
+		log.Printf("video_editor: asset=%s name=%q declared=%s but contains %s", a.ID, a.Name, mime, media.MIME)
+		return ErrVEType
 	}
 	if media.Kind == "image" && !f.imageReady(ctx) {
-		return fail(ErrVESchema)
+		return ErrVESchema
 	}
 	prefix := fmt.Sprintf("video-editor/%s/%s/assets/%s/%s", user, id, a.ID, a.AttemptToken)
 	a.SourceKey = prefix + "/source"
 	if e = f.storage.Upload(ctx, a.SourceKey, data, media.MIME); e != nil {
-		return fail(ErrVEStorage)
+		return ErrVEStorage
 	}
 	frames := []models.VideoEditorFrame{}
 	for i, frame := range media.Frames {
 		key := fmt.Sprintf("%s/frame-%02d.jpg", prefix, i)
 		if e = f.storage.Upload(ctx, key, frame.Data, "image/jpeg"); e != nil {
-			return fail(ErrVEStorage)
+			return ErrVEStorage
 		}
 		frames = append(frames, models.VideoEditorFrame{Time: frame.Time, Key: key})
 	}
 	raw, e := json.Marshal(frames)
 	if e != nil {
-		return fail(ErrVEStorage)
+		return ErrVEStorage
 	}
 	a.Kind = media.Kind
 	a.Duration = media.Duration
@@ -669,11 +709,36 @@ func (f *VideoEditorFacade) Upload(ctx context.Context, id, user, uploadID, name
 	a.Height = media.Height
 	a.HasAudio = media.HasAudio
 	a.Frames = datatypes.JSON(raw)
-	if e = f.repo.CompleteAsset(ctx, &a); e != nil {
-		return fail(e)
+	return f.repo.CompleteAsset(ctx, a)
+}
+
+// ErrVEMediaTooLong: the file is readable but longer than its kind allows.
+var ErrVEMediaTooLong = fmt.Errorf("video editor media too long: %w", ErrVEType)
+
+// veDeclaredKind is the reserved asset's kind until inspection sets the real one, so a
+// failed upload is listed under the library tab it was sent from (audio, image, video).
+func veDeclaredKind(mime string) string {
+	switch {
+	case strings.HasPrefix(mime, "audio/"):
+		return "audio"
+	case strings.HasPrefix(mime, "image/"):
+		return "image"
 	}
-	d, e := f.assetDTO(ctx, &a)
-	return d, true, e
+	return "video"
+}
+
+// VEUploadFailure is the failure code and Thai message for a failed upload (stored on the
+// asset and returned by the upload endpoints).
+func VEUploadFailure(err error) (string, string) { return veUploadFailure(err) }
+
+func veUploadFailure(err error) (string, string) {
+	switch {
+	case errors.Is(err, ErrVEMediaTooLong):
+		return "MEDIA_TOO_LONG", fmt.Sprintf("ไฟล์ยาวเกินกำหนด: วิดีโอไม่เกิน %d นาที เสียงไม่เกิน %d นาที", videoeditor.MaxVideoSeconds/60, videoeditor.MaxAudioSeconds/60)
+	case errors.Is(err, ErrVEType):
+		return "INVALID_FILE_TYPE", "ไม่สามารถอ่านไฟล์วิดีโอหรือเสียงนี้ได้"
+	}
+	return "STORAGE_UNAVAILABLE", "บันทึกไฟล์ไม่สำเร็จ กรุณาลองใหม่"
 }
 
 var veUploadMIME = map[string]bool{"video/mp4": true, "video/quicktime": true, "video/webm": true, "application/octet-stream": true, "audio/mpeg": true, "audio/mp3": true, "audio/wav": true, "audio/x-wav": true, "audio/wave": true, "audio/vnd.wave": true, "audio/mp4": true, "audio/x-m4a": true, "audio/m4a": true, "audio/aac": true, "image/png": true, "image/jpeg": true, "image/webp": true}
@@ -1009,7 +1074,7 @@ func (f *VideoEditorFacade) render(ctx context.Context, e *models.VideoEditorExp
 func veRenderText(layers []models.VideoEditorTextLayer) []videoprocessing.TextLayer {
 	out := []videoprocessing.TextLayer{}
 	for _, l := range layers {
-		out = append(out, videoprocessing.TextLayer{Absolute: true, Text: l.Text, HasXY: true, EditorStyle: true, X: l.X, Y: l.Y, Align: l.Align, FontSize: l.FontSize, ScaleX: veTextScale(l.ScaleX), ScaleY: veTextScale(l.ScaleY), Color: strings.TrimPrefix(l.Color, "#"), StartTime: l.Start, EndTime: l.End, OutlineWidth: l.OutlineWidth, OutlineColor: strings.TrimPrefix(l.OutlineColor, "#"), BoxColor: strings.TrimPrefix(l.BoxColor, "#"), BoxOpacity: l.BoxOpacity, Animation: l.Animation})
+		out = append(out, videoprocessing.TextLayer{Absolute: true, Text: l.Text, HasXY: true, EditorStyle: true, X: l.X, Y: l.Y, Align: l.Align, FontSize: l.FontSize, ScaleX: veTextScale(l.ScaleX), ScaleY: veTextScale(l.ScaleY), Color: strings.TrimPrefix(l.Color, "#"), StartTime: l.Start, EndTime: l.End, OutlineWidth: l.OutlineWidth, OutlineColor: strings.TrimPrefix(l.OutlineColor, "#"), BoxColor: strings.TrimPrefix(l.BoxColor, "#"), BoxOpacity: l.BoxOpacity, Animation: l.Animation, Font: l.Font, AccentText: l.AccentText, AccentColor: strings.TrimPrefix(l.AccentColor, "#")})
 	}
 	return out
 }

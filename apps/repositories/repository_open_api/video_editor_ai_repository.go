@@ -225,7 +225,7 @@ func (r *VideoEditorAIRepository) Apply(ctx context.Context, id, user, request s
 			if !set[s.ID] {
 				return ErrAIDraft
 			}
-			segs = append(segs, models.VideoEditorSegment{ID: s.ID, AssetID: s.AssetID, Start: s.Start, End: s.End, Volume: s.Volume})
+			segs = append(segs, s.TimelineSegment())
 		}
 		raw, e := json.Marshal(segs)
 		if e != nil {

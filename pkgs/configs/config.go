@@ -8,17 +8,22 @@ import (
 )
 
 type Config struct {
-	DirectorStoryPoints   int
-	DirectorImagePoints   int
-	DirectorVideoPoints   int
-	DirectorDraftPoints   int
-	DirectorImageRefs     int
-	DirectorFaceMode      string
-	DirectorSampleBaseURL string
-	DirectorStoryProvider string
+	DirectorStoryPoints     int
+	DirectorImagePoints     int
+	DirectorVideoPoints     int
+	DirectorDraftPoints     int
+	DirectorImageRefs       int
+	DirectorFaceMode        string
+	DirectorSampleBaseURL   string
+	DirectorStoryProvider   string
+	DirectorWorkers         int
+	DirectorProjectParallel int
 
-	EditorAIEnabled     bool
-	GeminiAPIKey        string
+	EditorAIEnabled bool
+	GeminiAPIKey    string
+	// BytePlus Seed Audio (text-to-speech); empty key turns voice generation off.
+	VoiceAPIKey         string
+	VoiceBaseURL        string
 	GeminiModel         string
 	GeminiModelVersion  string
 	WhisperPython       string
@@ -33,6 +38,16 @@ type Config struct {
 	TyphoonRunner       string
 	TyphoonModelPath    string
 	TyphoonModelVersion string
+
+	// AI chat editor (experimental). Provider: gemini (default) or claude.
+	EditorAIChatEnabled  bool
+	EditorAIChatProvider string
+	EditorAIChatModels   string
+	// EDITOR_MAX_SOURCE_MB: largest video/audio accepted by chunked upload (default 500);
+	// files above storage's 50 MB are compressed to fit before storing.
+	EditorMaxSourceMB int64
+	AnthropicAPIKey   string
+	ClaudeModel       string
 
 	Port string
 	Env  string
@@ -94,6 +109,8 @@ func Load() *Config {
 	return &Config{
 		EditorAIEnabled:     strings.EqualFold(os.Getenv("EDITOR_AI_ENABLED"), "true"),
 		GeminiAPIKey:        os.Getenv("GEMINI_API_KEY"),
+		VoiceAPIKey:         os.Getenv("BYTEPLUS_VOICE_API_KEY"),
+		VoiceBaseURL:        getEnv("BYTEPLUS_VOICE_BASE_URL", "https://voice.ap-southeast-1.bytepluses.com"),
 		GeminiModel:         getEnv("GEMINI_MODEL", "gemini-3.5-flash-lite"),
 		GeminiModelVersion:  os.Getenv("GEMINI_MODEL_VERSION"),
 		WhisperPython:       os.Getenv("WHISPER_PYTHON"),
@@ -110,6 +127,13 @@ func Load() *Config {
 		TyphoonModelVersion: os.Getenv("TYPHOON_MODEL_VERSION"),
 		Port:                getEnv("PORT", "8080"),
 		Env:                 getEnv("ENV", "development"),
+
+		EditorAIChatEnabled:  strings.EqualFold(os.Getenv("EDITOR_AI_CHAT_ENABLED"), "true"),
+		EditorAIChatProvider: strings.ToLower(strings.TrimSpace(getEnv("EDITOR_AI_CHAT_PROVIDER", "gemini"))),
+		EditorAIChatModels:   os.Getenv("EDITOR_AI_CHAT_MODELS"),
+		EditorMaxSourceMB:    int64(getEnvInt("EDITOR_MAX_SOURCE_MB", 500)),
+		AnthropicAPIKey:      os.Getenv("ANTHROPIC_API_KEY"),
+		ClaudeModel:          os.Getenv("CLAUDE_MODEL"),
 
 		DatabaseURL:          mustEnv("DATABASE_URL"),
 		DatabaseMaxOpenConns: getEnvInt("DATABASE_MAX_OPEN_CONNS", 25),
@@ -133,6 +157,8 @@ func Load() *Config {
 		DirectorFaceMode:            strings.TrimSpace(os.Getenv("DIRECTOR_VIDEO_HUMAN_FACE_MODE")),
 		DirectorSampleBaseURL:       strings.TrimRight(strings.TrimSpace(os.Getenv("DIRECTOR_SAMPLE_BASE_URL")), "/"),
 		DirectorStoryProvider:       strings.ToLower(strings.TrimSpace(os.Getenv("DIRECTOR_STORY_PROVIDER"))),
+		DirectorWorkers:             getEnvInt("DIRECTOR_WORKERS", 10),
+		DirectorProjectParallel:     getEnvInt("DIRECTOR_MAX_PARALLEL_PER_PROJECT", 6),
 		ArkStoryAnalysisModel:       strings.TrimSpace(os.Getenv("ARK_STORY_ANALYSIS_MODEL")),
 		ArkStoryAnalysisAPIKey:      getEnv("ARK_STORY_ANALYSIS_API_KEY", getEnv("ARK_REFERENCE_ANALYSIS_API_KEY", getEnv("ARK_IMAGE_API_KEY", os.Getenv("ARK_API_KEY")))),
 		ArkStoryAnalysisBaseURL:     getEnv("ARK_STORY_ANALYSIS_BASE_URL", getEnv("ARK_REFERENCE_ANALYSIS_BASE_URL", getEnv("ARK_IMAGE_BASE_URL", getEnv("ARK_BASE_URL", "https://ark.ap-southeast.bytepluses.com/api/v3")))),

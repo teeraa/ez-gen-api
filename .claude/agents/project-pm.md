@@ -45,6 +45,7 @@ Write `docs/engineering/tasks/<task-id>.md` at workspace root when available, ot
 | `api-implementer` | Scoped API implementation after scope is settled |
 | `database-reviewer` | Schema, migration, or query change |
 | `modelark-specialist` | Provider behavior or client change |
+| `video-prompt-specialist` | Director realistic/cinematic prompt, synthetic prepass, provider rejection diagnosis |
 | `security-reviewer` | Auth, input, upload, external call, or disclosure change |
 | `verification-engineer` | Run acceptance gates; record evidence |
 | `independent-auditor` | Final audit before acceptance; must be fresh agent |

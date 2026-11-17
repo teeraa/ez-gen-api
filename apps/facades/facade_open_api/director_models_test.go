@@ -33,7 +33,7 @@ func TestDirectorVideoModelsIgnoreRegistryOverride(t *testing.T) {
 	}
 	f := NewDirectorFacade(nil, nil, nil, nil, nil, registry, modelark.NewMockClient(), nil, DirectorOptions{Enabled: true, AnalysisModel: "gemini-3.5-flash", ImageModel: "seedream-5-0-260128", StoryPoints: 4, ImagePoints: 3, VideoPoints: 20})
 	c := f.Capabilities()
-	want := []struct{ id, name string }{{"seedance-2-0-fast", "Seedance 2.0 Fast"}, {"seedance-2-5", "Seedance 2.5"}, {"seedance-2-0", "Seedance 2.0"}}
+	want := []struct{ id, name string }{{"seedance-2-5", "Seedance 2.5"}, {"seedance-2-0-fast", "Seedance 2.0 Fast"}, {"seedance-2-0", "Seedance 2.0"}}
 	if len(c.Models.Video) != len(want) {
 		t.Fatalf("video models: %+v", c.Models.Video)
 	}

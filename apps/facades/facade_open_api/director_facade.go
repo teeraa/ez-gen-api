@@ -27,6 +27,9 @@ type DirectorError struct {
 
 func (e *DirectorError) Error() string { return e.Message }
 func directorError(status int, code string) error {
+	if code == "VIDEO_DEPENDENCY_NOT_READY" {
+		return &DirectorError{Status: status, Code: code, Message: "กรุณาสร้างวิดีโอ shot ก่อนหน้าใหม่ให้สำเร็จก่อน"}
+	}
 	return &DirectorError{Status: status, Code: code, Message: "ไม่สามารถดำเนินการได้ในสถานะนี้ กรุณาโหลดข้อมูลล่าสุดแล้วลองใหม่"}
 }
 func directorInvalid(field string) error {
@@ -46,6 +49,15 @@ type directorStore interface {
 	RecordOutput(context.Context, *models.DirectorJob, []byte) error
 	Wait(context.Context, *models.DirectorJob, []byte, time.Time) error
 	Balance(context.Context, string) (int64, error)
+	CreateSeries(context.Context, *models.DirectorSeries, string, string, func(*models.DirectorSeries, repo.DirectorAssetLoader) error) (*models.DirectorSeries, error)
+	GetSeries(context.Context, string, string) (*models.DirectorSeries, error)
+	ListSeries(context.Context, string, string, int, int) ([]models.DirectorSeries, int64, error)
+	SeriesEpisodes(context.Context, string, []uuid.UUID) ([]models.DirectorProject, error)
+	SeriesStats(context.Context, string, []uuid.UUID) (map[uuid.UUID]repo.DirectorSeriesStats, error)
+	ChangeSeries(context.Context, string, string, func(*models.DirectorSeries, repo.DirectorAssetLoader) error) (*models.DirectorSeries, error)
+	DeleteSeries(context.Context, string, string) error
+	CreateEpisode(context.Context, string, string, string, string, func(*models.DirectorSeries, int, repo.DirectorAssetLoader) (*models.DirectorProject, error)) (*models.DirectorProject, error)
+	SeriesContext(context.Context, string, string, int) (*repo.DirectorSeriesContext, error)
 }
 type DirectorOptions struct {
 	Enabled       bool
@@ -97,13 +109,27 @@ func NewDirectorFacade(s directorStore, a storyFlowAssets, st mediaStorage, n mo
 // Director offers explicit Seedance generations. They bypass the registry's ARK_DEFAULT_MODEL
 // override, which otherwise maps every video menu entry to one provider model.
 var directorVideoModels = []struct{ ID, Provider string }{
-	{"seedance-2-0-fast", "dreamina-seedance-2-0-fast-260128"},
+	// The first entry is the default for new projects (Seedance 2.5, user decision 2026-11-09).
 	{"seedance-2-5", "dreamina-seedance-2-5-260628"},
+	{"seedance-2-0-fast", "dreamina-seedance-2-0-fast-260128"},
 	{"seedance-2-0", "dreamina-seedance-2-0-260128"},
 }
 
 // Projects created before explicit model IDs stored video menu IDs.
 var directorLegacyVideoModels = map[string]string{"violet-motion-2": "seedance-2-0-fast", "violet-fast": "seedance-2-0-fast", "violet-cinema": "seedance-2-0", "violet-realism": "seedance-2-5", "violet-classic": "seedance-2-0-fast"}
+
+// directorFilmedRecipes are the realistic/cinematic reference strategies under test (experiment A).
+// "" and "pose3d" are the current stylized-3D pose casting.
+var directorFilmedRecipes = map[string]bool{"": true, "pose3d": true, "faceless": true, "clay": true, "textonly": true}
+
+const directorMaxExperiments = 200
+
+func directorRecordExperiment(d *directorDocument, x directorExperiment) {
+	d.Experiments = append(d.Experiments, x)
+	if n := len(d.Experiments); n > directorMaxExperiments {
+		d.Experiments = append([]directorExperiment(nil), d.Experiments[n-directorMaxExperiments:]...)
+	}
+}
 
 func directorCanonicalVideoModel(id string) string {
 	if next, ok := directorLegacyVideoModels[id]; ok {
@@ -167,26 +193,56 @@ type directorDocument struct {
 	Keys        map[string]string   `json:"keys"`
 	Generations map[string]string   `json:"generations"`
 	// Planner-authored production context; private because it is English provider guidance.
+	// Props hold the canonical physical structure of recurring objects (e.g. a sword's single
+	// hilt and separate scabbard), restated in every prompt that shows them.
 	Bible    string                           `json:"bible,omitempty"`
+	Props    []directorProp                   `json:"props,omitempty"`
 	Settings map[string]string                `json:"settings,omitempty"`
 	Prompts  map[string]directorPlannedPrompt `json:"prompts,omitempty"`
 	// Provider draft handles stay private; they are only used to refine a draft into a final clip.
 	VideoDrafts map[string]directorVideoDraft `json:"videoDrafts,omitempty"`
+	VideoFrames map[string]directorVideoFrame `json:"videoFrames,omitempty"`
 	// Looks caches the described appearance per character asset, keyed by the image it describes.
 	Looks map[string]directorLook `json:"looks,omitempty"`
 	// ExportSource hashes the clip keys the current export was built from.
 	ExportSource string `json:"exportSource,omitempty"`
+	// FilmedRecipe selects the experimental realistic/cinematic reference strategy; Experiments
+	// logs every clip produced under a recipe so they can be compared (experiment A, 2026-11-09).
+	FilmedRecipe string               `json:"filmedRecipe,omitempty"`
+	Experiments  []directorExperiment `json:"experiments,omitempty"`
+}
+type directorExperiment struct {
+	ShotID      string    `json:"shotId"`
+	Recipe      string    `json:"recipe"`
+	JobID       string    `json:"jobId"`
+	Path        string    `json:"path"`
+	Status      string    `json:"status"`
+	FailureCode string    `json:"failureCode,omitempty"`
+	ClipKey     string    `json:"clipKey,omitempty"`
+	FrameKey    string    `json:"frameKey,omitempty"`
+	At          time.Time `json:"at"`
+}
+type directorProp struct {
+	Name string `json:"name"`
+	Spec string `json:"spec"`
 }
 type directorLook struct {
 	Text string `json:"text"`
 	Key  string `json:"key"`
 }
+type directorVideoFrame struct {
+	Key           string `json:"key"`
+	ClipKey       string `json:"clipKey"`
+	SourceClipKey string `json:"sourceClipKey,omitempty"`
+}
 type directorVideoDraft struct {
+	Extension bool      `json:"extension,omitempty"`
 	TaskID    string    `json:"taskId"`
 	Provider  string    `json:"provider"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 type directorJobInput struct {
+	Extension    bool                `json:"extension,omitempty"`
 	Project      dto.DirectorProject `json:"project"`
 	Generation   string              `json:"generation"`
 	Description  string              `json:"description"`
@@ -207,6 +263,9 @@ type directorJobInput struct {
 	Draft        bool                `json:"draft,omitempty"`
 	DraftTaskID  string              `json:"draftTaskId,omitempty"`
 	ClipKeys     []string            `json:"clipKeys,omitempty"`
+	FilmedRecipe string              `json:"filmedRecipe,omitempty"`
+	// RateLimitRetries counts image requests the provider refused for rate limiting.
+	RateLimitRetries int `json:"rateLimitRetries,omitempty"`
 }
 type directorCharacter struct {
 	ID          string `json:"id"`
@@ -224,6 +283,9 @@ func directorDecode(p *models.DirectorProject) (directorDocument, error) {
 	if d.Prompts == nil {
 		d.Prompts = map[string]directorPlannedPrompt{}
 	}
+	if d.VideoFrames == nil {
+		d.VideoFrames = map[string]directorVideoFrame{}
+	}
 	if d.VideoDrafts == nil {
 		d.VideoDrafts = map[string]directorVideoDraft{}
 	}
@@ -235,7 +297,10 @@ func directorDecode(p *models.DirectorProject) (directorDocument, error) {
 func directorEncode(p *models.DirectorProject, d *directorDocument) error {
 	p.Name = d.Project.Name
 	d.Project.UpdatedAt = time.Now().UTC()
-	b, e := json.Marshal(d)
+	// Episode identity lives in row columns; keeping it out of the document keeps job snapshots unchanged.
+	stored := *d
+	stored.Project.SeriesID, stored.Project.EpisodeNumber, stored.Project.EpisodeTitle = nil, nil, nil
+	b, e := json.Marshal(stored)
 	p.Document = b
 	return e
 }
@@ -270,7 +335,7 @@ func (f *DirectorFacade) Capabilities() dto.DirectorCapabilities {
 		if !ok || !m.SupportsImgVideo {
 			continue
 		}
-		model := dto.DirectorModel{ID: entry.ID, Name: m.PublicLabel(), Note: fmt.Sprintf("ภาพ shot นี้เป็นเฟรมแรก ภาพ shot ถัดไปเป็นเฟรมสุดท้าย · สูงสุด %s", m.MaxResolution), SpeedHint: fmt.Sprintf("%d วินาทีต่อ shot", directorVideoSeconds(m)), PointsPerUnit: f.options.VideoPoints, Default: len(c.Models.Video) == 0, AspectRatios: append([]string{}, m.SupportedRatios...)}
+		model := dto.DirectorModel{ID: entry.ID, Name: m.PublicLabel(), Note: fmt.Sprintf("ต่อ shot ด้วยเฟรมสุดท้ายของวิดีโอก่อนหน้า · สูงสุด %s", m.MaxResolution), SpeedHint: fmt.Sprintf("%d วินาทีต่อ shot", directorVideoSeconds(m)), PointsPerUnit: f.options.VideoPoints, Default: len(c.Models.Video) == 0, AspectRatios: append([]string{}, m.SupportedRatios...)}
 		if m.SupportsDraft() && f.options.DraftPoints > 0 {
 			model.SupportsDraft = true
 			model.DraftPointsPerUnit = f.options.DraftPoints
@@ -376,6 +441,10 @@ func (f *DirectorFacade) validateIdea(in dto.DirectorIdea, generate bool, loadAs
 	if len(in.CharacterAssetIDs) > 4 {
 		return directorInvalid("characterAssetIds")
 	}
+	// Every shot needs a reference character so identity stays consistent (user decision 2026-11-09).
+	if generate && len(in.CharacterAssetIDs) == 0 {
+		return &StoryFlowValidationError{Field: "characterAssetIds", Message: "กรุณาเลือกหรือสร้างตัวละครอ้างอิงอย่างน้อย 1 ตัวก่อนสร้างเนื้อเรื่อง"}
+	}
 	seen = map[string]bool{}
 	for _, id := range in.CharacterAssetIDs {
 		if _, e := uuid.Parse(id); e != nil || seen[id] {
@@ -399,12 +468,21 @@ func (f *DirectorFacade) estimates(p *dto.DirectorProject) {
 	}
 	p.Estimates = dto.DirectorEstimates{Story: f.options.StoryPoints, Cover: f.options.ImagePoints, Storyboard: n * f.options.ImagePoints, Video: directorTotal(p) * f.options.VideoPoints}
 }
+func directorEpisodeFields(m *models.DirectorProject, p *dto.DirectorProject) {
+	p.SeriesID, p.EpisodeNumber, p.EpisodeTitle = nil, nil, nil
+	if m.SeriesID != nil {
+		p.SeriesID = directorPointer(m.SeriesID.String())
+		p.EpisodeNumber = m.EpisodeNumber
+		p.EpisodeTitle = m.EpisodeTitle
+	}
+}
 func (f *DirectorFacade) present(c context.Context, m *models.DirectorProject) (dto.DirectorProject, error) {
 	d, e := directorDecode(m)
 	if e != nil {
 		return dto.DirectorProject{}, e
 	}
 	p := d.Project
+	directorEpisodeFields(m, &p)
 	p.Storyboard.VideoModelID = directorCanonicalVideoModel(p.Storyboard.VideoModelID)
 	f.estimates(&p)
 	sign := func(key string) (*string, *time.Time, error) {
@@ -481,6 +559,55 @@ func (f *DirectorFacade) Get(c context.Context, id, user string) (dto.DirectorPr
 	p, e := f.present(c, m)
 	return p, fmt.Sprintf("W/\"%d-%d\"", p.Revision, m.WorkVersion), e
 }
+
+// DirectorExperimentView is one clip (or failure) produced under an experiment-A recipe.
+type DirectorExperimentView struct {
+	ShotID      string    `json:"shotId"`
+	Shot        string    `json:"shot"`
+	Recipe      string    `json:"recipe"`
+	JobID       string    `json:"jobId"`
+	Path        string    `json:"path"`
+	Status      string    `json:"status"`
+	FailureCode string    `json:"failureCode,omitempty"`
+	VideoURL    string    `json:"videoUrl,omitempty"`
+	FrameURL    string    `json:"frameUrl,omitempty"`
+	At          time.Time `json:"at"`
+}
+
+// Experiments lists recipe runs newest first with short-lived signed media URLs.
+func (f *DirectorFacade) Experiments(c context.Context, id, user string) ([]DirectorExperimentView, error) {
+	if _, e := uuid.Parse(id); e != nil {
+		return nil, repo.ErrNotFound
+	}
+	m, e := f.store.Get(c, id, user)
+	if e != nil {
+		return nil, e
+	}
+	d, e := directorDecode(m)
+	if e != nil {
+		return nil, e
+	}
+	out := []DirectorExperimentView{}
+	for i := len(d.Experiments) - 1; i >= 0; i-- {
+		x := d.Experiments[i]
+		v := DirectorExperimentView{ShotID: x.ShotID, Recipe: directorRecipeLabel(x.Recipe), JobID: x.JobID, Path: x.Path, Status: x.Status, FailureCode: x.FailureCode, At: x.At}
+		for si := range d.Project.Scenes {
+			for _, sh := range d.Project.Scenes[si].Shots {
+				if sh.ID == x.ShotID {
+					v.Shot = fmt.Sprintf("ฉาก %d Shot %d", d.Project.Scenes[si].Index, sh.Index)
+				}
+			}
+		}
+		if x.ClipKey != "" {
+			v.VideoURL, _, _ = f.storage.SignedURL(c, x.ClipKey, time.Hour)
+		}
+		if x.FrameKey != "" {
+			v.FrameURL, _, _ = f.storage.SignedURL(c, x.FrameKey, time.Hour)
+		}
+		out = append(out, v)
+	}
+	return out, nil
+}
 func (f *DirectorFacade) List(c context.Context, user string, page, limit int, search string) (dto.DirectorList, error) {
 	out := dto.DirectorList{Items: []dto.DirectorSummary{}, Page: page, Limit: limit}
 	if page < 1 || limit < 1 || limit > 50 || !directorBound(search, 0, 80) {
@@ -496,9 +623,12 @@ func (f *DirectorFacade) List(c context.Context, user string, page, limit int, s
 		if e != nil {
 			return out, e
 		}
-		out.Items = append(out.Items, dto.DirectorSummary{ID: p.ID, Name: p.Name, AspectRatio: p.AspectRatio, Style: p.Style, Resolution: p.Resolution, Step: p.Step, StoryStatus: p.Story.Status, StoryboardStatus: p.Storyboard.Status, SceneCount: p.Idea.SceneCount, TotalShots: p.Storyboard.TotalShots, CompletedImages: p.Storyboard.CompletedImages, CoverImageURL: p.CoverImageURL, CoverImageExpiresAt: p.CoverImageExpiresAt, UpdatedAt: p.UpdatedAt})
+		out.Items = append(out.Items, directorSummary(p))
 	}
 	return out, nil
+}
+func directorSummary(p dto.DirectorProject) dto.DirectorSummary {
+	return dto.DirectorSummary{ID: p.ID, Name: p.Name, AspectRatio: p.AspectRatio, Style: p.Style, Resolution: p.Resolution, Step: p.Step, StoryStatus: p.Story.Status, StoryboardStatus: p.Storyboard.Status, SceneCount: p.Idea.SceneCount, TotalShots: p.Storyboard.TotalShots, CompletedImages: p.Storyboard.CompletedImages, CoverImageURL: p.CoverImageURL, CoverImageExpiresAt: p.CoverImageExpiresAt, UpdatedAt: p.UpdatedAt, SeriesID: p.SeriesID, EpisodeNumber: p.EpisodeNumber, EpisodeTitle: p.EpisodeTitle}
 }
 func (f *DirectorFacade) Create(c context.Context, user string, in req.DirectorRequest) (dto.DirectorProject, error) {
 	if _, e := uuid.Parse(in.IdempotencyKey); e != nil {
@@ -507,25 +637,11 @@ func (f *DirectorFacade) Create(c context.Context, user string, in req.DirectorR
 	if in.Name == nil || in.AspectRatio == nil || in.Style == nil || in.Resolution == nil {
 		return dto.DirectorProject{}, directorInvalid("request")
 	}
-	now := time.Now().UTC()
-	p := dto.DirectorProject{ID: uuid.NewString(), Revision: 1, Name: *in.Name, AspectRatio: *in.AspectRatio, Style: *in.Style, Resolution: *in.Resolution, Step: "idea", CreatedAt: now, UpdatedAt: now, Scenes: []dto.DirectorScene{}, Idea: dto.DirectorIdea{Genre: "adventure", SceneCount: 3, Moods: []string{}, CharacterAssetIDs: []string{}, StoryModelID: "director-story"}, Story: dto.DirectorStory{Status: "idle"}, Storyboard: dto.DirectorStoryboard{Status: "idle", ImageModelID: "director-image", StyleReference: "style"}}
-	cap := f.Capabilities()
-	if len(cap.Models.Video) > 0 {
-		p.Storyboard.VideoModelID = cap.Models.Video[0].ID
-	}
-	if e := f.settings(&p); e != nil {
-		return p, e
-	}
-	id, e := uuid.Parse(user)
+	m, p, e := f.newProjectRow(user, *in.Name, *in.AspectRatio, *in.Style, *in.Resolution, []string{})
 	if e != nil {
-		return p, repo.ErrNotFound
-	}
-	m := models.DirectorProject{Base: models.Base{ID: uuid.MustParse(p.ID), CreatedAt: now, UpdatedAt: now}, UserID: id, WorkVersion: 1}
-	d := directorDocument{Project: p, Keys: map[string]string{}, Generations: map[string]string{}}
-	if e = directorEncode(&m, &d); e != nil {
 		return p, e
 	}
-	row, e := f.store.Create(c, &m, in.IdempotencyKey, storyHash(struct {
+	row, e := f.store.Create(c, m, in.IdempotencyKey, storyHash(struct {
 		Action string
 		Input  req.DirectorRequest
 	}{"create", in}))
@@ -533,6 +649,29 @@ func (f *DirectorFacade) Create(c context.Context, user string, in req.DirectorR
 		return p, e
 	}
 	return f.present(c, row)
+}
+
+// newProjectRow builds a fresh project (or episode) at the idea step with validated settings.
+func (f *DirectorFacade) newProjectRow(user, name, ratio, style, resolution string, cast []string) (*models.DirectorProject, dto.DirectorProject, error) {
+	now := time.Now().UTC()
+	p := dto.DirectorProject{ID: uuid.NewString(), Revision: 1, Name: name, AspectRatio: ratio, Style: style, Resolution: resolution, Step: "idea", CreatedAt: now, UpdatedAt: now, Scenes: []dto.DirectorScene{}, Idea: dto.DirectorIdea{Genre: "adventure", SceneCount: 3, Moods: []string{}, CharacterAssetIDs: cast, StoryModelID: "director-story"}, Story: dto.DirectorStory{Status: "idle"}, Storyboard: dto.DirectorStoryboard{Status: "idle", ImageModelID: "director-image", StyleReference: "style"}}
+	cap := f.Capabilities()
+	if len(cap.Models.Video) > 0 {
+		p.Storyboard.VideoModelID = cap.Models.Video[0].ID
+	}
+	if e := f.settings(&p); e != nil {
+		return nil, p, e
+	}
+	id, e := uuid.Parse(user)
+	if e != nil {
+		return nil, p, repo.ErrNotFound
+	}
+	m := models.DirectorProject{Base: models.Base{ID: uuid.MustParse(p.ID), CreatedAt: now, UpdatedAt: now}, UserID: id, WorkVersion: 1}
+	d := directorDocument{Project: p, Keys: map[string]string{}, Generations: map[string]string{}}
+	if e = directorEncode(&m, &d); e != nil {
+		return nil, p, e
+	}
+	return &m, p, nil
 }
 func directorFindScene(p *dto.DirectorProject, id string) *dto.DirectorScene {
 	for i := range p.Scenes {
@@ -569,15 +708,16 @@ func directorTotal(p *dto.DirectorProject) int {
 }
 func directorVideoTarget(shotID string) string { return "video:" + shotID }
 
-// directorClipKeys lists every shot's finished clip in story order, or nil when any shot has
-// no finished clip (an export must not silently skip story beats).
+// directorClipKeys lists the current finished clips in story order. Shots without a current clip
+// (missing, failed, in progress or stale) are skipped so a partial cut can be exported any time;
+// nil when no shot has a clip yet.
 func directorClipKeys(d *directorDocument) []string {
 	keys := []string{}
 	for _, sc := range d.Project.Scenes {
 		for _, sh := range sc.Shots {
 			key := d.Keys[directorVideoTarget(sh.ID)]
-			if sh.Video == nil || sh.Video.Status != "succeeded" || key == "" {
-				return nil
+			if sh.Video == nil || sh.Video.Status != "succeeded" || sh.Video.Stale || key == "" {
+				continue
 			}
 			keys = append(keys, key)
 		}
@@ -656,7 +796,7 @@ func directorRecount(p *dto.DirectorProject) {
 	}
 }
 func (f *DirectorFacade) job(d *directorDocument, kind, target string, cost int, in req.DirectorRequest, loadAsset func(string) (*models.LibraryAsset, error)) (models.DirectorJob, error) {
-	snapshot := directorJobInput{Project: d.Project, Generation: uuid.NewString(), Model: f.options.ImageModel, ImageModel: f.options.ImageModel}
+	snapshot := directorJobInput{Project: d.Project, Generation: uuid.NewString(), Model: f.options.ImageModel, ImageModel: f.options.ImageModel, FilmedRecipe: d.FilmedRecipe}
 	if kind == "story" || kind == "rewrite" || kind == "plan" || kind == "add" {
 		snapshot.Model = f.options.AnalysisModel
 	}
@@ -687,13 +827,10 @@ func (f *DirectorFacade) job(d *directorDocument, kind, target string, cost int,
 		if in.Finalize {
 			draft := d.VideoDrafts[sh.ID]
 			snapshot.DraftTaskID = draft.TaskID
+			snapshot.Extension = draft.Extension
 			snapshot.VideoModel = draft.Provider
 		} else {
 			snapshot.Draft = in.Draft
-			if next := directorNextShot(&d.Project, sh); next != nil && next.Image.Status == "succeeded" && d.Keys[next.ID] != "" {
-				snapshot.NextShotID = next.ID
-				snapshot.NextImageKey = d.Keys[next.ID]
-			}
 		}
 	}
 	for _, id := range d.Project.Idea.CharacterAssetIDs {
@@ -762,6 +899,16 @@ func (f *DirectorFacade) Mutate(c context.Context, id, user, action, target stri
 			changed = false
 			if in.Name != nil {
 				p.Name = *in.Name
+				changed = true
+			}
+			if in.EpisodeTitle != nil {
+				if m.SeriesID == nil {
+					return nil, directorInvalid("episodeTitle")
+				}
+				if !directorBound(*in.EpisodeTitle, 0, directorEpisodeTitleMax) {
+					return nil, directorInvalid("episodeTitle")
+				}
+				m.EpisodeTitle = directorEpisodeTitle(*in.EpisodeTitle)
 				changed = true
 			}
 			if in.AspectRatio != nil || in.Style != nil || in.Resolution != nil {
@@ -861,7 +1008,7 @@ func (f *DirectorFacade) Mutate(c context.Context, id, user, action, target stri
 			if e = f.validateIdea(p.Idea, true, loadAsset); e != nil {
 				return nil, e
 			}
-			d.Bible, d.Settings, d.Prompts = "", map[string]string{}, map[string]directorPlannedPrompt{}
+			d.Bible, d.Settings, d.Prompts, d.Props = "", map[string]string{}, map[string]directorPlannedPrompt{}, nil
 			// Replacing the story invalidates all old scene/shot generation tokens.
 			for _, sc := range p.Scenes {
 				delete(d.Generations, sc.ID)
@@ -964,6 +1111,15 @@ func (f *DirectorFacade) Mutate(c context.Context, id, user, action, target stri
 					return nil, directorInvalid("videoModelId")
 				}
 				p.Storyboard.VideoModelID = id
+			}
+			if in.FilmedRecipe != nil {
+				if !directorFilmedRecipes[*in.FilmedRecipe] {
+					return nil, directorInvalid("filmedRecipe")
+				}
+				if directorAnyVideoBusy(p) {
+					return nil, directorError(409, "DIRECTOR_STATE_CONFLICT")
+				}
+				d.FilmedRecipe = *in.FilmedRecipe
 			}
 		case "storyboard":
 			if p.Story.Status != "succeeded" || directorBusy(p.Storyboard.Status) || directorAnyVideoBusy(p) {
@@ -1088,6 +1244,22 @@ func (f *DirectorFacade) Mutate(c context.Context, id, user, action, target stri
 			if len(sc.Shots) >= 8 || directorTotal(p) >= 40 {
 				return nil, directorError(409, "SHOT_LIMIT")
 			}
+			// Optional user input: an instruction steers the AI-written shot; a description skips the AI
+			// and renders the user's own text directly (same image cost either way).
+			if in.Instruction != nil && !directorBound(*in.Instruction, 0, 300) {
+				return nil, directorInvalid("instruction")
+			}
+			manual := in.Description != nil
+			if manual && !directorBound(*in.Description, 1, 600) {
+				return nil, directorInvalid("description")
+			}
+			camera := f.Capabilities().Cameras[0]
+			if in.Camera != nil {
+				if !directorContains(f.Capabilities().Cameras, *in.Camera) {
+					return nil, directorInvalid("camera")
+				}
+				camera = *in.Camera
+			}
 			pos := len(sc.Shots)
 			if in.AfterShotID != nil {
 				pos = -1
@@ -1100,14 +1272,24 @@ func (f *DirectorFacade) Mutate(c context.Context, id, user, action, target stri
 					return nil, directorInvalid("afterShotId")
 				}
 			}
-			sh := dto.DirectorShot{ID: uuid.NewString(), SceneID: sc.ID, Camera: f.Capabilities().Cameras[0], CharacterAssetIDs: append([]string{}, sc.CharacterAssetIDs...), Image: dto.DirectorImage{Status: "pending"}, PointsCharged: directorPointer(f.options.ImagePoints)}
+			sh := dto.DirectorShot{ID: uuid.NewString(), SceneID: sc.ID, Camera: camera, CharacterAssetIDs: append([]string{}, sc.CharacterAssetIDs...), Image: dto.DirectorImage{Status: "pending"}, PointsCharged: directorPointer(f.options.ImagePoints)}
+			kind := "add"
+			if manual {
+				sh.Description = strings.TrimSpace(*in.Description)
+				sh.Image.Status = "queued"
+				kind = "image"
+			}
 			sc.Shots = append(sc.Shots, dto.DirectorShot{})
 			copy(sc.Shots[pos+1:], sc.Shots[pos:])
 			sc.Shots[pos] = sh
 			for i := range sc.Shots {
 				sc.Shots[i].Index = i + 1
 			}
-			if e = enqueue("add", sh.ID, f.options.ImagePoints); e != nil {
+			// The following shot's clip continued from the old neighbour's last frame; flag it for a re-render.
+			if pos+1 < len(sc.Shots) {
+				directorMarkVideoStale(&sc.Shots[pos+1])
+			}
+			if e = enqueue(kind, sh.ID, f.options.ImagePoints); e != nil {
 				return nil, e
 			}
 			directorRecount(p)
@@ -1223,12 +1405,54 @@ func (f *DirectorFacade) enqueueVideos(d *directorDocument, in req.DirectorReque
 			return directorError(409, "DRAFT_NOT_AVAILABLE")
 		}
 	}
+	selected := map[string]bool{}
 	for _, sh := range targets {
-		next := directorNextShot(p, sh)
-		usesLast := !in.Finalize && next != nil && next.Image.Status == "succeeded" && d.Keys[next.ID] != ""
-		sh.Video = &dto.DirectorVideo{Status: "queued", ModelID: p.Storyboard.VideoModelID, DurationSeconds: seconds, PointsCharged: cost, Draft: in.Draft, UsesLastFrame: usesLast || in.Finalize && sh.Video.UsesLastFrame}
-		if e := enqueue("video", directorVideoTarget(sh.ID), cost); e != nil {
-			return e
+		selected[sh.ID] = true
+	}
+	if in.Finalize {
+		for _, sh := range targets {
+			for ancestor := directorPreviousShot(p, sh); ancestor != nil; ancestor = directorPreviousShot(p, ancestor) {
+				if selected[ancestor.ID] {
+					return directorError(409, "VIDEO_DEPENDENCY_NOT_READY")
+				}
+			}
+			if prev := directorPreviousShot(p, sh); prev != nil {
+				frame := d.VideoFrames[sh.ID]
+				if selected[prev.ID] || prev.Video == nil || prev.Video.Status != "succeeded" || prev.Video.Stale || frame.SourceClipKey == "" || frame.SourceClipKey != d.Keys[directorVideoTarget(prev.ID)] {
+					return directorError(409, "VIDEO_DEPENDENCY_NOT_READY")
+				}
+			}
+		}
+	}
+	// Every style continues from the previous clip within a scene; a new scene starts from its own frame.
+	if !in.Finalize {
+		for _, sh := range targets {
+			if prev := directorPreviousShot(p, sh); prev != nil && !selected[prev.ID] {
+				frame := d.VideoFrames[prev.ID]
+				if prev.Video == nil || prev.Video.Status != "succeeded" || prev.Video.Stale || frame.Key == "" || frame.ClipKey != d.Keys[directorVideoTarget(prev.ID)] {
+					return directorError(409, "VIDEO_DEPENDENCY_NOT_READY")
+				}
+			}
+		}
+	}
+	// Canonical order makes caller-provided shotIds independent of dependency order.
+	for i := range p.Scenes {
+		for k := range p.Scenes[i].Shots {
+			sh := &p.Scenes[i].Shots[k]
+			if !selected[sh.ID] {
+				continue
+			}
+			usesLast := directorPreviousShot(p, sh) != nil
+			if in.Finalize {
+				usesLast = sh.Video.UsesLastFrame
+			}
+			sh.Video = &dto.DirectorVideo{Status: "queued", ModelID: p.Storyboard.VideoModelID, DurationSeconds: seconds, PointsCharged: cost, Draft: in.Draft, UsesLastFrame: usesLast}
+			if e := enqueue("video", directorVideoTarget(sh.ID), cost); e != nil {
+				return e
+			}
+			for next := directorNextShot(p, sh); next != nil; next = directorNextShot(p, next) {
+				directorMarkVideoStale(next)
+			}
 		}
 	}
 	return nil

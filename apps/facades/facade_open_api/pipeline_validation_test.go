@@ -24,10 +24,7 @@ func TestPipelineActionableValidation(t *testing.T) {
 		{"long scene", "scenePrompt", "too_long", func(in *req.CreatePipelineRequest) { in.ScenePrompt = strings.Repeat("ก", 2001) }},
 		{"long dialogue", "dialogue", "too_long", func(in *req.CreatePipelineRequest) { in.Dialogue = strings.Repeat("ก", 1001) }},
 		{"quoted dialogue", "dialogue", "dialogue_encoding_budget", func(in *req.CreatePipelineRequest) { in.Dialogue = strings.Repeat("\"", 900) }},
-		{"combined", "scenePrompt", "prompt_budget", func(in *req.CreatePipelineRequest) {
-			in.ScenePrompt = strings.Repeat("ก", 1500)
-			in.Dialogue = "สวัสดีครับทุกคน"
-		}},
+
 		{"style", "visualStyle", "invalid_option", func(in *req.CreatePipelineRequest) { in.VisualStyle = "bad" }},
 	}
 	for _, tc := range cases {
@@ -52,5 +49,18 @@ func TestPipelineInvalidUploadMIMEValidation(t *testing.T) {
 	var detail *PipelineValidationError
 	if !errors.As(err, &detail) || detail.Field != "referenceImageId" || detail.Reason != "invalid_image" {
 		t.Fatalf("unexpected %v", err)
+	}
+}
+
+func TestPipelineCombinedPublicSceneAndDialogueFitExpandedVideoBudget(t *testing.T) {
+	f, m, images, videos, user, in := pipelineFixture(t)
+	in.ScenePrompt = strings.Repeat("ก", 1500) + "ท้ายฉาก🙂"
+	in.Dialogue = "สวัสดีครับทุกคน"
+	got, e := f.Create(context.Background(), user, in)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if got.ScenePrompt != in.ScenePrompt || got.Dialogue != in.Dialogue || m.p == nil || images.calls != 0 || videos.calls != 0 {
+		t.Fatal("combined public input lost text or generated work before worker")
 	}
 }

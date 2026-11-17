@@ -11,9 +11,37 @@ type DirectorProject struct {
 	Name        string
 	Document    []byte `gorm:"type:jsonb"`
 	WorkVersion int64
+	// Episode fields are NULL for standalone projects created before series existed.
+	SeriesID      *uuid.UUID `gorm:"type:uuid"`
+	EpisodeNumber *int
+	EpisodeTitle  *string
 }
 
 func (DirectorProject) TableName() string { return "director_projects" }
+
+type DirectorSeries struct {
+	Base
+	UserID            uuid.UUID `gorm:"type:uuid;not null"`
+	Name              string
+	Mode              string // owning menu: "director" or "film"; fixed at creation
+	AspectRatio       string
+	Style             string
+	Resolution        string
+	CharacterAssetIDs []byte `gorm:"type:jsonb"`
+	Revision          int
+}
+
+func (DirectorSeries) TableName() string { return "director_series" }
+
+type DirectorSeriesReceipt struct {
+	UserID    uuid.UUID `gorm:"type:uuid;primaryKey"`
+	Key       string    `gorm:"primaryKey"`
+	Hash      string
+	SeriesID  uuid.UUID `gorm:"type:uuid;not null"`
+	CreatedAt time.Time
+}
+
+func (DirectorSeriesReceipt) TableName() string { return "director_series_receipts" }
 
 type DirectorJob struct {
 	Base

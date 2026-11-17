@@ -253,7 +253,7 @@ func TestPipelineFilmedHumanBudgetPreservesV7AndScene(t *testing.T) {
 	if utf8.RuneCountInString(result.CompiledPrompt) > utf8.RuneCountInString(old.CompiledPrompt) {
 		t.Fatal("v8 combined controls increased prompt budget")
 	}
-	in.Scene.Description = strings.Repeat("x", 2000)
+	in.Scene.Description = strings.Repeat("x", promptcompiler.VideoPromptRuneLimit)
 	if _, err = promptcompiler.Compile(in, model); !errors.Is(err, promptcompiler.ErrPromptBudget) {
 		t.Fatal("over-budget dialogue no longer reports established error", err)
 	}

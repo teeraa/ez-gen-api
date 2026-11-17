@@ -63,6 +63,45 @@ func directorShotAction(d *directorDocument, sh *dto.DirectorShot) string {
 	return sh.Description
 }
 
+// directorObjectIntegrity and directorFaceIntegrity target the most common generation defects:
+// handles/hilts duplicated at both ends, scabbards drawn as hilts, bent umbrellas, merged faces.
+const directorObjectIntegrity = "Objects keep their real-world structure: a sword, umbrella or tool has exactly one handle or hilt at one end, never a handle at both ends; a scabbard is a separate sheath, never a second hilt; straight shafts and blades stay straight; no duplicated, fused, mirrored or extra parts."
+const directorFaceIntegrity = "Each person has exactly one head and one face; faces never merge, duplicate, overlap or distort; keep clear space between heads."
+
+const directorMaxProps = 6
+
+func directorNormalizeProps(in []directorProp) []directorProp {
+	out, seen := []directorProp{}, map[string]bool{}
+	for _, p := range in {
+		name, spec := directorTruncate(strings.TrimSpace(p.Name), 60), directorTruncate(strings.TrimSpace(p.Spec), 180)
+		key := strings.ToLower(name)
+		if name == "" || spec == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, directorProp{Name: name, Spec: spec})
+		if len(out) == directorMaxProps {
+			break
+		}
+	}
+	return out
+}
+
+// directorPropLines restates the canonical structure of at most two props named in the shot,
+// followed by the object and face integrity rules that apply to every shot.
+func directorPropLines(d *directorDocument, action string) string {
+	var b strings.Builder
+	lower, n := strings.ToLower(action), 0
+	for _, p := range d.Props {
+		if n < 2 && strings.Contains(lower, strings.ToLower(p.Name)) {
+			fmt.Fprintf(&b, "Prop %s (exact structure, identical in every shot): %s\n", p.Name, p.Spec)
+			n++
+		}
+	}
+	b.WriteString(directorObjectIntegrity + "\n" + directorFaceIntegrity + "\n")
+	return b.String()
+}
+
 func directorSceneSetting(d *directorDocument, sc *dto.DirectorScene) string {
 	if sc == nil {
 		return ""
@@ -132,6 +171,7 @@ func directorImagePrompt(d *directorDocument, p *dto.DirectorProject, sh *dto.Di
 	} else {
 		b.WriteString("Do not add named main characters that are not described.\n")
 	}
+	b.WriteString(directorPropLines(d, directorShotAction(d, sh)))
 	if bible := strings.TrimSpace(d.Bible); bible != "" {
 		fmt.Fprintf(&b, "World and production design: %s\n", directorTruncate(bible, 500))
 	}
@@ -148,31 +188,29 @@ func directorImagePrompt(d *directorDocument, p *dto.DirectorProject, sh *dto.Di
 	return directorTruncate(b.String(), directorPromptLimit)
 }
 
-// directorVideoPrompt is written for Seedance reference mode: Image 1 and Image 2 are the
-// storyboard frames hard-wired as start and end, the rest are character identity references.
-func directorVideoPrompt(d *directorDocument, p *dto.DirectorProject, sh *dto.DirectorShot, cast []directorCharacter, lastFrame bool) string {
+// Continuity starts from the actual preceding clip, rather than an independently generated storyboard image.
+func directorVideoPrompt(d *directorDocument, p *dto.DirectorProject, sh *dto.DirectorShot, cast []directorCharacter, continuity bool) string {
 	sc := directorFindScene(p, sh.SceneID)
 	var b strings.Builder
 	b.WriteString("Image 1 is the exact first frame of this clip: start on it unchanged, same composition, characters and background.\n")
-	next := 2
-	if lastFrame {
-		b.WriteString("Image 2 is the exact last frame: move naturally from Image 1 and end exactly on Image 2's composition so consecutive clips cut together seamlessly.\n")
-		next = 3
+	if continuity {
+		b.WriteString("Image 1 is the actual final frame of the preceding video. Continue its motion naturally without a jump or reset.\n")
 	}
 	if len(cast) > 0 {
-		refs := []string{}
+		descriptions := []string{}
 		for i, ch := range cast {
-			refs = append(refs, fmt.Sprintf("Image %d = %s (%s)", next+i, directorCharacterName(ch, i), directorTruncate(ch.Description, 200)))
+			descriptions = append(descriptions, fmt.Sprintf("%s (%s)", directorCharacterName(ch, i), directorTruncate(ch.Description, 200)))
 		}
-		fmt.Fprintf(&b, "Character identity references: %s. Use them only for face, body, hairstyle and outfit; ignore their art style, lighting and background. Do not add or remove characters.\n", strings.Join(refs, "; "))
+		fmt.Fprintf(&b, "Character descriptions: %s. Preserve the visible characters' identity and clothing from the supplied starting frame. Do not add or remove characters.\n", strings.Join(descriptions, "; "))
 	}
 	fmt.Fprintf(&b, "Shot: %s. Camera movement: %s.\n", directorCameraTerm(sh.Camera), directorCameraMotionTerm(sh.Camera))
 	fmt.Fprintf(&b, "Action: %s\n", directorShotAction(d, sh))
+	b.WriteString(directorPropLines(d, directorShotAction(d, sh)))
 	if setting := directorSceneSetting(d, sc); setting != "" {
 		fmt.Fprintf(&b, "Setting: %s\n", directorTruncate(setting, 400))
 	}
 	fmt.Fprintf(&b, "Art style: %s, matching Image 1. Keep the background, lighting and color grade of Image 1. Smooth natural motion, single continuous shot, no scene cuts, no text overlays.", directorStyleShort(p))
-	return directorTruncate(b.String(), 2000)
+	return b.String()
 }
 
 func directorCameraTerm(camera string) string {
@@ -270,4 +308,37 @@ func directorFeaturedCast(chars []directorCharacter, text string) []directorChar
 		out = append(out, h.ch)
 	}
 	return out
+}
+
+func directorExtensionPrompt(d *directorDocument, p *dto.DirectorProject, sh *dto.DirectorShot, cast []directorCharacter, seconds int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Extend Video1 forward by %d seconds. Generate ONLY new footage after Video1's final frame. Do not repeat, include or replay the input video. Continue the exact ongoing motion, velocity, direction, character poses, expression, camera trajectory, background and lighting. No freeze, pause, reset or new establishing shot.\n", seconds)
+	fmt.Fprintf(&b, "Continue into this action: %s\nCamera movement: %s\n", directorShotAction(d, sh), directorCameraMotionTerm(sh.Camera))
+	b.WriteString(directorPropLines(d, directorShotAction(d, sh)))
+	for i, ch := range cast {
+		fmt.Fprintf(&b, "Character: %s (%s). Preserve the visible identity and clothing from Video1.\n", directorCharacterName(ch, i), directorTruncate(ch.Description, 200))
+	}
+	return b.String()
+}
+
+// directorTextOnlyVideoPrompt is experiment A3: a realistic/cinematic scene opening generated from
+// text alone, so no reference image can be rejected or leak a CG look.
+func directorTextOnlyVideoPrompt(d *directorDocument, p *dto.DirectorProject, sh *dto.DirectorShot, cast []directorCharacter) string {
+	sc := directorFindScene(p, sh.SceneID)
+	var b strings.Builder
+	fmt.Fprintf(&b, "Live-action film footage: %s. Real human actors, real costumes, real materials and practical lighting; not CGI, not 3D animation, not a game render, not illustration.\n", directorStyle(p))
+	fmt.Fprintf(&b, "Shot: %s. Camera movement: %s.\n", directorCameraTerm(sh.Camera), directorCameraMotionTerm(sh.Camera))
+	fmt.Fprintf(&b, "Action: %s\n", directorShotAction(d, sh))
+	if setting := directorSceneSetting(d, sc); setting != "" {
+		fmt.Fprintf(&b, "Setting: %s\n", directorTruncate(setting, 400))
+	}
+	for i, ch := range cast {
+		fmt.Fprintf(&b, "Character %s: %s. Exactly this face, hair and outfit.\n", directorCharacterName(ch, i), directorTruncate(ch.Description, 600))
+	}
+	b.WriteString(directorPropLines(d, directorShotAction(d, sh)))
+	if bible := strings.TrimSpace(d.Bible); bible != "" {
+		fmt.Fprintf(&b, "World and production design: %s\n", directorTruncate(bible, 500))
+	}
+	b.WriteString("Single continuous shot, natural motion, no scene cuts, no text overlays.")
+	return b.String()
 }

@@ -29,16 +29,17 @@ func MapProviderStatus(ps ProviderStatus) models.JobStatus {
 
 // ModelConfig holds capability data for a single provider model.
 type ModelConfig struct {
-	InternalID       string
-	ProviderModelID  string
-	DisplayName      string
-	MaxResolution    string
-	SupportedRatios  []string
-	MinDuration      int
-	MaxDuration      int
-	SupportsAudio    bool
-	SupportsImgVideo bool
-	SupportsRefImage bool
+	InternalID             string
+	ProviderModelID        string
+	DisplayName            string
+	MaxResolution          string
+	SupportedRatios        []string
+	MinDuration            int
+	MaxDuration            int
+	SupportsAudio          bool
+	SupportsImgVideo       bool
+	SupportsRefImage       bool
+	SupportsVideoExtension bool
 }
 
 // SupportsOutput reports whether the model accepts the given aspect ratio and duration.
@@ -68,31 +69,34 @@ var providerModels = map[string]ModelConfig{
 		SupportsRefImage: false,
 	},
 	"dreamina-seedance-2-0-fast-260128": {
-		MaxResolution:    "720p",
-		SupportedRatios:  []string{"16:9", "9:16", "1:1", "4:3", "3:4"},
-		MinDuration:      4,
-		MaxDuration:      15,
-		SupportsAudio:    true,
-		SupportsImgVideo: true,
-		SupportsRefImage: true,
+		MaxResolution:          "720p",
+		SupportedRatios:        []string{"16:9", "9:16", "1:1", "4:3", "3:4"},
+		MinDuration:            4,
+		MaxDuration:            15,
+		SupportsAudio:          true,
+		SupportsImgVideo:       true,
+		SupportsRefImage:       true,
+		SupportsVideoExtension: true,
 	},
 	"dreamina-seedance-2-0-260128": {
-		MaxResolution:    "4k",
-		SupportedRatios:  []string{"16:9", "9:16", "1:1", "4:3", "21:9"},
-		MinDuration:      4,
-		MaxDuration:      15,
-		SupportsAudio:    true,
-		SupportsImgVideo: true,
-		SupportsRefImage: true,
+		MaxResolution:          "4k",
+		SupportedRatios:        []string{"16:9", "9:16", "1:1", "4:3", "21:9"},
+		MinDuration:            4,
+		MaxDuration:            15,
+		SupportsAudio:          true,
+		SupportsImgVideo:       true,
+		SupportsRefImage:       true,
+		SupportsVideoExtension: true,
 	},
 	"dreamina-seedance-2-5-260628": {
-		MaxResolution:    "1080p",
-		SupportedRatios:  []string{"16:9", "9:16", "1:1", "4:3", "21:9"},
-		MinDuration:      4,
-		MaxDuration:      30,
-		SupportsAudio:    true,
-		SupportsImgVideo: true,
-		SupportsRefImage: true,
+		MaxResolution:          "1080p",
+		SupportedRatios:        []string{"16:9", "9:16", "1:1", "4:3", "21:9"},
+		MinDuration:            4,
+		MaxDuration:            30,
+		SupportsAudio:          true,
+		SupportsImgVideo:       true,
+		SupportsRefImage:       true,
+		SupportsVideoExtension: true,
 	},
 }
 

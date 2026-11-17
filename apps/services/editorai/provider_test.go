@@ -87,3 +87,47 @@ func TestGeminiEditorDurationPromptSignature(t *testing.T) {
 		t.Fatalf("signature=%q, want %q", got, want)
 	}
 }
+
+func TestGeminiCarriesRaisedOutputTokenLimit(t *testing.T) {
+	t.Parallel()
+	got := make(chan int, 3)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var input struct {
+			Generation struct {
+				Max int `json:"maxOutputTokens"`
+			} `json:"generationConfig"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&input)
+		got <- input.Generation.Max
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"{}"}]},"finishReason":"STOP"}]}`))
+	}))
+	defer server.Close()
+	g := NewGeminiWithEndpoint("k", "m", "v", server.URL, server.Client())
+	for _, tc := range []struct {
+		ctx  context.Context
+		want int
+	}{
+		{context.Background(), DefaultMaxOutputTokens},
+		{WithMaxOutputTokens(context.Background(), 24576), 24576},
+		{WithMaxOutputTokens(context.Background(), 1<<20), MaxOutputTokensLimit},
+	} {
+		if _, err := g.Generate(tc.ctx, "s", "p", nil, json.RawMessage(`{"type":"object"}`)); err != nil {
+			t.Fatal(err)
+		}
+		if n := <-got; n != tc.want {
+			t.Fatalf("maxOutputTokens %d want %d", n, tc.want)
+		}
+	}
+}
+
+func TestGeminiErrorSummaryIsBoundedAndSingleLine(t *testing.T) {
+	t.Parallel()
+	long := strings.Repeat("x", 500)
+	got := geminiErrorSummary(strings.NewReader(`{"error":{"code":400,"status":"INVALID_ARGUMENT","message":"Invalid JSON payload\nreceived. ` + long + `"}}`))
+	if !strings.HasPrefix(got, `status=INVALID_ARGUMENT message="Invalid JSON payload received. `) || strings.Contains(got, "\n") || len([]rune(got)) > 360 {
+		t.Fatalf("summary %q", got)
+	}
+	if geminiErrorSummary(strings.NewReader("<html>bad gateway</html>")) != "status=- message=-" {
+		t.Fatal("non-JSON body must not be logged")
+	}
+}

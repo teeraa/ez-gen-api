@@ -110,12 +110,17 @@ func TestVideoEditorAudioTextPersistenceAndExport(t *testing.T) {
 	if _, e = f.SaveProject(ctx, p.ID, user, badSeg); !errors.Is(e, ErrVEInvalid) {
 		t.Fatal("audio asset accepted as segment", e)
 	}
-	badAudio := []models.VideoEditorAudioClip{{ID: uuid.NewString(), AssetID: video.ID, At: 0, Start: 0, End: 1, Volume: 1}}
+	// A video with sound is a valid detached-sound source (veAudioSource); an asset that
+	// is not a ready owned audio source is not.
+	badAudio := []models.VideoEditorAudioClip{{ID: uuid.NewString(), AssetID: uuid.NewString(), At: 0, Start: 0, End: 1, Volume: 1}}
 	badClip := keep
 	badClip.Revision = 3
 	badClip.AudioClips = &badAudio
 	if _, e = f.SaveProject(ctx, p.ID, user, badClip); !errors.Is(e, ErrVEInvalid) {
-		t.Fatal("video asset accepted as audio clip", e)
+		t.Fatal("unowned asset accepted as audio clip", e)
+	}
+	if !video.HasAudio {
+		t.Fatal("fixture video must carry sound for the detached-sound rule")
 	}
 	got, e := f.Project(ctx, p.ID, user)
 	if e != nil || got.Revision != 3 || len(got.AudioClips) != 1 || len(got.TextLayers) != 1 || got.TextLayers[0].Color != "#FFCC00" || got.TextLayers[0].ScaleX == nil || *got.TextLayers[0].ScaleX != scaleX || got.TextLayers[0].ScaleY == nil || *got.TextLayers[0].ScaleY != scaleY {
@@ -300,6 +305,15 @@ func TestVideoEditorMissingMigration024IsUnavailable(t *testing.T) {
 	if e = db.Exec(string(migration)).Error; e != nil {
 		t.Fatal(e)
 	}
+	// pgx caches prepared statements per connection; after ALTER TABLE a reused connection
+	// fails once with "cached plan must not change result type" (SQLSTATE 0A000). Drop
+	// idle connections so the recovery check runs on fresh ones, as after a pool recycle.
+	sqlDB, e := db.DB()
+	if e != nil {
+		t.Fatal(e)
+	}
+	sqlDB.SetMaxIdleConns(0)
+	sqlDB.SetMaxIdleConns(2)
 	if !f.Capabilities().Available {
 		t.Fatal("capabilities must recover after 024")
 	}

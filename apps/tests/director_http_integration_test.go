@@ -186,12 +186,14 @@ func newDirectorFixtureWith(t *testing.T, video modelark.Client, fetcher directo
 	if err = db.Exec("CREATE TABLE users(id uuid PRIMARY KEY)").Error; err != nil {
 		t.Fatal(err)
 	}
-	migration, err := os.ReadFile(filepath.Join("..", "..", "migrations", "029_director.sql"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = db.Exec(string(migration)).Error; err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"029_director.sql", "030_director_series.sql"} {
+		migration, err := os.ReadFile(filepath.Join("..", "..", "migrations", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = db.Exec(string(migration)).Error; err != nil {
+			t.Fatal(err)
+		}
 	}
 	user := uuid.NewString()
 	if err = db.Exec("INSERT INTO users(id) VALUES (?)", user).Error; err != nil {

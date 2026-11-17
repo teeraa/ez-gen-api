@@ -152,7 +152,7 @@ func TestCompile_UnknownModelError(t *testing.T) {
 	}
 }
 
-func TestCompile_PromptTruncatedAt2000(t *testing.T) {
+func TestCompile_PromptAbove2000Preserved(t *testing.T) {
 	t.Parallel()
 	longText := strings.Repeat("A ", 1200)
 	in := promptcompiler.Inputs{
@@ -164,8 +164,8 @@ func TestCompile_PromptTruncatedAt2000(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(result.CompiledPrompt) > 2000 {
-		t.Errorf("compiled prompt exceeds 2000 chars: %d", len(result.CompiledPrompt))
+	if result.CompiledPrompt != longText {
+		t.Fatal("video prompt was silently clipped")
 	}
 }
 
@@ -306,7 +306,7 @@ func TestCompile_EachCharacterGetsPromptBudget(t *testing.T) {
 	}
 }
 
-func TestCompile_TruncatesThaiByRune(t *testing.T) {
+func TestCompile_PreservesFullThaiByRune(t *testing.T) {
 	t.Parallel()
 	in := promptcompiler.Inputs{
 		ModelID: "violet-classic",
@@ -320,7 +320,7 @@ func TestCompile_TruncatesThaiByRune(t *testing.T) {
 	if !utf8.ValidString(result.CompiledPrompt) {
 		t.Error("compiled prompt is not valid UTF-8")
 	}
-	if n := utf8.RuneCountInString(result.CompiledPrompt); n != 2000 {
-		t.Errorf("prompt has %d runes, want 2000", n)
+	if result.CompiledPrompt != in.Scene.Description {
+		t.Fatal("Thai video prompt was clipped")
 	}
 }

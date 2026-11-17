@@ -55,6 +55,8 @@ type VideoEditorClipLook struct {
 	Zoom       float64 `json:"zoom,omitempty"`
 	PanX       float64 `json:"panX,omitempty"`
 	PanY       float64 `json:"panY,omitempty"`
+	// ZoomTo (1..3, 0 = none) animates the zoom from Zoom to ZoomTo over the clip, eased.
+	ZoomTo float64 `json:"zoomTo,omitempty"`
 }
 
 // SegmentSpeed treats an absent speed as normal playback.
@@ -101,12 +103,18 @@ type VideoEditorTextLayer struct {
 	Color       string   `json:"color"`
 	Align       string   `json:"align"`
 	// Optional style: an outline OutlineWidth px (at 1080) wide, a background box of
-	// BoxColor at BoxOpacity (0 = none), and an entrance/exit Animation ("fade" or "slide").
+	// BoxColor at BoxOpacity (0 = none), and an entrance/exit Animation ("fade", "slide" or "pop").
 	OutlineColor string  `json:"outlineColor,omitempty"`
 	OutlineWidth int     `json:"outlineWidth,omitempty"`
 	BoxColor     string  `json:"boxColor,omitempty"`
 	BoxOpacity   float64 `json:"boxOpacity,omitempty"`
 	Animation    string  `json:"animation,omitempty"`
+	// Font "" is the regular editor font; "heavy" is bundled Kanit ExtraBold (short-form titles).
+	Font string `json:"font,omitempty"`
+	// AccentText (a phrase inside one line; every occurrence) is drawn in AccentColor,
+	// e.g. a golden second line or keyword in a white title.
+	AccentText  string `json:"accentText,omitempty"`
+	AccentColor string `json:"accentColor,omitempty"`
 }
 
 // VideoEditorImageLayer shows a still image (sticker, logo) from Start to End timeline

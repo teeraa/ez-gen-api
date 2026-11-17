@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -22,6 +23,31 @@ var ErrASR = errors.New("ASR unavailable")
 type RateError struct{ RetryAt time.Time }
 
 func (e *RateError) Error() string { return "AI quota exceeded" }
+
+// DefaultMaxOutputTokens bounds every call unless the caller raises it for a known
+// larger structured response (WithMaxOutputTokens).
+const DefaultMaxOutputTokens = 8192
+
+// MaxOutputTokensLimit stays well inside the model's output limit while the 2 MiB
+// response cap still applies.
+const MaxOutputTokensLimit = 32768
+
+type outputTokensKey struct{}
+
+// WithMaxOutputTokens raises the output budget for calls made with ctx, clamped to
+// [DefaultMaxOutputTokens, MaxOutputTokensLimit]. Provider is unchanged so fakes keep working.
+func WithMaxOutputTokens(ctx context.Context, n int) context.Context {
+	n = max(DefaultMaxOutputTokens, min(n, MaxOutputTokensLimit))
+	return context.WithValue(ctx, outputTokensKey{}, n)
+}
+
+// MaxOutputTokens reports the output budget carried by ctx.
+func MaxOutputTokens(ctx context.Context) int {
+	if n, ok := ctx.Value(outputTokensKey{}).(int); ok {
+		return n
+	}
+	return DefaultMaxOutputTokens
+}
 
 type Image struct {
 	AssetID string
@@ -105,7 +131,7 @@ func (g *Gemini) Generate(ctx context.Context, system, prompt string, images []I
 			} `json:"responseFormat"`
 		} `json:"generationConfig"`
 	}{System: geminiContent{Parts: []geminiPart{{Text: system}}}, Contents: []geminiContent{{Role: "user", Parts: parts}}}
-	body.Generation.MaxOutputTokens = 8192
+	body.Generation.MaxOutputTokens = MaxOutputTokens(ctx)
 	body.Generation.ResponseFormat.Text.MIME = "APPLICATION_JSON"
 	body.Generation.ResponseFormat.Text.Schema = schema
 	raw, e := json.Marshal(body)
@@ -136,6 +162,7 @@ func (g *Gemini) Generate(ctx context.Context, system, prompt string, images []I
 		return nil, &RateError{RetryAt: time.Now().UTC().Add(delay)}
 	}
 	if res.StatusCode != 200 {
+		log.Printf("editorai: gemini model=%s http=%d %s", g.model, res.StatusCode, geminiErrorSummary(res.Body))
 		return nil, ErrUnavailable
 	}
 	data, e := io.ReadAll(io.LimitReader(res.Body, (2<<20)+1))
@@ -157,4 +184,25 @@ func (g *Gemini) Generate(ctx context.Context, system, prompt string, images []I
 		return nil, ErrInvalid
 	}
 	return []byte(text), nil
+}
+
+// geminiErrorSummary keeps only Google's error status and a bounded, single-line message so a
+// rejected request (e.g. an unsupported response schema) can be diagnosed from server logs.
+// The request, prompt and API key are never included.
+func geminiErrorSummary(body io.Reader) string {
+	var payload struct {
+		Error struct {
+			Status  string `json:"status"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	raw, _ := io.ReadAll(io.LimitReader(body, 8<<10))
+	if json.Unmarshal(raw, &payload) != nil || payload.Error.Status == "" && payload.Error.Message == "" {
+		return "status=- message=-"
+	}
+	message := strings.Join(strings.Fields(payload.Error.Message), " ")
+	if r := []rune(message); len(r) > 300 {
+		message = string(r[:300]) + "…"
+	}
+	return "status=" + payload.Error.Status + " message=" + strconv.Quote(message)
 }

@@ -54,7 +54,7 @@ func TestCompileBackgroundControlsSurviveLongBrief(t *testing.T) {
 			t.Errorf("control truncated: %q", want)
 		}
 	}
-	if !utf8.ValidString(result.CompiledPrompt) || utf8.RuneCountInString(result.CompiledPrompt) > 2000 {
+	if !utf8.ValidString(result.CompiledPrompt) || utf8.RuneCountInString(result.CompiledPrompt) > promptcompiler.VideoPromptRuneLimit {
 		t.Fatal("prompt rune limit changed")
 	}
 }

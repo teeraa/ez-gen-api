@@ -58,18 +58,23 @@ type VideoEditorExportDTO struct {
 	CanRetry       bool    `json:"canRetry"`
 }
 type VideoEditorCapabilitiesDTO struct {
-	Available         bool     `json:"available"`
-	UnavailableReason string   `json:"unavailableReason"`
-	MaxUploadBytes    int64    `json:"maxUploadBytes"`
-	MaxSegments       int      `json:"maxSegments"`
-	MaxDuration       float64  `json:"maxDuration"`
-	AspectRatios      []string `json:"aspectRatios"`
-	Resolutions       []string `json:"resolutions"`
-	MaxAudioClips     int      `json:"maxAudioClips"`
-	MaxTextLayers     int      `json:"maxTextLayers"`
-	TextTransforms    bool     `json:"textTransforms"`
-	TextOverlays      bool     `json:"textOverlays"`
-	AudioFormats      []string `json:"audioFormats"`
+	Available         bool   `json:"available"`
+	UnavailableReason string `json:"unavailableReason"`
+	MaxUploadBytes    int64  `json:"maxUploadBytes"`
+	// Chunked uploads accept video/audio up to MaxSourceBytes; anything above
+	// MaxUploadBytes (what storage keeps per file) is compressed to fit. Images stay
+	// capped at MaxUploadBytes.
+	MaxSourceBytes int64    `json:"maxSourceBytes"`
+	ChunkedUploads bool     `json:"chunkedUploads"`
+	MaxSegments    int      `json:"maxSegments"`
+	MaxDuration    float64  `json:"maxDuration"`
+	AspectRatios   []string `json:"aspectRatios"`
+	Resolutions    []string `json:"resolutions"`
+	MaxAudioClips  int      `json:"maxAudioClips"`
+	MaxTextLayers  int      `json:"maxTextLayers"`
+	TextTransforms bool     `json:"textTransforms"`
+	TextOverlays   bool     `json:"textOverlays"`
+	AudioFormats   []string `json:"audioFormats"`
 	// ClipEffects: segments accept speed/fadeIn/fadeOut, audio clips accept fades and may use a video asset's sound.
 	ClipEffects bool `json:"clipEffects"`
 	// ClipStyles: segments accept colour/frame looks and transitions; text layers accept outline, box and animation.
@@ -78,6 +83,8 @@ type VideoEditorCapabilitiesDTO struct {
 	ImageLayers    bool     `json:"imageLayers"`
 	MaxImageLayers int      `json:"maxImageLayers"`
 	ImageFormats   []string `json:"imageFormats"`
+	// Voice: POST /projects/:id/voice can synthesize speech into an audio asset.
+	Voice bool `json:"voice"`
 }
 type VideoEditorAssetsDTO struct {
 	Items []VideoEditorAssetDTO `json:"items"`
@@ -89,4 +96,16 @@ type VideoEditorDownloadDTO struct {
 	DownloadURL string `json:"downloadUrl"`
 	ExpiresAt   string `json:"expiresAt"`
 	Filename    string `json:"filename"`
+}
+
+// VideoEditorVoiceDTO is a generated speech asset plus its sentence timings (seconds from the asset start).
+type VideoEditorVoiceDTO struct {
+	Asset     VideoEditorAssetDTO        `json:"asset"`
+	Sentences []VideoEditorVoiceSentence `json:"sentences"`
+}
+
+type VideoEditorVoiceSentence struct {
+	Start float64 `json:"start"`
+	End   float64 `json:"end"`
+	Text  string  `json:"text"`
 }

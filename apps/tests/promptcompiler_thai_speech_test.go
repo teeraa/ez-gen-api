@@ -88,10 +88,10 @@ func TestThaiSpeechPromptBudgetExactBoundary(t *testing.T) {
 		t.Fatal(e)
 	}
 	// Expand only scene text so all language, escaping and role controls count.
-	remaining := 2000 - utf8.RuneCountInString(base.CompiledPrompt)
+	remaining := promptcompiler.VideoPromptRuneLimit - utf8.RuneCountInString(base.CompiledPrompt)
 	in.Scene.Description = strings.Repeat("ก", remaining+1)
 	boundary, e := promptcompiler.Compile(in, model)
-	if e != nil || utf8.RuneCountInString(boundary.CompiledPrompt) != 2000 || boundary.Snapshot.Dialogue != in.Dialogue {
+	if e != nil || utf8.RuneCountInString(boundary.CompiledPrompt) != promptcompiler.VideoPromptRuneLimit || boundary.Snapshot.Dialogue != in.Dialogue {
 		t.Fatalf("boundary len=%v err=%v", boundary, e)
 	}
 	in.Scene.Description += "ก"

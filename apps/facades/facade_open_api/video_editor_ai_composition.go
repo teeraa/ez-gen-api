@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"math"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/ez-gen/ez-gen-api/apps/models"
 	"github.com/ez-gen/ez-gen-api/apps/services/editorai"
+	"github.com/ez-gen/ez-gen-api/apps/services/thaiseg"
 	"github.com/google/uuid"
 )
 
@@ -27,8 +27,124 @@ func aiCompositionText(text string) string {
 	return strings.TrimSpace(text)
 }
 
-// Whole coarse segments are used only when fully contained in a cut. Partial
-// cuts require word timestamps; transcript context is never treated as alignment.
+// aiCaptionMaxRunes bounds one caption (two 24-rune lines, see aiCaptionLines).
+const aiCaptionMaxRunes = 48
+
+// aiCaptionMinSeconds drops captions too short to read after clamping to their clip.
+const aiCaptionMinSeconds = .3
+
+// aiCaptionSpan is the part of clip i shown on its own: after the transition from the
+// previous clip and before the transition into the next one. Captions stay inside it so
+// a caption never runs into another clip (where it would overlap that clip's captions).
+func aiCaptionSpan(at, start, length float64, i int, cuts []models.EditorAIDraftSegment) (float64, float64) {
+	next := 0.0
+	if i+1 < len(cuts) {
+		next = cuts[i+1].TimelineSegment().TransitionDuration
+	}
+	return aiOwnSpan(at, start, length, i > 0, next)
+}
+
+// aiOwnSpan: a clip placed at start (at = where the previous clip ends) is shared with
+// the previous clip until at, and with the next one for its transition at the end.
+func aiOwnSpan(at, start, length float64, hasPrevious bool, nextTransition float64) (float64, float64) {
+	own, end := start, start+length-nextTransition
+	if hasPrevious {
+		own = math.Max(start, at)
+	}
+	return own, math.Max(own, end)
+}
+
+// aiCaptionMaxLines matches the editor's text-layer limit.
+const aiCaptionMaxLines = 6
+
+// aiCaptionLineWidth is the visible width of one caption line (two lines per caption).
+const aiCaptionLineWidth = 24
+
+func aiThaiNoBreakBefore(r rune) bool { return thaiseg.NoBreakBefore(r) }
+func aiThaiLeadingVowel(r rune) bool  { return thaiseg.LeadingVowel(r) }
+
+// aiCaptionFits reports whether text is one caption: at most max runes and two lines
+// when wrapped between words.
+func aiCaptionFits(text string, max int) bool {
+	text = strings.TrimSpace(text)
+	return utf8.RuneCountInString(text) <= max && len(thaiseg.Wrap(text, aiCaptionLineWidth)) <= 2
+}
+
+// aiSplitCaptionText splits text into captions that each fit two lines, breaking only
+// between words (Thai words found with a dictionary, see thaiseg). A single word too long
+// for a caption is cut at syllable-safe points.
+func aiSplitCaptionText(text string, max int) []string {
+	out, current := []string{}, ""
+	flush := func() {
+		if piece := strings.TrimSpace(current); piece != "" {
+			out = append(out, piece)
+		}
+		current = ""
+	}
+	for _, token := range thaiseg.Segment(text) {
+		if strings.TrimSpace(token) == "" {
+			if current != "" {
+				current += " "
+			}
+			continue
+		}
+		if aiCaptionFits(current+token, max) {
+			current += token
+			continue
+		}
+		flush()
+		if aiCaptionFits(token, max) {
+			current = token
+			continue
+		}
+		lines := thaiseg.Wrap(token, aiCaptionLineWidth)
+		for len(lines) > 0 {
+			n := min(2, len(lines))
+			piece := strings.Join(lines[:n], "")
+			lines = lines[n:]
+			if len(lines) == 0 {
+				current = piece
+				break
+			}
+			out = append(out, piece)
+		}
+	}
+	flush()
+	return out
+}
+
+// aiSplitCoarseSpeech turns one word-less speech segment (e.g. Typhoon contexts of up
+// to 12 s) into short captions. Times are ESTIMATED by spreading the segment's duration
+// over the pieces in proportion to their length; they are not word alignment.
+func aiSplitCoarseSpeech(speech models.EditorAISpeech) []models.EditorAISpeech {
+	text := strings.Join(strings.Fields(aiCompositionText(speech.Text)), " ")
+	pieces := aiSplitCaptionText(text, aiCaptionMaxRunes)
+	if len(pieces) <= 1 {
+		if len(pieces) == 1 {
+			speech.Text = pieces[0]
+		}
+		return []models.EditorAISpeech{speech}
+	}
+	weights, total := make([]float64, len(pieces)), 0.0
+	for i, piece := range pieces {
+		weights[i] = float64(utf8.RuneCountInString(strings.ReplaceAll(piece, " ", "")))
+		total += weights[i]
+	}
+	out, at := make([]models.EditorAISpeech, 0, len(pieces)), speech.Start
+	for i, piece := range pieces {
+		end := speech.End
+		if i < len(pieces)-1 && total > 0 {
+			end = at + (speech.End-speech.Start)*weights[i]/total
+		}
+		out = append(out, models.EditorAISpeech{Start: at, End: end, Text: piece})
+		at = end
+	}
+	return out
+}
+
+// Whole coarse segments are used only when fully contained in a cut; long ones are
+// split into short captions with estimated timing inside that segment. Partial cuts
+// require word timestamps; transcript context is never treated as alignment.
 func aiCaptionWindows(transcript models.EditorAITranscript, cut models.EditorAIDraftSegment) []models.EditorAISpeech {
 	result := []models.EditorAISpeech{}
 	for _, speech := range transcript.Segments {
@@ -43,8 +159,8 @@ func aiCaptionWindows(transcript models.EditorAITranscript, cut models.EditorAID
 			}
 		}
 		if len(speech.Words) == 0 || uncertainWords {
-			if speech.Start >= cut.Start-1e-6 && speech.End <= cut.End+1e-6 && utf8.RuneCountInString(speech.Text) <= 144 {
-				result = append(result, speech)
+			if speech.Start >= cut.Start-1e-6 && speech.End <= cut.End+1e-6 {
+				result = append(result, aiSplitCoarseSpeech(speech)...)
 			}
 			continue
 		}
@@ -82,26 +198,25 @@ func aiCaptionWindows(transcript models.EditorAITranscript, cut models.EditorAID
 
 func aiCaptionLines(text string) string {
 	text = strings.Join(strings.Fields(aiCompositionText(text)), " ")
-	runes := []rune(text)
-	if len(runes) > 144 {
+	if utf8.RuneCountInString(text) > 144 {
 		return ""
 	}
-	lines := []string{}
-	for len(runes) > 24 {
-		split := 24
-		for split < len(runes) && unicode.Is(unicode.Mn, runes[split]) {
-			split++
-		}
-		lines = append(lines, string(runes[:split]))
-		runes = runes[split:]
-	}
-	if len(runes) > 0 {
-		lines = append(lines, string(runes))
+	lines := thaiseg.Wrap(text, aiCaptionLineWidth)
+	// Text layers allow at most 6 lines (normalizeVETextLayers). Wrapping between words can
+	// need more than 144/24 lines, and one over-long layer would fail the whole draft.
+	if len(lines) > aiCaptionMaxLines {
+		return ""
 	}
 	return strings.Join(lines, "\n")
 }
 
 func composeAIDraft(d *models.EditorAIDraft, in models.EditorAIInput, job string, transcripts []models.EditorAITranscript) {
+	composeAIDraftWith(d, in, job, transcripts, nil)
+}
+
+// composeAIDraftWith also captions extra speech per cut ID: parts of word-less segments
+// that a cut crosses, re-transcribed on their own (see partialCaptions).
+func composeAIDraftWith(d *models.EditorAIDraft, in models.EditorAIInput, job string, transcripts []models.EditorAITranscript, extra map[string][]models.EditorAISpeech) {
 	d.TextLayers = []models.VideoEditorTextLayer{}
 	d.AudioClips = []models.VideoEditorAudioClip{}
 	d.CompositionNotes = []string{}
@@ -110,35 +225,60 @@ func composeAIDraft(d *models.EditorAIDraft, in models.EditorAIInput, job string
 		byAsset[transcript.AssetID] = transcript
 	}
 	room := max(0, veMaxTextLayers-in.ManualTextCount)
-	add := func(text string, start, end, y float64, font int, key string) {
+	var captionStyle, titleStyle *models.EditorAITextStyle
+	if d.TextStyles != nil {
+		captionStyle, titleStyle = d.TextStyles.Caption, d.TextStyles.Title
+	}
+	keys := map[string]int{}
+	add := func(text string, start, end, y float64, font int, key string, style *models.EditorAITextStyle) {
 		text = aiCaptionLines(text)
 		if text == "" || len(d.TextLayers) >= room || end-start < .001 {
 			return
 		}
-		d.TextLayers = append(d.TextLayers, models.VideoEditorTextLayer{OriginJobID: job, ID: aiCompositionID(job, "text", key), Text: text, Start: start, End: end, X: .5, Y: y, FontSize: font, Color: "#FFFFFF", Align: "center"})
+		// Accepted transcripts can repeat a timestamp pair; IDs must stay unique.
+		if n := keys[key]; n > 0 {
+			keys[key]++
+			key = fmt.Sprintf("%s#%d", key, n)
+		} else {
+			keys[key] = 1
+		}
+		layer := models.VideoEditorTextLayer{OriginJobID: job, ID: aiCompositionID(job, "text", key), Text: text, Start: start, End: end, X: .5, Y: y, FontSize: font, Color: "#FFFFFF", Align: "center"}
+		d.TextLayers = append(d.TextLayers, aiApplyTextStyle(layer, style))
 	}
 	at := 0.0
 	captionCount := 0
 	titleCount := 0
-	for _, cut := range d.Segments {
-		length := cut.End - cut.Start
+	for i, cut := range d.Segments {
+		segment := cut.TimelineSegment()
+		// A transition starts this segment that much earlier, overlapping the previous one.
+		start := math.Max(0, at-segment.TransitionDuration)
+		length := segment.TimelineLength()
+		ownStart, ownEnd := aiCaptionSpan(at, start, length, i, d.Segments)
+		speed := models.SegmentSpeed(segment.Speed)
 		if title := aiCompositionText(cut.Title); title != "" && len(d.TextLayers) < room {
 			before := len(d.TextLayers)
-			add(title, at, at+math.Min(length, 3), .15, 64, cut.ID+":title")
+			add(title, start, start+math.Min(length, 3), .15, 64, cut.ID+":title", titleStyle)
 			if len(d.TextLayers) > before {
 				titleCount++
 			}
 		}
-		for _, caption := range aiCaptionWindows(byAsset[cut.AssetID], cut) {
+		captions := aiCaptionWindows(byAsset[cut.AssetID], cut)
+		if len(extra[cut.ID]) > 0 {
+			captions = append(captions, aiCaptionWindows(models.EditorAITranscript{Segments: extra[cut.ID]}, cut)...)
+		}
+		for _, caption := range captions {
 			before := len(d.TextLayers)
-			start := at + math.Max(0, caption.Start-cut.Start)
-			end := at + math.Min(length, caption.End-cut.Start)
-			add(caption.Text, start, end, .85, 48, fmt.Sprintf("%s:%f:%f", cut.ID, caption.Start, caption.End))
+			captionStart := math.Max(ownStart, start+math.Max(0, caption.Start-cut.Start)/speed)
+			captionEnd := math.Min(ownEnd, start+math.Min(length, (caption.End-cut.Start)/speed))
+			if captionEnd-captionStart < aiCaptionMinSeconds {
+				continue
+			}
+			add(caption.Text, captionStart, captionEnd, .85, 48, fmt.Sprintf("%s:%f:%f", cut.ID, caption.Start, caption.End), captionStyle)
 			if len(d.TextLayers) > before {
 				captionCount++
 			}
 		}
-		at += length
+		at = start + length
 	}
 	if captionCount == 0 {
 		d.CompositionNotes = append(d.CompositionNotes, "ไม่มีคำถอดเสียงที่ระบุตำแหน่งตรงกับช่วงตัดอย่างปลอดภัย จึงไม่สร้างซับจากข้อความที่คาดเดา")

@@ -16,6 +16,7 @@ type DirectorRequest struct {
 	StoryModelID      *string   `json:"storyModelId,omitempty"`
 	ImageModelID      *string   `json:"imageModelId,omitempty"`
 	VideoModelID      *string   `json:"videoModelId,omitempty"`
+	FilmedRecipe      *string   `json:"filmedRecipe,omitempty"`
 	ShotID            *string   `json:"shotId,omitempty"`
 	Replace           bool      `json:"replace,omitempty"`
 	Title             *string   `json:"title,omitempty"`
@@ -29,4 +30,21 @@ type DirectorRequest struct {
 	ShotIDs           *[]string `json:"shotIds,omitempty"`
 	Draft             bool      `json:"draft,omitempty"`
 	Finalize          bool      `json:"finalize,omitempty"`
+	EpisodeTitle      *string   `json:"episodeTitle,omitempty"`
+}
+
+type DirectorSeriesRequest struct {
+	Revision          *int      `json:"revision,omitempty"`
+	IdempotencyKey    string    `json:"idempotencyKey,omitempty"`
+	Name              *string   `json:"name,omitempty"`
+	Mode              *string   `json:"mode,omitempty"`
+	AspectRatio       *string   `json:"aspectRatio,omitempty"`
+	Style             *string   `json:"style,omitempty"`
+	Resolution        *string   `json:"resolution,omitempty"`
+	CharacterAssetIDs *[]string `json:"characterAssetIds,omitempty"`
+}
+
+type DirectorEpisodeRequest struct {
+	IdempotencyKey string  `json:"idempotencyKey,omitempty"`
+	Title          *string `json:"title,omitempty"`
 }

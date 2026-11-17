@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image/png"
 	"math"
 	"os"
 	"os/exec"
@@ -155,7 +156,12 @@ func (p *FFmpegProcessor) Merge(ctx context.Context, req MergeRequest) ([]byte, 
 	}
 	parts := []string{}
 	for i, c := range req.Clips {
-		parts = append(parts, fmt.Sprintf("[%d:v:0]trim=start=%.6f:duration=%.6f,%s,%s,setsar=1,fps=30,format=yuv420p%s%s[v%d]", i, c.TrimStart, sources[i], videoSpeedFilter(c.Speed), frameFilter(c.Look, w, h), lookFilter(c.Look), videoFadeFilters(c.FadeIn, c.FadeOut, durations[i]), i))
+		if c.Look.ZoomTo > 0 {
+			tail := fmt.Sprintf(",setsar=1,fps=30,format=yuv420p%s%s", lookFilter(c.Look), videoFadeFilters(c.FadeIn, c.FadeOut, durations[i]))
+			parts = append(parts, zoomingParts(fmt.Sprintf("[%d:v:0]", i), fmt.Sprintf("trim=start=%.6f:duration=%.6f,%s", c.TrimStart, sources[i], videoSpeedFilter(c.Speed)), c.Look, w, h, durations[i], tail, fmt.Sprintf("[v%d]", i), i)...)
+		} else {
+			parts = append(parts, fmt.Sprintf("[%d:v:0]trim=start=%.6f:duration=%.6f,%s,%s,setsar=1,fps=30,format=yuv420p%s%s[v%d]", i, c.TrimStart, sources[i], videoSpeedFilter(c.Speed), frameFilter(c.Look, w, h), lookFilter(c.Look), videoFadeFilters(c.FadeIn, c.FadeOut, durations[i]), i))
+		}
 		if hasAudio[i] {
 			volume := 1.0
 			if c.Volume != nil {
@@ -202,13 +208,18 @@ func (p *FFmpegProcessor) Merge(ctx context.Context, req MergeRequest) ([]byte, 
 		}
 		// Copying the trusted configured font once gives every filter a parser-safe
 		// path. Text stays in files with expansion disabled, never in filter syntax.
-		fontData, e := os.ReadFile(p.fontFile)
-		if e != nil {
-			return nil, fmt.Errorf("text overlay font unavailable")
-		}
 		fontPath = filepath.Join(dir, "font.ttf")
-		if e = os.WriteFile(fontPath, fontData, 0600); e != nil {
+		if e := os.WriteFile(fontPath, p.baseFont(req.TextLayers), 0600); e != nil {
 			return nil, e
+		}
+	}
+	heavyPath := ""
+	for _, tl := range req.TextLayers {
+		if tl.Font == TextFontHeavy && heavyPath == "" {
+			heavyPath = filepath.Join(dir, "font-heavy.ttf")
+			if e := os.WriteFile(heavyPath, kanitExtraBold, 0600); e != nil {
+				return nil, e
+			}
 		}
 	}
 	for i, tl := range req.TextLayers {
@@ -217,6 +228,13 @@ func (p *FFmpegProcessor) Merge(ctx context.Context, req MergeRequest) ([]byte, 
 		}
 		if !validTextTiming(tl, durations, total) {
 			return nil, fmt.Errorf("invalid text timing")
+		}
+		if tl.Font != "" && (tl.Font != TextFontHeavy || !tl.EditorStyle) {
+			return nil, fmt.Errorf("invalid text font")
+		}
+		layerFont := fontPath
+		if tl.Font == TextFontHeavy {
+			layerFont = heavyPath
 		}
 		if tl.EditorStyle && !tl.HasXY {
 			return nil, fmt.Errorf("invalid text position")
@@ -242,9 +260,9 @@ func (p *FFmpegProcessor) Merge(ctx context.Context, req MergeRequest) ([]byte, 
 		if !validTextScale(tl.ScaleX) || !validTextScale(tl.ScaleY) {
 			return nil, fmt.Errorf("invalid text scale")
 		}
-		if tl.EditorStyle && (textScale(tl.ScaleX) != 1 || textScale(tl.ScaleY) != 1) {
+		if rasterTextNeeded(tl) {
 			imagePath := filepath.Join(dir, fmt.Sprintf("text-%d.png", i))
-			box, padX, padY, e := renderScaledEditorText(ctx, tl, w, h, fontPath, textPath, imagePath)
+			box, padX, padY, e := renderScaledEditorText(ctx, tl, w, h, layerFont, textPath, imagePath)
 			if e != nil {
 				return nil, e
 			}
@@ -260,10 +278,21 @@ func (p *FFmpegProcessor) Merge(ctx context.Context, req MergeRequest) ([]byte, 
 					yExpr = fmt.Sprintf("'%.6f+%d*%f*max(0,1-(t-%f)/%f)'", y, h, textSlideRise, start, d)
 				}
 			}
-			parts = append(parts, fmt.Sprintf("%s%soverlay=x=%.6f:y=%s:enable='between(t,%f,%f)':eof_action=repeat%s", video, source, x, yExpr, start, end, label))
+			xExpr := fmt.Sprintf("%.6f", x)
+			if tl.Animation == "pop" {
+				imageW, imageH, e := pngSize(imagePath)
+				if e != nil {
+					return nil, e
+				}
+				parts = append(parts, fmt.Sprintf("%sscale=w='max(2,trunc(iw*%s/2)*2)':h='max(2,trunc(ih*%s/2)*2)':eval=frame[tp%d]", source, textPopScale(start, textAnimDuration(start, end)), textPopScale(start, textAnimDuration(start, end)), i))
+				source = fmt.Sprintf("[tp%d]", i)
+				xExpr = fmt.Sprintf("'%.6f-w/2'", x+float64(imageW)/2)
+				yExpr = fmt.Sprintf("'%.6f-h/2'", y+float64(imageH)/2)
+			}
+			parts = append(parts, fmt.Sprintf("%s%soverlay=x=%s:y=%s:enable='between(t,%f,%f)':eof_action=repeat%s", video, source, xExpr, yExpr, start, end, label))
 			next++
 		} else {
-			parts = append(parts, video+buildDrawtextFileSegment(tl, start, end, h, fontPath, textPath)+label)
+			parts = append(parts, video+buildDrawtextFileSegment(tl, start, end, h, layerFont, textPath)+label)
 		}
 		video = label
 	}
@@ -340,7 +369,9 @@ func audioSpeedFilters(speed float64) string {
 	return "," + strings.Join(stages, ",")
 }
 
-var xfadeTransitions = map[string]bool{"fade": true, "fadeblack": true, "fadewhite": true, "wipeleft": true, "wiperight": true, "slideleft": true, "slideright": true, "circleopen": true}
+// xfadeTransitions are FFmpeg xfade names the editor preview can reproduce.
+var xfadeTransitions = map[string]bool{"fade": true, "fadeblack": true, "fadewhite": true, "wipeleft": true, "wiperight": true, "slideleft": true, "slideright": true, "circleopen": true,
+	"zoomin": true, "hblur": true, "smoothleft": true, "smoothright": true, "slideup": true, "slidedown": true, "pixelize": true, "fadegrays": true, "radial": true}
 
 // validTransition: none on the first clip; else a known xfade lasting 0.1..2 s and at most
 // half of this and the previous clip (so two transitions never overlap inside one clip).
@@ -403,7 +434,29 @@ func validLook(l ClipLook) bool {
 			return false
 		}
 	}
-	return finite(l.Zoom) && (l.Zoom == 0 || l.Zoom >= 1 && l.Zoom <= 3) && (l.Fit == "" || l.Fit == "cover")
+	return finite(l.Zoom) && (l.Zoom == 0 || l.Zoom >= 1 && l.Zoom <= 3) && finite(l.ZoomTo) && (l.ZoomTo == 0 || l.ZoomTo >= 1 && l.ZoomTo <= 3) && (l.Fit == "" || l.Fit == "cover")
+}
+
+// zoomingParts renders a clip whose zoom moves from Zoom to ZoomTo over its length:
+// the picture is rescaled every frame and placed on a black w×h canvas exactly as
+// frameFilter places a static one (centre what is smaller, pan what overflows). The
+// zoom eases in and out (smoothstep), like the preview (clip-effects.ts lookZoomAt).
+func zoomingParts(input, chain string, l ClipLook, w, h int, length float64, tail string, label string, i int) []string {
+	z0 := l.Zoom
+	if z0 == 0 {
+		z0 = 1
+	}
+	pick := "min"
+	if l.Fit == "cover" {
+		pick = "max"
+	}
+	u := fmt.Sprintf("min(1,t/%f)", math.Max(length, 0.001))
+	factor := fmt.Sprintf("%s(%d/iw,%d/ih)*(%f+%f*%s*%s*(3-2*%s))", pick, w, h, z0, l.ZoomTo-z0, u, u, u)
+	return []string{
+		fmt.Sprintf("%s%s,scale=w='max(2,trunc(iw*%s/2)*2)':h='max(2,trunc(ih*%s/2)*2)':eval=frame[zs%d]", input, chain, factor, factor, i),
+		fmt.Sprintf("color=c=black:s=%dx%d:r=30:d=%f[zb%d]", w, h, length, i),
+		fmt.Sprintf("[zb%d][zs%d]overlay=x='if(gt(w,W),-(w-W)*%f,(W-w)/2)':y='if(gt(h,H),-(h-H)*%f,(H-h)/2)':shortest=1:eof_action=pass%s%s", i, i, 0.5+l.PanX/2, 0.5+l.PanY/2, tail, label),
+	}
 }
 
 // frameFilter places the clip in the w×h output. The default keeps the legacy letterbox
@@ -597,11 +650,28 @@ func buildEditorDrawtext(tl TextLayer, start, end float64, height int, font, tex
 	if tl.Animation == "slide" {
 		y += fmt.Sprintf("+h*%f*max(0,1-(t-%f)/%f)", textSlideRise, start, textAnimDuration(start, end))
 	}
-	return fmt.Sprintf("drawtext=fontfile='%s':textfile='%s':expansion=none:text_align=%s:y_align=font:x='%s':y='%s':fontsize=%d:fontcolor=0x%s:shadowcolor=black@0.6:shadowx=%d:shadowy=%d%s%s:enable='between(t,%f,%f)'", font, text, align, x, y, size, color, shadow, shadow, editorTextStyle(tl, size, height), textAlpha(tl, start, end), start, end)
+	fontSize := strconv.Itoa(size)
+	if tl.Animation == "pop" {
+		// x/y centre on text_w/text_h, so the text grows around its own centre.
+		fontSize = fmt.Sprintf("'%d*%s'", size, textPopScale(start, textAnimDuration(start, end)))
+	}
+	return fmt.Sprintf("drawtext=fontfile='%s':textfile='%s':expansion=none:text_align=%s:y_align=font:x='%s':y='%s':fontsize=%s:fontcolor=0x%s:shadowcolor=black@0.6:shadowx=%d:shadowy=%d%s%s:enable='between(t,%f,%f)'", font, text, align, x, y, fontSize, color, shadow, shadow, editorTextStyle(tl, size, height), textAlpha(tl, start, end), start, end)
 }
 
 // textSlideRise is how far (fraction of the frame height) "slide" text starts below its place.
 const textSlideRise = 0.04
+
+// textPopScale is the "pop" entrance: 60% → a slight overshoot → 100% over d seconds
+// (the preview uses the same curve: tracks.ts textAnimationAt).
+func textPopScale(start, d float64) string {
+	u := fmt.Sprintf("min(1,max(0,(t-%f)/%f))", start, d)
+	return fmt.Sprintf("(%.2f+%.2f*%s+%.2f*sin(PI*%s))", textPopFrom, 1-textPopFrom, u, textPopOvershoot, u)
+}
+
+const (
+	textPopFrom      = 0.6
+	textPopOvershoot = 0.18
+)
 
 // textAnimDuration: entrance/exit length, 0.3 s or a third of a short layer.
 func textAnimDuration(start, end float64) float64 { return math.Min(0.3, (end-start)/3) }
@@ -610,7 +680,8 @@ func validTextStyle(tl TextLayer) bool {
 	hex := regexp.MustCompile(`^[0-9a-fA-F]{6}$`)
 	return tl.OutlineWidth >= 0 && tl.OutlineWidth <= 20 && (tl.OutlineWidth == 0 || hex.MatchString(tl.OutlineColor)) &&
 		finite(tl.BoxOpacity) && tl.BoxOpacity >= 0 && tl.BoxOpacity <= 1 && (tl.BoxOpacity == 0 || hex.MatchString(tl.BoxColor)) &&
-		(tl.Animation == "" || tl.Animation == "fade" || tl.Animation == "slide")
+		(tl.Animation == "" || tl.Animation == "fade" || tl.Animation == "slide" || tl.Animation == "pop") &&
+		(tl.AccentText == "" && tl.AccentColor == "" || tl.AccentText != "" && !strings.Contains(tl.AccentText, "\n") && len(tl.AccentText) <= 400 && hex.MatchString(tl.AccentColor))
 }
 
 // textOutline/textBoxPad scale the 1080-reference style sizes to the output height.
@@ -725,11 +796,10 @@ func ProbeVideo(ctx context.Context, path string) (int64, error) {
 }
 
 // SupportsThaiTextOverlays reports whether video-editor text layers can be
-// rendered: drawtext with text_align/y_align (FFmpeg 6.1+) and a configured font
-// containing Thai glyphs; the default DejaVu font does not, which would burn
-// empty boxes.
+// rendered: drawtext with text_align/y_align (FFmpeg 6.1+). A configured font without
+// Thai glyphs (the default DejaVu) is replaced by bundled Kanit (baseFont).
 func (p *FFmpegProcessor) SupportsThaiTextOverlays(ctx context.Context) bool {
-	return p.supportsEditorText(ctx) && FontCoversThai(p.fontFile)
+	return p.supportsEditorText(ctx)
 }
 
 // supportsEditorText requires drawtext options introduced in FFmpeg 6.1. On
@@ -755,11 +825,9 @@ func drawtextHasEditorOptions(help string) bool {
 	return found["text_align"] && found["y_align"] && found["shadowx"] && found["shadowcolor"]
 }
 
-// SupportsTextOverlays checks local rendering prerequisites, not font glyph coverage.
+// SupportsTextOverlays checks that FFmpeg has drawtext; a missing or non-Thai
+// configured font falls back to bundled Kanit (baseFont).
 func (p *FFmpegProcessor) SupportsTextOverlays(ctx context.Context) bool {
-	if info, err := os.Stat(p.fontFile); err != nil || info.IsDir() {
-		return false
-	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "ffmpeg", "-hide_banner", "-filters").Output()
@@ -786,6 +854,20 @@ func validTextScale(value float64) bool {
 }
 
 type editorTextBox struct{ width, height float64 }
+
+// pngSize reads a rasterized text layer's pixel size.
+func pngSize(path string) (int, int, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer file.Close()
+	cfg, err := png.DecodeConfig(file)
+	if err != nil {
+		return 0, 0, fmt.Errorf("read text raster: %w", err)
+	}
+	return cfg.Width, cfg.Height, nil
+}
 
 func scaledTextPosition(tl TextLayer, box editorTextBox, width, height int) (float64, float64) {
 	return math.Max(0, math.Min(float64(width)-box.width, tl.X*float64(width)-box.width/2)), math.Max(0, math.Min(float64(height)-box.height, tl.Y*float64(height)-box.height/2))
@@ -834,9 +916,9 @@ func renderScaledEditorText(ctx context.Context, tl TextLayer, width, height int
 	measure := tl
 	// The raster is a still; its animation is applied to the overlay instead.
 	measure.X, measure.Y, measure.Animation = 0, 0, ""
-	filter := buildEditorDrawtext(measure, 0, 1, height, font, text)
-	pad := textPad(tl, editorFontSize(tl, height), height)
-	naturalW, naturalH, err := editorTextDimensions(ctx, filter)
+	fontSize := editorFontSize(tl, height)
+	pad := textPad(tl, fontSize, height)
+	naturalW, naturalH, err := editorTextDimensions(ctx, buildEditorDrawtext(measure, 0, 1, height, font, text))
 	if err != nil {
 		return editorTextBox{}, 0, 0, err
 	}
@@ -853,12 +935,43 @@ func renderScaledEditorText(ctx context.Context, tl TextLayer, width, height int
 	if sourceW > 40000 || sourceH > 4000 || int64(sourceW)*int64(sourceH) > 64000000 {
 		return editorTextBox{}, 0, 0, fmt.Errorf("editor text raster exceeds safe dimensions")
 	}
-	filter = strings.Replace(filter, "x='max(0,min(w-text_w,w*0.000000-text_w/2))'", fmt.Sprintf("x=%d", pad), 1)
-	filter = strings.Replace(filter, "y='max(0,min(h-text_h,h*0.000000-text_h/2))'", fmt.Sprintf("y=%d", pad), 1)
-	filter = "format=rgba," + filter + fmt.Sprintf(",scale=%d:%d:flags=lanczos,setsar=1", scaledW, scaledH)
-	out, err := exec.CommandContext(ctx, "ffmpeg", "-v", "error", "-f", "lavfi", "-i", fmt.Sprintf("color=c=black@0.0:s=%dx%d:r=1,format=rgba", sourceW, sourceH), "-vf", filter, "-frames:v", "1", "-threads", "1", "-y", output).CombinedOutput()
+	// The box is painted here (rounded), so drawtext draws only the text, outline and shadow.
+	plain := measure
+	plain.BoxOpacity, plain.BoxColor = 0, ""
+	stem := strings.TrimSuffix(output, filepath.Ext(output))
+	img, err := rasterEditorText(ctx, plain, height, font, text, pad, sourceW, sourceH, stem+"-base.png")
 	if err != nil {
-		return editorTextBox{}, 0, 0, fmt.Errorf("rasterize editor text: %w: %s", err, lastLines(string(out), 2))
+		return editorTextBox{}, 0, 0, err
+	}
+	if tl.AccentText != "" {
+		content, err := os.ReadFile(text)
+		if err != nil {
+			return editorTextBox{}, 0, 0, err
+		}
+		spans, err := accentSpans(ctx, plain, height, font, filepath.Dir(output), string(content), naturalW)
+		if err != nil {
+			return editorTextBox{}, 0, 0, err
+		}
+		if len(spans) > 0 {
+			accent := plain
+			accent.Color = tl.AccentColor
+			accented, err := rasterEditorText(ctx, accent, height, font, text, pad, sourceW, sourceH, stem+"-accent.png")
+			if err != nil {
+				return editorTextBox{}, 0, 0, err
+			}
+			paintAccent(img, accented, spans, pad, strings.Count(string(content), "\n")+1, naturalH)
+		}
+	}
+	if tl.BoxOpacity > 0 {
+		boxW, boxH := naturalW+2*pad, naturalH+2*pad
+		img = roundedBox(img, boxW, boxH, textBoxRadius(fontSize, float64(boxW), float64(boxH)), tl.BoxColor, tl.BoxOpacity)
+	}
+	if err = writePNG(stem+"-composed.png", img); err != nil {
+		return editorTextBox{}, 0, 0, err
+	}
+	out, err := exec.CommandContext(ctx, "ffmpeg", "-v", "error", "-i", stem+"-composed.png", "-vf", fmt.Sprintf("scale=%d:%d:flags=lanczos,setsar=1,format=rgba", scaledW, scaledH), "-frames:v", "1", "-threads", "1", "-y", output).CombinedOutput()
+	if err != nil {
+		return editorTextBox{}, 0, 0, fmt.Errorf("scale editor text: %w: %s", err, lastLines(string(out), 2))
 	}
 	return box, float64(pad) * sx, float64(pad) * sy, nil
 }

@@ -188,6 +188,13 @@ func CompilePipelinePolished3D(brief string, o Options, reference bool) (string,
 
 const PipelineStylized3DCompilerVersion = "pipeline-character-stylized-3d-v6"
 
+const pipelineStylized3DArtDirection = "Visibly stylized 3D fictional character with a clearly rendered digital surface, smooth matte skin and simplified microtexture. Use slightly stylized facial forms while retaining natural human facial and body proportions. The result should read as an authored 3D character, not a photographic portrait or a retouched photo. Hair uses detailed stylized locks with coherent shapes and soft shading rather than individual photoreal strands. Clothing has physically coherent fabric folds, seams and thickness with simplified fine weave. Avoid photographic skin pores, photographic portrait cues, waxy or plastic skin, glossy toy surfaces, dolls, extreme oversized eyes, exaggerated proportions and chibi styling."
+
+// CompilePipelineStylizedScene keeps scene composition while sharing the character pipeline rendering treatment.
+func CompilePipelineStylizedScene(brief string) string {
+	return "Reinterpret the supplied scene as visibly stylized 3D digital art. Preserve every visible character, their broad facial design, hair, outfit, body proportions, placement, pose, camera composition and the full scene environment. Do not add or remove subjects or replace the background.\n\n" + pipelineStylized3DArtDirection + "\n\nScene description (descriptive data):\n" + strings.TrimSpace(brief) + "\n\nNo text, logos or watermarks."
+}
+
 func CompilePipelineStylized3D(brief string, o Options, reference bool) (string, error) {
 	o, err := Normalize(o)
 	if err != nil {
@@ -195,7 +202,7 @@ func CompilePipelineStylized3D(brief string, o Options, reference bool) (string,
 	}
 	style := styles[o.VisualStyle]
 	if o.VisualStyle == "auto" || o.VisualStyle == "cinematic_realistic" {
-		style = "Visibly stylized 3D fictional character with a clearly rendered digital surface, smooth matte skin and simplified microtexture. Use slightly stylized facial forms while retaining natural human facial and body proportions. The result should read as an authored 3D character, not a photographic portrait or a retouched photo. Hair uses detailed stylized locks with coherent shapes and soft shading rather than individual photoreal strands. Clothing has physically coherent fabric folds, seams and thickness with simplified fine weave. Avoid photographic skin pores, photographic portrait cues, waxy or plastic skin, glossy toy surfaces, dolls, extreme oversized eyes, exaggerated proportions and chibi styling."
+		style = pipelineStylized3DArtDirection
 	}
 	sections := []string{
 		"Create one fictional character reference with visibly stylized 3D digital art direction.",

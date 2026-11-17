@@ -23,6 +23,9 @@ import (
 
 var ErrDraftExpired = errors.New("draft task expired")
 
+// ErrVideoPromptBudget is exposed at the facade boundary for HTTP error mapping.
+var ErrVideoPromptBudget = promptcompiler.ErrPromptBudget
+
 // ProviderSubmissionError carries only the sanitized diagnostic across the facade boundary.
 type ProviderSubmissionError struct {
 	code    string

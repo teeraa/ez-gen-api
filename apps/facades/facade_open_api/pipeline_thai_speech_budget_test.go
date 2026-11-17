@@ -5,7 +5,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"unicode/utf8"
 
 	"github.com/ez-gen/ez-gen-api/apps/services/modelark"
 	"github.com/ez-gen/ez-gen-api/apps/services/promptcompiler"
@@ -24,20 +23,28 @@ func TestPipelineThaiSpeechBudgetMatchesCompilerPreflight(t *testing.T) {
 			if e != nil {
 				t.Fatal(e)
 			}
-			length := 2000 - utf8.RuneCountInString(result.CompiledPrompt) + 1
+			length := 2000
 			if over {
 				length++
 			}
 			in.ScenePrompt = strings.Repeat("ก", length)
+			if used, limit := promptcompiler.PromptUsage(pipelineCompileInputs(in), model); used > limit {
+				t.Fatal("public raw boundary unexpectedly exceeds compiled budget")
+			}
+			_ = result
+
 			_, e = f.Create(context.Background(), user, in)
 			if !over {
 				if e != nil {
-					t.Fatalf("valid exact-boundary request rejected: %v", e)
+					t.Fatalf("valid raw-boundary request rejected: %v", e)
+				}
+				if memory.p == nil || images.calls != 0 || videos.calls != 0 {
+					t.Fatal("accepted raw-boundary request lost snapshot or generated work early")
 				}
 				return
 			}
 			var validation *PipelineValidationError
-			if !errors.As(e, &validation) || validation.Field != "scenePrompt" || validation.Reason != "prompt_budget" {
+			if !errors.As(e, &validation) || validation.Field != "scenePrompt" || validation.Reason != "too_long" {
 				t.Fatalf("missing actionable preflight %v", e)
 			}
 			if memory.p != nil || images.calls != 0 || videos.calls != 0 {

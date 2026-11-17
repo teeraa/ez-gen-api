@@ -569,7 +569,9 @@ func storyDefinitiveImageError(e error) (*modelark.ImageError, bool) {
 		return nil, false
 	}
 	d := modelark.ImageFailureDiagnostic(e)
-	definitive := d.HTTPStatus >= 400 && d.HTTPStatus < 500
+	// Image generation is synchronous: any HTTP error answer from the provider means no image was
+	// produced. Only transport failures and timeouts (no status) stay uncertain.
+	definitive := d.HTTPStatus >= 400
 	switch d.ProviderCode {
 	case "InputTextSensitiveContentDetected", "InputImageSensitiveContentDetected", "OutputImageSensitiveContentDetected", "InvalidParameter", "MissingParameter", "InvalidRequest", "AuthenticationError", "Unauthorized", "AccessDenied", "ModelNotFound", "QuotaExceeded", "InsufficientBalance", "RateLimit", "RateLimitExceeded":
 		definitive = true

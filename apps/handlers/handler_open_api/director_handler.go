@@ -49,6 +49,13 @@ func (h *DirectorHandler) RegisterRoutes(r fiber.Router) {
 		}
 		return utils.Success(c, 200, v)
 	})
+	g.Get("/projects/:id/experiments", func(c *fiber.Ctx) error {
+		v, e := h.facade.Experiments(c.Context(), c.Params("id"), productionUser(c))
+		if e != nil {
+			return directorHTTPError(c, e)
+		}
+		return utils.Success(c, 200, v)
+	})
 	g.Get("/projects/:id", func(c *fiber.Ctx) error {
 		v, etag, e := h.facade.Get(c.Context(), c.Params("id"), productionUser(c))
 		if e != nil {
@@ -76,6 +83,7 @@ func (h *DirectorHandler) RegisterRoutes(r fiber.Router) {
 		}
 		return utils.Success(c, 201, v)
 	})
+	h.registerSeries(g, rate)
 	for _, route := range []struct{ Method, Path, Action string }{
 		{"PATCH", "/projects/:id", "project"}, {"DELETE", "/projects/:id", "delete"}, {"PUT", "/projects/:id/idea", "idea"},
 		{"POST", "/projects/:id/cover", "cover-generate"}, {"PUT", "/projects/:id/cover", "cover-shot"}, {"DELETE", "/projects/:id/cover", "cover-delete"},
@@ -158,4 +166,76 @@ func directorHTTPError(c *fiber.Ctx, e error) error {
 	default:
 		return utils.Error(c, 500, "INTERNAL_ERROR", "เกิดข้อผิดพลาด กรุณาลองใหม่พร้อมแจ้งรหัสคำขอ", nil)
 	}
+}
+
+func directorPage(c *fiber.Ctx) (int, int, error) {
+	page, e := strconv.Atoi(c.Query("page", "1"))
+	if e != nil {
+		return 0, 0, &f.StoryFlowValidationError{Field: "page", Message: "เลขหน้าไม่ถูกต้อง"}
+	}
+	limit, e := strconv.Atoi(c.Query("limit", "20"))
+	if e != nil {
+		return 0, 0, &f.StoryFlowValidationError{Field: "limit", Message: "จำนวนรายการไม่ถูกต้อง"}
+	}
+	return page, limit, nil
+}
+func (h *DirectorHandler) registerSeries(g fiber.Router, rate fiber.Handler) {
+	g.Get("/series", func(c *fiber.Ctx) error {
+		page, limit, e := directorPage(c)
+		if e != nil {
+			return directorHTTPError(c, e)
+		}
+		v, e := h.facade.ListSeries(c.Context(), productionUser(c), c.Query("mode", "director"), page, limit)
+		if e != nil {
+			return directorHTTPError(c, e)
+		}
+		return utils.Success(c, 200, v)
+	})
+	g.Post("/series", rate, func(c *fiber.Ctx) error {
+		var in req.DirectorSeriesRequest
+		if e := storyFlowBody(c, &in); e != nil {
+			return directorHTTPError(c, e)
+		}
+		v, e := h.facade.CreateSeries(c.Context(), productionUser(c), in)
+		if e != nil {
+			return directorHTTPError(c, e)
+		}
+		return utils.Success(c, 201, v)
+	})
+	g.Get("/series/:id", func(c *fiber.Ctx) error {
+		v, e := h.facade.GetSeries(c.Context(), c.Params("id"), productionUser(c))
+		if e != nil {
+			return directorHTTPError(c, e)
+		}
+		c.Set("Cache-Control", "private, no-cache")
+		return utils.Success(c, 200, v)
+	})
+	g.Patch("/series/:id", rate, func(c *fiber.Ctx) error {
+		var in req.DirectorSeriesRequest
+		if e := storyFlowBody(c, &in); e != nil {
+			return directorHTTPError(c, e)
+		}
+		v, e := h.facade.UpdateSeries(c.Context(), c.Params("id"), productionUser(c), in)
+		if e != nil {
+			return directorHTTPError(c, e)
+		}
+		return utils.Success(c, 200, v)
+	})
+	g.Delete("/series/:id", rate, func(c *fiber.Ctx) error {
+		if e := h.facade.DeleteSeries(c.Context(), c.Params("id"), productionUser(c)); e != nil {
+			return directorHTTPError(c, e)
+		}
+		return c.SendStatus(204)
+	})
+	g.Post("/series/:id/episodes", rate, func(c *fiber.Ctx) error {
+		var in req.DirectorEpisodeRequest
+		if e := storyFlowBody(c, &in); e != nil {
+			return directorHTTPError(c, e)
+		}
+		v, e := h.facade.CreateEpisode(c.Context(), c.Params("id"), productionUser(c), in)
+		if e != nil {
+			return directorHTTPError(c, e)
+		}
+		return utils.Success(c, 201, v)
+	})
 }

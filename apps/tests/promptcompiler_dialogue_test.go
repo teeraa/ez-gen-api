@@ -23,14 +23,15 @@ func TestNativeDialogueExactAndBudget(t *testing.T) {
 		t.Fatal(e)
 	}
 	quoted, _ := json.Marshal(speech)
-	if !r.GenerateAudio || !strings.Contains(r.CompiledPrompt, string(quoted)) || !strings.Contains(r.CompiledPrompt, "เดินในสวน") || r.Snapshot.Dialogue != speech || utf8.RuneCountInString(r.CompiledPrompt) > 2000 || len(r.ContentItems) != 2 || r.ContentItems[1].Role != modelark.RoleReferenceImage {
+	if !r.GenerateAudio || !strings.Contains(r.CompiledPrompt, string(quoted)) || !strings.Contains(r.CompiledPrompt, "เดินในสวน") || r.Snapshot.Dialogue != speech || utf8.RuneCountInString(r.CompiledPrompt) > promptcompiler.VideoPromptRuneLimit || len(r.ContentItems) != 2 || r.ContentItems[1].Role != modelark.RoleReferenceImage {
 		t.Fatalf("lost native dialogue %+v", r)
 	}
-	in.Scene.Description = strings.Repeat("ก", 2000)
+	in.Scene.Description = strings.Repeat("ก", promptcompiler.VideoPromptRuneLimit)
 	if _, e = promptcompiler.Compile(in, m); e == nil {
 		t.Fatal("silent scene truncation")
 	}
 	in.Dialogue = ""
+	in.Scene.Description = "เดินในสวน"
 	r, e = promptcompiler.Compile(in, m)
 	if e != nil || r.GenerateAudio {
 		t.Fatal("legacy default changed", e)
