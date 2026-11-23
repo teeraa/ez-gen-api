@@ -13,6 +13,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -52,6 +53,29 @@ func filmBoundVoice(el *models.FilmElement) *models.CharacterVoice {
 		return nil
 	}
 	return models.DecodeCharacterVoice(el.Voice)
+}
+
+// filmVoiceRequired is returned when a shot's character has no voice yet.
+func filmVoiceRequired(name string) error {
+	return &DirectorError{Status: 422, Code: "VOICE_REQUIRED", Message: "ตัวละคร “" + name + "” ยังไม่มีเสียง กรุณาเลือกเสียงในขั้นองค์ประกอบก่อน"}
+}
+
+// filmPlanVoiceGuide lists the preset voices the planner may give a new character.
+func filmPlanVoiceGuide() string {
+	var b strings.Builder
+	for _, p := range voicePresets {
+		fmt.Fprintf(&b, "%s (%s), ", p.ID, p.Prompt)
+	}
+	return strings.TrimSuffix(b.String(), ", ")
+}
+
+// filmPlanVoice turns the planner's preset pick into a stored voice; nil for an unknown id.
+func filmPlanVoice(id string) []byte {
+	p, ok := findVoicePreset(strings.ToLower(strings.TrimSpace(id)))
+	if !ok {
+		return nil
+	}
+	return models.EncodeCharacterVoice(&models.CharacterVoice{VoiceID: p.ID, VoiceName: p.Name, Kind: "preset", Emotion: "ปกติ", Speed: 1})
 }
 
 // filmVoiceLines lists the shot's dialogue spoken by characters that have a bound voice.

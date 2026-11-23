@@ -75,6 +75,8 @@ type filmPlanElement struct {
 	Kind string `json:"kind"`
 	Name string `json:"name"`
 	Spec string `json:"spec"`
+	// Voice is a preset voice id the planner picks for a new character.
+	Voice string `json:"voice,omitempty"`
 }
 type filmPlanOutput struct {
 	Reply    string            `json:"reply"`
@@ -250,11 +252,17 @@ const filmPlanRules = `Rules:
 - Shots: "action" is beat-by-beat motion in 40-120 English words naming characters by their element names; "camera" states shot size, angle and movement; list every visible character in "characters" (at most 4) and place them clearly; show at most two faces clearly and never stage faces touching; dialogue speakers must be listed in the shot's characters; "audio" lists sound effects, ambience and music mood.
 - Think in scenes. A scene is one continuous moment in one location, usually told in 2-4 shots. Give every shot a "scene" number (1, 2, 3...). Shots after the first in a scene start exactly on the previous shot's last frame; a new angle, time or place starts a new scene. Each shot must add a new story beat; never write two near-identical shots in a row.
 - Cast: every person or group who acts, fights, speaks or is acted upon on screen is listed in "characters"; never describe an off-screen attacker, opponent or crowd. Inside a scene, everyone visible at the end of a shot is still listed in the next shot unless the action shows them leave. A crowd that must be seen (villagers, an army) is its own character element.
+- Voices: every new character element gets "voice", the id of the preset voice that best fits its gender, age and personality. Presets: %VOICES%.
 - Props: an object a character holds stays in the same hands for the rest of the scene and is listed in every shot where it is visible; a boat sits in water, a ladder leans on a wall, and every object obeys real physics.
 - Action: at most two clear beats per shot that a real stunt performer could do in its seconds; no superhuman leaps or acrobatics.
 ` + filmCameraRules + `
 - Every shot is 4 to 15 seconds.
 - You only write the plan. You cannot render images or video: if the user asks for a video or draft, plan or edit the shots and say in the reply that they can press the draft button for those shots.`
+
+// filmPlanRulesText is filmPlanRules with the preset voice list filled in.
+func filmPlanRulesText() string {
+	return strings.ReplaceAll(filmPlanRules, "%VOICES%", filmPlanVoiceGuide())
+}
 
 func filmPlanPrompt(in *filmPlanJob) string {
 	ctx, _ := json.Marshal(struct {
@@ -278,15 +286,15 @@ func filmPlanPrompt(in *filmPlanJob) string {
 			total += sh.Seconds
 		}
 		fmt.Fprintf(&b, "The episode is currently %d seconds long in %d shots.\n", total, len(in.Shots))
-		b.WriteString(filmPlanRules + "\n")
-		b.WriteString(`Return exactly JSON: {"reply":"Thai, 1-3 sentences telling the user what you changed","title":"Thai, only if the story changed","logline":"","synopsis":"","theme":"","elements":[{"kind":"character|location|prop","name":"Thai","spec":"English, <=600 chars"}],"shots":[{"keep":1,"scene":1},` + shotJSON + `]}` + "\n")
+		b.WriteString(filmPlanRulesText() + "\n")
+		b.WriteString(`Return exactly JSON: {"reply":"Thai, 1-3 sentences telling the user what you changed","title":"Thai, only if the story changed","logline":"","synopsis":"","theme":"","elements":[{"kind":"character|location|prop","name":"Thai","spec":"English, <=600 chars","voice":"preset id, characters only"}],"shots":[{"keep":1,"scene":1},` + shotJSON + `]}` + "\n")
 	} else if in.ShotID == "" {
 		fmt.Fprintf(&b, "Task: plan the whole episode from the user's request. Total length must be exactly %d seconds (the sum of all shot seconds), so plan about %d shots of 5-12 seconds each; never pad with long static shots.\n", in.TargetSeconds, filmPlanShotCount(in.TargetSeconds))
-		b.WriteString(filmPlanRules + "\n")
-		b.WriteString(`Return exactly JSON: {"reply":"Thai, 1-3 sentences telling the user what you made","title":"Thai","logline":"Thai","synopsis":"Thai, <=800 chars","theme":"Thai","elements":[{"kind":"character|location|prop","name":"Thai","spec":"English, <=600 chars"}],"shots":[` + shotJSON + `]}` + "\n")
+		b.WriteString(filmPlanRulesText() + "\n")
+		b.WriteString(`Return exactly JSON: {"reply":"Thai, 1-3 sentences telling the user what you made","title":"Thai","logline":"Thai","synopsis":"Thai, <=800 chars","theme":"Thai","elements":[{"kind":"character|location|prop","name":"Thai","spec":"English, <=600 chars","voice":"preset id, characters only"}],"shots":[` + shotJSON + `]}` + "\n")
 	} else {
 		fmt.Fprintf(&b, "Task: rewrite only shot number %d (1-based) following the user's instruction. Keep its seconds unless asked. Use only existing elements, plus new ones in \"elements\" if the instruction needs them. Keep continuity with the neighboring shots.\n", in.ShotIndex+1)
-		b.WriteString(filmPlanRules + "\n")
+		b.WriteString(filmPlanRulesText() + "\n")
 		b.WriteString(`Return exactly JSON: {"reply":"Thai, 1-2 sentences","elements":[],"shot":{"transition":"cut|continue","seconds":5,"characters":["names"],"location":"name","props":["names"],"action":"English","camera":"English","dialogue":[{"speaker":"name","line":"Thai","delivery":"English"}],"audio":"English"}}` + "\n")
 	}
 	fmt.Fprintf(&b, "Current episode data: %s\n", ctx)
@@ -483,6 +491,9 @@ func (f *FilmFacade) planJob(c context.Context, j *models.FilmJob) error {
 			}
 			now := time.Now().UTC()
 			el := models.FilmElement{Base: models.Base{ID: uuid.New(), CreatedAt: now, UpdatedAt: now}, UserID: j.UserID, SeriesID: j.SeriesID, Kind: pe.Kind, Name: name, Spec: directorClipRunes(strings.TrimSpace(pe.Spec), filmSpecMax), ImageStatus: "idle", Revision: 1}
+			if pe.Kind == "character" {
+				el.Voice = filmPlanVoice(pe.Voice)
+			}
 			created = append(created, el)
 			names[key] = el.ID.String()
 		}

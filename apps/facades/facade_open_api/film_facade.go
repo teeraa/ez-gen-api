@@ -937,6 +937,12 @@ func (f *FilmFacade) RequestVideo(c context.Context, projectID, shotID, user str
 				return nil, &DirectorError{Status: 409, Code: "ELEMENT_NOT_READY", Message: "มีของในช็อตนี้ที่ถูกลบไปแล้ว กรุณาแก้ช็อตก่อน"}
 			}
 		}
+		// Every character keeps one voice across the film, so a shot waits until its whole cast has one.
+		for _, el := range cast {
+			if filmBoundVoice(el) == nil {
+				return nil, filmVoiceRequired(el.Name)
+			}
+		}
 		if sh.LocationID != "" && location == nil {
 			return nil, &DirectorError{Status: 409, Code: "ELEMENT_NOT_READY", Message: "สถานที่ของช็อตนี้ถูกลบไปแล้ว กรุณาแก้ช็อตก่อน"}
 		}

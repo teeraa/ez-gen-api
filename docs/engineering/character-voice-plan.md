@@ -71,6 +71,15 @@ No extra step for the user: requesting a shot video (draft, full or finalize) al
 
 Speakers without a voice keep the provider's own speech.
 
+## Film: every character has a voice (2026-11-23)
+
+- `RequestVideo` (draft/full) returns 422 `VOICE_REQUIRED` when a character in the shot has no voice;
+  finalize is exempt (its draft already passed). The Web blocks the same shots and flags voiceless
+  characters in the elements step.
+- The planner gives each new character a preset voice (`elements[].voice`, preset id; unknown ids are
+  ignored, so the character is flagged instead).
+- The picker can design a new voice in place (`POST /voice/profiles/design`, free) and binds it.
+
 ## Phase 3 — director (later)
 
 Director shots have no dialogue yet. Needs a `dialogue[]` field on shots + planner prompt change first; then the same pipeline as Phase 2.
