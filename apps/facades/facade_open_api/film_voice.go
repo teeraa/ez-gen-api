@@ -7,6 +7,7 @@ package facade_open_api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -48,6 +49,20 @@ type filmVoiceLine struct {
 	Text      string                `json:"text"`
 	Delivery  string                `json:"delivery,omitempty"`
 	Voice     models.CharacterVoice `json:"voice"`
+	// Scene is what happens in the shot, so the line is performed for its moment.
+	Scene string `json:"scene,omitempty"`
+}
+
+// performance is the note the voice model gets (never read aloud): delivery and the shot's moment.
+func (l filmVoiceLine) performance() string {
+	parts := []string{}
+	if d := strings.TrimSpace(l.Delivery); d != "" {
+		parts = append(parts, d)
+	}
+	if s := strings.TrimSpace(l.Scene); s != "" {
+		parts = append(parts, "Scene: "+s)
+	}
+	return strings.Join(parts, ". ")
 }
 
 // filmBoundVoice is the voice of a character element, or nil.
@@ -86,7 +101,12 @@ func filmVoiceLines(sh *filmShot, byID map[string]*models.FilmElement) []filmVoi
 	out := []filmVoiceLine{}
 	for _, l := range sh.Dialogue {
 		if v := filmBoundVoice(byID[l.SpeakerID]); v != nil && l.Line != "" {
-			out = append(out, filmVoiceLine{SpeakerID: l.SpeakerID, Text: l.Line, Delivery: l.Delivery, Voice: *v})
+			voice := *v
+			if l.Emotion != "" {
+				// The line's emotion (chosen for this shot) wins over the character's default.
+				voice.Emotion, voice.TemplateID = l.Emotion, ""
+			}
+			out = append(out, filmVoiceLine{SpeakerID: l.SpeakerID, Text: l.Line, Delivery: l.Delivery, Voice: voice, Scene: directorTruncate(sh.Action, 220)})
 		}
 	}
 	return out
@@ -151,7 +171,7 @@ func (f *FilmFacade) speakLines(c context.Context, user, shotID string, voices [
 	out := []filmDubbed{}
 	at := filmDubLead
 	for i, l := range voices {
-		audio, e := f.voices.SpeakLine(c, user, l.Voice, l.Text, l.Delivery)
+		audio, e := f.voices.SpeakLine(c, user, l.Voice, l.Text, l.performance())
 		if errors.Is(e, ErrValidation) {
 			log.Printf("film: shot=%s line %d skipped, voice %s no longer available", shotID, i, l.Voice.VoiceID)
 			continue
@@ -240,4 +260,132 @@ func (f *FilmFacade) filmStoreLines(c context.Context, prefix string, lines []fi
 		out = append(out, l.filmDubLine)
 	}
 	return out, nil
+}
+
+// prepareDialogue (voice first) generates the job's lines before the video, stores each line and
+// the whole dialogue track (lines at their times on a silent track as long as the shot), and
+// records them in the task so a retry never pays for the voices twice.
+func (f *FilmFacade) prepareDialogue(c context.Context, j *models.FilmJob, in *filmVideoJob, task *filmVideoTask) error {
+	if f.voices == nil || f.storage == nil {
+		return fmt.Errorf("voice not configured")
+	}
+	dir, e := os.MkdirTemp("", "film-voice-first-*")
+	if e != nil {
+		return fmt.Errorf("%w: %v", errFilmDubRetry, e)
+	}
+	defer os.RemoveAll(dir)
+	prefix := fmt.Sprintf("film/%s/%s/%s/%s", j.UserID, *j.ProjectID, in.ShotID, j.ID)
+	lines := task.OwnedLines
+	if len(lines) == 0 {
+		spoken, e := f.speakLines(c, j.UserID.String(), in.ShotID, in.Voices, dir)
+		if e != nil {
+			return e
+		}
+		if len(spoken) == 0 {
+			return nil
+		}
+		if lines, e = f.filmStoreLines(c, prefix, spoken); e != nil {
+			return fmt.Errorf("%w: store lines: %v", errFilmDubRetry, e)
+		}
+		task.OwnedLines = lines
+		if e = f.recordTask(c, j, task); e != nil {
+			return e
+		}
+	}
+	placed, e := f.fetchLines(c, lines, dir)
+	if e != nil {
+		return e
+	}
+	tracks := make([]videoprocessing.AudioTrack, 0, len(placed))
+	for _, l := range placed {
+		if l.At >= float64(in.Seconds) {
+			continue
+		}
+		tracks = append(tracks, videoprocessing.AudioTrack{Path: l.Path, TrimEnd: math.Min(l.Seconds, float64(in.Seconds)-l.At), At: l.At, Volume: 1})
+	}
+	if len(tracks) == 0 {
+		return nil
+	}
+	track, e := videoprocessing.MixAudio(c, tracks, float64(in.Seconds))
+	if e != nil {
+		return fmt.Errorf("%w: dialogue track: %v", errFilmDubRetry, e)
+	}
+	key := prefix + "-dialogue.wav"
+	if e = f.storage.Upload(c, key, track, "audio/wav"); e != nil {
+		return fmt.Errorf("%w: store dialogue track: %v", errFilmDubRetry, e)
+	}
+	task.DialogueKey = key
+	return f.recordTask(c, j, task)
+}
+
+// fetchLines downloads stored lines into dir for mixing.
+func (f *FilmFacade) fetchLines(c context.Context, lines []filmDubLine, dir string) ([]filmDubbed, error) {
+	if f.options.MusicFetch == nil {
+		return nil, fmt.Errorf("audio fetch not configured")
+	}
+	out := make([]filmDubbed, 0, len(lines))
+	for i, l := range lines {
+		u, _, e := f.storage.SignedURL(c, l.Key, 30*time.Minute)
+		var data []byte
+		if e == nil {
+			data, _, e = f.options.MusicFetch(c, u)
+		}
+		if e != nil {
+			return nil, fmt.Errorf("%w: line %d: %v", errFilmDubRetry, i, e)
+		}
+		path := filepath.Join(dir, fmt.Sprintf("stored-%02d.mp3", i))
+		if e = os.WriteFile(path, data, 0o600); e != nil {
+			return nil, fmt.Errorf("%w: %v", errFilmDubRetry, e)
+		}
+		out = append(out, filmDubbed{filmDubLine: l, Path: path})
+	}
+	return out, nil
+}
+
+// mixStoredLines mixes already stored lines over a clip at their times.
+func (f *FilmFacade) mixStoredLines(c context.Context, in *filmVideoJob, lines []filmDubLine, clip []byte) ([]byte, error) {
+	if f.options.Processor == nil {
+		return clip, nil
+	}
+	dir, e := os.MkdirTemp("", "film-mix-*")
+	if e != nil {
+		return nil, e
+	}
+	defer os.RemoveAll(dir)
+	clipPath := filepath.Join(dir, "clip.mp4")
+	if e = os.WriteFile(clipPath, clip, 0o600); e != nil {
+		return nil, e
+	}
+	placed, e := f.fetchLines(c, lines, dir)
+	if e != nil {
+		return nil, e
+	}
+	length, e := videoprocessing.MediaDuration(c, clipPath)
+	if e != nil {
+		return nil, e
+	}
+	kept := placed[:0]
+	for _, l := range placed {
+		if l.At < length-0.05 {
+			l.Seconds = math.Min(l.Seconds, length-l.At)
+			kept = append(kept, l)
+		}
+	}
+	if len(kept) == 0 {
+		return clip, nil
+	}
+	return f.mixLines(c, clipPath, kept, in.Resolution, in.Ratio, in.Draft)
+}
+
+// recordTask stores the task state before the next paid or slow step.
+func (f *FilmFacade) recordTask(c context.Context, j *models.FilmJob, task *filmVideoTask) error {
+	raw, e := json.Marshal(task)
+	if e != nil {
+		return e
+	}
+	if e = f.store.RecordOutput(c, j, raw); e != nil {
+		return e
+	}
+	j.Output = raw
+	return nil
 }

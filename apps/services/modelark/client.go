@@ -165,6 +165,9 @@ func toSDKContent(items []ContentItem) []contentgeneration.ContentItem {
 				Value: contentgeneration.VideoURL{URL: item.URL},
 				Set:   true,
 			}
+		case ContentTypeAudioURL:
+			ci.Type = contentgeneration.ContentTypeAudioURL
+			ci.AudioURL = contentgeneration.NewOptAudioURL(contentgeneration.AudioURL{URL: item.URL})
 		default:
 			continue
 		}

@@ -54,6 +54,7 @@ type filmPlanLine struct {
 	Speaker  string `json:"speaker"`
 	Line     string `json:"line"`
 	Delivery string `json:"delivery"`
+	Emotion  string `json:"emotion,omitempty"`
 }
 type filmPlanShot struct {
 	// No is an existing shot's 1-based number (context only); Keep, in an answer, reuses that shot
@@ -134,7 +135,7 @@ func filmPlanShotOf(sh *filmShot, byID map[string]*models.FilmElement) filmPlanS
 		out.Props = append(out.Props, name(id))
 	}
 	for _, l := range sh.Dialogue {
-		out.Dialogue = append(out.Dialogue, filmPlanLine{Speaker: name(l.SpeakerID), Line: l.Line, Delivery: l.Delivery})
+		out.Dialogue = append(out.Dialogue, filmPlanLine{Speaker: name(l.SpeakerID), Line: l.Line, Delivery: l.Delivery, Emotion: l.Emotion})
 	}
 	return out
 }
@@ -142,7 +143,7 @@ func filmPlanShotOf(sh *filmShot, byID map[string]*models.FilmElement) filmPlanS
 func filmShotRequest(sh *filmShot) req.FilmShotRequest {
 	lines := []req.FilmLineRequest{}
 	for _, l := range sh.Dialogue {
-		lines = append(lines, req.FilmLineRequest{SpeakerID: l.SpeakerID, Line: l.Line, Delivery: l.Delivery})
+		lines = append(lines, req.FilmLineRequest{SpeakerID: l.SpeakerID, Line: l.Line, Delivery: l.Delivery, Emotion: l.Emotion})
 	}
 	return req.FilmShotRequest{ID: sh.ID, Seconds: sh.Seconds, Transition: sh.Transition, CharacterIDs: append([]string{}, sh.CharacterIDs...), LocationID: sh.LocationID, PropIDs: append([]string{}, sh.PropIDs...), Action: sh.Action, Camera: sh.Camera, Dialogue: lines, Audio: sh.Audio, TrimIn: sh.TrimIn, TrimOut: sh.TrimOut, LineAt: append([]float64(nil), sh.LineAt...)}
 }
@@ -252,6 +253,7 @@ const filmPlanRules = `Rules:
 - Shots: "action" is beat-by-beat motion in 40-120 English words naming characters by their element names; "camera" states shot size, angle and movement; list every visible character in "characters" (at most 4) and place them clearly; show at most two faces clearly and never stage faces touching; dialogue speakers must be listed in the shot's characters; "audio" lists sound effects, ambience and music mood.
 - Think in scenes. A scene is one continuous moment in one location, usually told in 2-4 shots. Give every shot a "scene" number (1, 2, 3...). Shots after the first in a scene start exactly on the previous shot's last frame; a new angle, time or place starts a new scene. Each shot must add a new story beat; never write two near-identical shots in a row.
 - Cast: every person or group who acts, fights, speaks or is acted upon on screen is listed in "characters"; never describe an off-screen attacker, opponent or crowd. Inside a scene, everyone visible at the end of a shot is still listed in the next shot unless the action shows them leave. A crowd that must be seen (villagers, an army) is its own character element.
+- Dialogue emotion: every dialogue line gets "emotion", one of: %EMOTIONS%. Choose it from this shot's action, the scene's moment and the words themselves, never from the character alone: the same character whispers comfort in one scene and shouts a battle cry in the next. "delivery" adds the detail in English (pace, breath, volume, who they speak to).
 - Voices: every new character element gets "voice", the id of the preset voice that best fits its gender, age and personality. Presets: %VOICES%.
 - Props: an object a character holds stays in the same hands for the rest of the scene and is listed in every shot where it is visible; a boat sits in water, a ladder leans on a wall, and every object obeys real physics.
 - Action: at most two clear beats per shot that a real stunt performer could do in its seconds; no superhuman leaps or acrobatics.
@@ -261,7 +263,11 @@ const filmPlanRules = `Rules:
 
 // filmPlanRulesText is filmPlanRules with the preset voice list filled in.
 func filmPlanRulesText() string {
-	return strings.ReplaceAll(filmPlanRules, "%VOICES%", filmPlanVoiceGuide())
+	labels := make([]string, 0, len(voiceEmotions))
+	for _, e := range voiceEmotions {
+		labels = append(labels, e.Label)
+	}
+	return strings.NewReplacer("%VOICES%", filmPlanVoiceGuide(), "%EMOTIONS%", strings.Join(labels, ", ")).Replace(filmPlanRules)
 }
 
 func filmPlanPrompt(in *filmPlanJob) string {
@@ -278,7 +284,7 @@ func filmPlanPrompt(in *filmPlanJob) string {
 	var b strings.Builder
 	b.WriteString("You are a film director and screenwriter. The episode is generated shot by shot by a reference-to-video AI model that receives each element's reference image, so every shot must be self-contained and consistent.\n")
 	fmt.Fprintf(&b, "Visual style: %s. Aspect ratio %s.\n", style, in.Ratio)
-	shotJSON := `{"scene":1,"seconds":5,"characters":["names"],"location":"name","props":["names"],"action":"English","camera":"English","dialogue":[{"speaker":"name","line":"Thai","delivery":"English, short"}],"audio":"English"}`
+	shotJSON := `{"scene":1,"seconds":5,"characters":["names"],"location":"name","props":["names"],"action":"English","camera":"English","dialogue":[{"speaker":"name","line":"Thai","emotion":"one listed emotion","delivery":"English, short"}],"audio":"English"}`
 	if in.ShotID == "" && len(in.Shots) > 0 {
 		b.WriteString("Task: edit the existing episode following the user's request (add, remove, reorder, split or change shots or scenes). Return the complete new ordered shot list. For every existing shot that stays exactly as it is, return only {\"keep\": its no, \"scene\": n} so its finished video is kept; write a full shot only for new or changed shots. Change only what the request needs. Keep shot seconds unless asked; the total length may change. Only if the user clearly asks to start over, return all new shots. If the user names a total length, the sum of all shot seconds (kept shots included) must equal it exactly: add the seconds up before answering.\n")
 		total := 0
@@ -295,7 +301,7 @@ func filmPlanPrompt(in *filmPlanJob) string {
 	} else {
 		fmt.Fprintf(&b, "Task: rewrite only shot number %d (1-based) following the user's instruction. Keep its seconds unless asked. Use only existing elements, plus new ones in \"elements\" if the instruction needs them. Keep continuity with the neighboring shots.\n", in.ShotIndex+1)
 		b.WriteString(filmPlanRulesText() + "\n")
-		b.WriteString(`Return exactly JSON: {"reply":"Thai, 1-2 sentences","elements":[],"shot":{"transition":"cut|continue","seconds":5,"characters":["names"],"location":"name","props":["names"],"action":"English","camera":"English","dialogue":[{"speaker":"name","line":"Thai","delivery":"English"}],"audio":"English"}}` + "\n")
+		b.WriteString(`Return exactly JSON: {"reply":"Thai, 1-2 sentences","elements":[],"shot":{"transition":"cut|continue","seconds":5,"characters":["names"],"location":"name","props":["names"],"action":"English","camera":"English","dialogue":[{"speaker":"name","line":"Thai","emotion":"one listed emotion","delivery":"English"}],"audio":"English"}}` + "\n")
 	}
 	fmt.Fprintf(&b, "Current episode data: %s\n", ctx)
 	fmt.Fprintf(&b, "User request: %s\n", in.Prompt)
@@ -371,7 +377,11 @@ func filmResolveShot(p filmPlanShot, prevLocation string, first bool, resolve fu
 		if id == "" || !seen[id] || line == "" || len(out.Dialogue) >= filmMaxLines {
 			continue
 		}
-		out.Dialogue = append(out.Dialogue, req.FilmLineRequest{SpeakerID: id, Line: line, Delivery: directorClipRunes(strings.TrimSpace(l.Delivery), filmDeliveryMax)})
+		emotion := strings.TrimSpace(l.Emotion)
+		if _, ok := voiceEmotionPrompt(emotion); !ok {
+			emotion = ""
+		}
+		out.Dialogue = append(out.Dialogue, req.FilmLineRequest{SpeakerID: id, Line: line, Delivery: directorClipRunes(strings.TrimSpace(l.Delivery), filmDeliveryMax), Emotion: emotion})
 	}
 	return out
 }

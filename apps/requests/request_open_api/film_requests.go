@@ -24,6 +24,8 @@ type FilmLineRequest struct {
 	SpeakerID string `json:"speakerId"`
 	Line      string `json:"line"`
 	Delivery  string `json:"delivery,omitempty"`
+	// Emotion is a Voice-menu emotion for this line ("" = the speaker's voice setting).
+	Emotion string `json:"emotion,omitempty"`
 }
 
 type FilmShotRequest struct {

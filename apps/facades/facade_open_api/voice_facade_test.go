@@ -214,7 +214,7 @@ func TestVoiceGenerateValidationAndErrors(t *testing.T) {
 		{RequestID: ok.RequestID, Text: "   ", VoiceID: "nara"},
 		{RequestID: ok.RequestID, Text: strings.Repeat("ก", VoiceMaxTextRunes+1), VoiceID: "nara"},
 		{RequestID: ok.RequestID, Text: "a", VoiceID: "unknown"},
-		{RequestID: ok.RequestID, Text: "a", VoiceID: "nara", Emotion: "โกรธ"},
+		{RequestID: ok.RequestID, Text: "a", VoiceID: "nara", Emotion: "ง่วงนอน"},
 		{RequestID: ok.RequestID, Text: "a", VoiceID: "nara", Speed: 2.5},
 		{RequestID: ok.RequestID, Text: "a", VoiceID: "nara", Pitch: 13},
 	} {

@@ -66,3 +66,28 @@ func TestFilmPlanVoicePicksPresetsOnly(t *testing.T) {
 		t.Fatalf("missing voice error: %v", e)
 	}
 }
+
+func TestFilmLineEmotionAndSceneReachTheVoice(t *testing.T) {
+	hero := models.FilmElement{Base: models.Base{ID: uuid.New()}, Kind: "character", Name: "มาร์คัส",
+		Voice: models.EncodeCharacterVoice(&models.CharacterVoice{VoiceID: "tawan", VoiceName: "ตะวัน", Kind: "preset", Emotion: "ปกติ", Speed: 1, TemplateID: "t"})}
+	byID := filmElementMap([]models.FilmElement{hero})
+	id := hero.ID.String()
+	sh := &filmShot{ID: "s", Seconds: 6, CharacterIDs: []string{id}, Action: "Marcus raises his sword and charges",
+		Dialogue: []filmLine{{SpeakerID: id, Line: "เดินหน้า!", Delivery: "battle cry", Emotion: "ตะโกน"}, {SpeakerID: id, Line: "ไปกันเถอะ"}}}
+	lines := filmVoiceLines(sh, byID)
+	if lines[0].Voice.Emotion != "ตะโกน" || lines[0].Voice.TemplateID != "" || lines[1].Voice.Emotion != "ปกติ" {
+		t.Fatalf("a line's emotion overrides the character's: %+v", lines)
+	}
+	if p := lines[0].performance(); !strings.Contains(p, "battle cry") || !strings.Contains(p, "Scene: Marcus raises") {
+		t.Fatalf("the voice hears the delivery and the shot's moment: %q", p)
+	}
+	if !strings.Contains(filmPlanRulesText(), "ตะโกน") || strings.Contains(filmPlanRulesText(), "%EMOTIONS%") {
+		t.Fatal("the planner picks line emotions from the voice list")
+	}
+	b := &filmBrief{Shot: sh, Cast: []*models.FilmElement{byID[id]}, Style: "cinematic", Dubbed: map[string]bool{id: true}, AudioRef: true}
+	var w strings.Builder
+	filmPerformance(b, &w)
+	if p := w.String(); !strings.Contains(p, "Lip-sync to audio 1") || !strings.Contains(p, "1. @มาร์คัส") || strings.Contains(p, "generate NO voice") {
+		t.Fatalf("voice-first prompt syncs lips to audio 1:\n%s", p)
+	}
+}

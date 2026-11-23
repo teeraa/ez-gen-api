@@ -65,7 +65,8 @@ func filmVideoFresh(v *filmVideo, sh *filmShot, byID map[string]*models.FilmElem
 // filmVoiceOverlap tells whether a clip's dubbed lines play over the provider's own audio (clips
 // made before dialogue shots were rendered silent). Only a new video fixes it.
 func filmVoiceOverlap(v *filmVideo, sh *filmShot, byID map[string]*models.FilmElement, style string) bool {
-	if v.Silent {
+	// Silent clips have no provider speech; current mixes mute the clip's own audio under the lines.
+	if v.Silent || v.Mix >= filmMixVersion {
 		return false
 	}
 	if v.VoiceHash != "" {
@@ -79,7 +80,8 @@ func filmVoiceOverlap(v *filmVideo, sh *filmShot, byID map[string]*models.FilmEl
 // filmDraftDubbable tells whether a draft can become a full clip without its dubbed lines playing
 // over provider speech: the full clip inherits the draft's audio.
 func filmDraftDubbable(draft filmDraft, sh *filmShot, byID map[string]*models.FilmElement) bool {
-	return draft.Silent || len(filmVoiceLines(sh, byID)) == 0
+	// Drafts that kept their lines are mixed over a muted clip, like every current mix.
+	return draft.Silent || len(draft.Lines) > 0 || len(filmVoiceLines(sh, byID)) == 0
 }
 
 func filmRedubActive(r *filmRedub) bool {

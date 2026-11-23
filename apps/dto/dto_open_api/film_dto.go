@@ -37,6 +37,7 @@ type FilmLine struct {
 	SpeakerID string `json:"speakerId"`
 	Line      string `json:"line"`
 	Delivery  string `json:"delivery"`
+	Emotion   string `json:"emotion"`
 }
 
 type FilmShotVideo struct {

@@ -108,7 +108,7 @@ func (f *VoiceFacade) SpeakLine(ctx context.Context, userID string, v models.Cha
 	}
 	if d := strings.TrimSpace(delivery); d != "" {
 		// Stays in the instruction part of the prompt, which the model does not read aloud.
-		req.TextPrompt = "Performance (do not read aloud): " + directorTruncate(d, 120) + ".\n" + req.TextPrompt
+		req.TextPrompt = "Performance (do not read aloud): " + directorTruncate(d, 360) + ".\n" + req.TextPrompt
 	}
 	out, e := f.gen.Generate(ctx, req)
 	if e != nil {

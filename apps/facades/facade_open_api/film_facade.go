@@ -87,6 +87,9 @@ type FilmOptions struct {
 	PlanPoints    int
 	// VideoFetch downloads stored clips for export.
 	VideoFetch func(context.Context, string) ([]byte, string, error)
+	// VoiceFirst generates dubbed lines before the video and sends them as reference audio so lips
+	// follow them; a provider rejection falls back to dubbing after the video.
+	VoiceFirst bool
 	// MusicFetch downloads the stored music track for export.
 	MusicFetch func(context.Context, string) ([]byte, string, error)
 }
@@ -136,6 +139,8 @@ type filmLine struct {
 	SpeakerID string `json:"speakerId"`
 	Line      string `json:"line"`
 	Delivery  string `json:"delivery,omitempty"`
+	// Emotion is a Voice-menu emotion for this line; empty uses the speaker's voice setting.
+	Emotion string `json:"emotion,omitempty"`
 }
 
 type filmVideo struct {
@@ -217,6 +222,8 @@ type filmDraft struct {
 	SourceFrameKey string `json:"sourceFrameKey,omitempty"`
 	// Silent drafts were made without provider audio; the full clip inherits that.
 	Silent bool `json:"silent,omitempty"`
+	// Lines are the draft's dubbed lines; its full clip keeps them, so the lips stay in sync.
+	Lines []filmDubLine `json:"lines,omitempty"`
 }
 
 // filmSourceChanged reports whether a continuation clip started on a frame that is no longer the
@@ -686,7 +693,7 @@ func (f *FilmFacade) presentEpisode(c context.Context, p *models.DirectorProject
 		sh := &d.Shots[i]
 		lines := make([]dto.FilmLine, 0, len(sh.Dialogue))
 		for _, l := range sh.Dialogue {
-			lines = append(lines, dto.FilmLine{SpeakerID: l.SpeakerID, Line: l.Line, Delivery: l.Delivery})
+			lines = append(lines, dto.FilmLine{SpeakerID: l.SpeakerID, Line: l.Line, Delivery: l.Delivery, Emotion: l.Emotion})
 		}
 		item := dto.FilmShot{ID: sh.ID, Index: i, Seconds: sh.Seconds, Start: start, Transition: sh.Transition, CharacterIDs: filmNonNil(sh.CharacterIDs), LocationID: sh.LocationID, PropIDs: filmNonNil(sh.PropIDs), Action: sh.Action, Camera: sh.Camera, Dialogue: lines, Audio: sh.Audio, TrimIn: sh.TrimIn, TrimOut: sh.TrimOut, LineAt: sh.LineAt}
 		start += sh.Seconds
@@ -811,7 +818,10 @@ func filmValidateShots(in []req.FilmShotRequest, current []filmShot, elements ma
 			return nil, directorInvalid("shots.dialogue")
 		}
 		for _, l := range r.Dialogue {
-			line := filmLine{SpeakerID: l.SpeakerID, Line: strings.TrimSpace(l.Line), Delivery: strings.TrimSpace(l.Delivery)}
+			line := filmLine{SpeakerID: l.SpeakerID, Line: strings.TrimSpace(l.Line), Delivery: strings.TrimSpace(l.Delivery), Emotion: strings.TrimSpace(l.Emotion)}
+			if _, ok := voiceEmotionPrompt(line.Emotion); line.Emotion != "" && !ok {
+				return nil, directorInvalid("shots.dialogue.emotion")
+			}
 			if !dup[line.SpeakerID] || !kind(line.SpeakerID, "character") || !filmBound(line.Line, 1, filmLineMax) || !filmBound(line.Delivery, 0, filmDeliveryMax) {
 				return nil, directorInvalid("shots.dialogue")
 			}
@@ -899,6 +909,13 @@ type filmVideoJob struct {
 	QueuedAt    time.Time `json:"queuedAt"`
 	// Voices are dialogue lines dubbed with the speakers' bound voices after the clip returns.
 	Voices []filmVoiceLine `json:"voices,omitempty"`
+	// VoiceFirst sends the generated lines as reference audio (audio 1) so the lips follow them;
+	// Plain* are the prompts used when the provider rejects the audio reference.
+	VoiceFirst           bool   `json:"voiceFirst,omitempty"`
+	PlainReferencePrompt string `json:"plainReferencePrompt,omitempty"`
+	PlainContinuePrompt  string `json:"plainContinuePrompt,omitempty"`
+	// Lines are already generated lines to reuse (a finalize keeps its draft's lines and timing).
+	Lines []filmDubLine `json:"lines,omitempty"`
 }
 
 func filmVideoCost(points, seconds int) int {
@@ -957,7 +974,7 @@ func (f *FilmFacade) RequestVideo(c context.Context, projectID, shotID, user str
 			if !ok || draft.Provider != model.ProviderModelID || !filmDraftDubbable(draft, sh, byID) {
 				return nil, &DirectorError{Status: 409, Code: "DRAFT_NOT_AVAILABLE", Message: "ไม่มี draft ล่าสุดของช็อตนี้ให้ทำเป็นตัวเต็ม กรุณาสร้าง draft ใหม่"}
 			}
-			snap := filmVideoJob{ShotID: sh.ID, Hash: draft.Hash, ModelID: draft.ModelID, ProviderModel: draft.Provider, Ratio: s.AspectRatio, Resolution: directorVideoResolution(s.Resolution, model), Seconds: sh.Seconds, Filmed: filmed, Transition: sh.Transition, DraftTaskID: draft.TaskID, Audio: !draft.Silent, QueuedAt: time.Now().UTC(), Voices: f.filmDubLines(sh, byID)}
+			snap := filmVideoJob{ShotID: sh.ID, Hash: draft.Hash, ModelID: draft.ModelID, ProviderModel: draft.Provider, Ratio: s.AspectRatio, Resolution: directorVideoResolution(s.Resolution, model), Seconds: sh.Seconds, Filmed: filmed, Transition: sh.Transition, DraftTaskID: draft.TaskID, Audio: !draft.Silent, QueuedAt: time.Now().UTC(), Voices: f.filmDubLines(sh, byID), Lines: draft.Lines}
 			raw, e := json.Marshal(snap)
 			if e != nil {
 				return nil, e
@@ -1042,6 +1059,15 @@ func (f *FilmFacade) RequestVideo(c context.Context, projectID, shotID, user str
 		if sh.Transition == "continue" && i > 0 {
 			snap.PrevShotID = d.Shots[i-1].ID
 			snap.ContinuePrompt = filmContinuePrompt(&brief)
+		}
+		if f.options.VoiceFirst && len(dub) > 0 {
+			// Voice first: the lines are generated before the video and sent as audio 1.
+			snap.PlainReferencePrompt, snap.PlainContinuePrompt = snap.ReferencePrompt, snap.ContinuePrompt
+			brief.AudioRef = true
+			snap.VoiceFirst, snap.ReferencePrompt = true, filmReferencePrompt(&brief)
+			if snap.ContinuePrompt != "" {
+				snap.ContinuePrompt = filmContinuePrompt(&brief)
+			}
 		}
 		for _, p := range []string{snap.ReferencePrompt, snap.ContinuePrompt} {
 			if p != "" && filmValidatePrompt(p) != nil {

@@ -11,6 +11,8 @@ const (
 	RoleLastFrame      ContentRole = "last_frame"
 	RoleReferenceImage ContentRole = "reference_image"
 	RoleReferenceVideo ContentRole = "reference_video"
+	// RoleReferenceAudio drives timing and lip-sync (Seedance 2.x; needs a reference image or video).
+	RoleReferenceAudio ContentRole = "reference_audio"
 )
 
 type ContentItemType string
@@ -19,6 +21,7 @@ const (
 	ContentTypeText      ContentItemType = "text"
 	ContentTypeImageURL  ContentItemType = "image_url"
 	ContentTypeVideoURL  ContentItemType = "video_url"
+	ContentTypeAudioURL  ContentItemType = "audio_url"
 	ContentTypeDraftTask ContentItemType = "draft_task"
 )
 

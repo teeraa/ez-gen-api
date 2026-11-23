@@ -183,8 +183,13 @@ type filmVideoTask struct {
 	OwnedVideoKey string `json:"ownedVideoKey,omitempty"`
 	// OwnedRawKey is the clip before dubbing, kept so voices can change later without a new video.
 	OwnedRawKey string `json:"ownedRawKey,omitempty"`
-	// OwnedLines are the generated dialogue lines stored next to the clip.
-	OwnedLines []filmDubLine `json:"ownedLines,omitempty"`
+	// OwnedLines are the generated dialogue lines stored next to the clip. With voice first they
+	// exist before submission, and DialogueKey is the whole dialogue track sent as audio 1.
+	OwnedLines  []filmDubLine `json:"ownedLines,omitempty"`
+	DialogueKey string        `json:"dialogueKey,omitempty"`
+	// AudioRef: the submitted task carries audio 1. NoAudioRef: the provider refused it; dub after.
+	AudioRef   bool `json:"audioRef,omitempty"`
+	NoAudioRef bool `json:"noAudioRef,omitempty"`
 }
 
 func (f *FilmFacade) videoFail(c context.Context, j *models.FilmJob, in *filmVideoJob, refund bool, code, message string, cause error) error {
@@ -266,6 +271,25 @@ func (f *FilmFacade) submitVideo(c context.Context, j *models.FilmJob, in *filmV
 	if !f.videoAvailable() {
 		return f.videoFail(c, j, in, true, "VIDEO_UNAVAILABLE", "ระบบสร้างวิดีโอยังไม่พร้อมใช้งาน", nil)
 	}
+	// A finalize keeps its draft's lines; voice first makes them now, before the video.
+	if len(task.OwnedLines) == 0 && len(in.Lines) > 0 {
+		task.OwnedLines = in.Lines
+	}
+	audioRef := in.VoiceFirst && len(in.Voices) > 0 && !task.NoAudioRef && in.DraftTaskID == ""
+	if audioRef && task.DialogueKey == "" {
+		if e := f.prepareDialogue(c, j, in, task); e != nil {
+			if errors.Is(e, errFilmDubRetry) && time.Since(in.QueuedAt) <= filmDubRetryWindow {
+				log.Printf("film: job=%s shot=%s dialogue retry: %v", j.ID, in.ShotID, e)
+				return f.wait(c, j, task, filmVideoRetry)
+			}
+			return f.videoFail(c, j, in, true, "VOICE_FAILED", "สร้างเสียงพากย์ของตัวละครไม่สำเร็จ กรุณาลองใหม่ หรือเปลี่ยนเสียงของตัวละคร", e)
+		}
+	}
+	audioRef = audioRef && task.DialogueKey != ""
+	referencePrompt, continuePrompt := in.ReferencePrompt, in.ContinuePrompt
+	if !audioRef && in.PlainReferencePrompt != "" {
+		referencePrompt, continuePrompt = in.PlainReferencePrompt, in.PlainContinuePrompt
+	}
 	// Dialogue shots ask for no provider audio explicitly (the provider speaks lines otherwise).
 	request := modelark.CreateTaskRequest{Model: in.ProviderModel, Ratio: in.Ratio, DurationSeconds: int64(in.Seconds), Resolution: in.Resolution, GenerateAudio: in.Audio, NoAudio: !in.Audio && len(in.Voices) > 0, ReturnLastFrame: true}
 	task.Mode = "reference"
@@ -293,13 +317,13 @@ func (f *FilmFacade) submitVideo(c context.Context, j *models.FilmJob, in *filmV
 			return f.videoFail(c, j, in, true, "REFERENCE_UNAVAILABLE", "เปิดเฟรมสุดท้ายของช็อตก่อนหน้าไม่ได้ กรุณาลองใหม่", e)
 		}
 		task.FirstFrameKey = prev.FrameKey
-		request.Content = []modelark.ContentItem{{Type: modelark.ContentTypeText, Text: in.ContinuePrompt}, {Type: modelark.ContentTypeImageURL, URL: u, Role: modelark.RoleFirstFrame}}
+		request.Content = []modelark.ContentItem{{Type: modelark.ContentTypeText, Text: continuePrompt}, {Type: modelark.ContentTypeImageURL, URL: u, Role: modelark.RoleFirstFrame}}
 		// Seedance 2.5 locks first-frame tasks to the frame's own ratio (same rule as Director).
 		if in.ProviderModel == "dreamina-seedance-2-5-260628" {
 			request.Ratio = "adaptive"
 		}
 	} else {
-		request.Content = []modelark.ContentItem{{Type: modelark.ContentTypeText, Text: in.ReferencePrompt}}
+		request.Content = []modelark.ContentItem{{Type: modelark.ContentTypeText, Text: referencePrompt}}
 		for _, ref := range in.Refs {
 			u, _, e := f.storage.SignedURL(c, ref.Key, time.Hour)
 			if e == nil && f.options.ReferenceCheck != nil {
@@ -314,6 +338,16 @@ func (f *FilmFacade) submitVideo(c context.Context, j *models.FilmJob, in *filmV
 	if in.Draft {
 		request.Draft, request.Resolution = true, "480p"
 	}
+	if audioRef {
+		u, _, e := f.storage.SignedURL(c, task.DialogueKey, time.Hour)
+		if e != nil {
+			return f.wait(c, j, task, filmVideoRetry)
+		}
+		// The provider lip-syncs to audio 1; its own audio is muted under the dub later anyway.
+		request.Content = append(request.Content, modelark.ContentItem{Type: modelark.ContentTypeAudioURL, URL: u, Role: modelark.RoleReferenceAudio})
+		request.GenerateAudio, request.NoAudio = true, false
+	}
+	task.AudioRef = audioRef
 	if e := f.store.ProgressEpisode(c, j, func(ep *models.FilmEpisode) error {
 		return filmUpdateShot(ep, in.ShotID, j.ID.String(), func(v *filmVideo) { v.Status, v.Progress, v.Mode = "processing", 5, task.Mode })
 	}); e != nil {
@@ -340,6 +374,12 @@ func (f *FilmFacade) submitVideo(c context.Context, j *models.FilmJob, in *filmV
 		if definitive && task.Mode == "continue" && in.Filmed && code == "PROVIDER_IMAGE_REJECTED" {
 			return f.fallback(c, j, in, task)
 		}
+		if definitive && audioRef {
+			// The provider refused the audio reference (e.g. with a first frame): dub after instead.
+			log.Printf("film: job=%s shot=%s audio reference refused, dubbing after the video: %v", j.ID, in.ShotID, e)
+			task.Submitting, task.NoAudioRef, task.AudioRef = false, true, false
+			return f.wait(c, j, task, time.Second)
+		}
 		return f.videoFail(c, j, in, definitive, code, message, fmt.Errorf("film video submit http=%d model=%s mode=%s draft=%t refs=%d: %w", diag.HTTPStatus, in.ProviderModel, task.Mode, in.Draft, len(request.Content)-1, e))
 	}
 	if id == "" {
@@ -355,7 +395,7 @@ func (f *FilmFacade) fallback(c context.Context, j *models.FilmJob, in *filmVide
 	if task.Fallback {
 		return f.videoFail(c, j, in, true, "PROVIDER_IMAGE_REJECTED", "บริการปฏิเสธภาพอ้างอิงของช็อตนี้", nil)
 	}
-	next := filmVideoTask{Fallback: true}
+	next := filmVideoTask{Fallback: true, OwnedLines: task.OwnedLines, DialogueKey: task.DialogueKey, NoAudioRef: task.NoAudioRef}
 	return f.wait(c, j, &next, time.Second)
 }
 
@@ -387,6 +427,12 @@ func (f *FilmFacade) pollVideo(c context.Context, j *models.FilmJob, in *filmVid
 		if task.Mode == "continue" && in.Filmed && result.ErrorCode == "PROVIDER_IMAGE_REJECTED" {
 			return f.fallback(c, j, in, task)
 		}
+		if task.AudioRef && !task.NoAudioRef {
+			// Retry once without audio 1; the lines are kept and dubbed after the video.
+			log.Printf("film: job=%s shot=%s task with audio reference failed (%s), retrying without it", j.ID, in.ShotID, result.ErrorCode)
+			next := filmVideoTask{NoAudioRef: true, OwnedLines: task.OwnedLines, DialogueKey: task.DialogueKey, Fallback: task.Fallback}
+			return f.wait(c, j, &next, time.Second)
+		}
 		code, message := "VIDEO_GENERATION_FAILED", "บริการสร้างวิดีโอไม่สำเร็จหรือปฏิเสธเนื้อหาของช็อตนี้ กรุณาปรับคำบรรยายหรือภาพแล้วลองใหม่"
 		switch result.ErrorCode {
 		case "PROVIDER_OUTPUT_REJECTED", "PROVIDER_IMAGE_REJECTED", "PROVIDER_TEXT_REJECTED":
@@ -408,7 +454,18 @@ func (f *FilmFacade) pollVideo(c context.Context, j *models.FilmJob, in *filmVid
 		// provider's clip is kept as well, so a voice can change later without a new video.
 		undubbed := data
 		var spoken []filmDubbed
-		if dubbed, lines, e := f.dubClip(c, j.UserID.String(), in, data); e != nil {
+		if len(task.OwnedLines) > 0 {
+			// Lines made before the video (voice first or a finalized draft): mix those, same timing.
+			dubbed, e := f.mixStoredLines(c, in, task.OwnedLines, data)
+			if e != nil {
+				if age <= filmDubRetryWindow {
+					log.Printf("film: job=%s shot=%s mix retry: %v", j.ID, in.ShotID, e)
+					return f.wait(c, j, task, filmVideoRetry)
+				}
+				return f.videoFail(c, j, in, true, "VOICE_FAILED", "ผสมเสียงพากย์ไม่สำเร็จ กรุณาลองใหม่", e)
+			}
+			data = dubbed
+		} else if dubbed, lines, e := f.dubClip(c, j.UserID.String(), in, data); e != nil {
 			if errors.Is(e, errFilmDubRetry) && age <= filmDubRetryWindow {
 				log.Printf("film: job=%s shot=%s dubbing retry: %v", j.ID, in.ShotID, e)
 				return f.wait(c, j, task, filmVideoRetry)
@@ -418,11 +475,13 @@ func (f *FilmFacade) pollVideo(c context.Context, j *models.FilmJob, in *filmVid
 			data, spoken = dubbed, lines
 		}
 		key := fmt.Sprintf("film/%s/%s/%s/%s.mp4", j.UserID, *j.ProjectID, in.ShotID, j.ID)
-		stored, e := f.filmStoreLines(c, strings.TrimSuffix(key, ".mp4"), spoken)
-		if e != nil {
-			return f.wait(c, j, task, filmVideoRetry)
+		if len(task.OwnedLines) == 0 {
+			stored, e := f.filmStoreLines(c, strings.TrimSuffix(key, ".mp4"), spoken)
+			if e != nil {
+				return f.wait(c, j, task, filmVideoRetry)
+			}
+			task.OwnedLines = stored
 		}
-		task.OwnedLines = stored
 		rawKey := key
 		if len(in.Voices) > 0 {
 			rawKey = strings.TrimSuffix(key, ".mp4") + "-raw.mp4"
@@ -488,7 +547,7 @@ func (f *FilmFacade) storeVideo(c context.Context, j *models.FilmJob, in *filmVi
 			v.SourceFrameKey = task.FirstFrameKey
 		}
 		v.FailureCode, v.FailureMessage, v.CanRetry = nil, nil, false
-		v.RawKey, v.VoiceHash, v.Redub, v.Silent, v.Lines, v.Mix = task.OwnedRawKey, filmLinesHash(in.Voices), nil, !in.Audio, task.OwnedLines, filmMixVersion
+		v.RawKey, v.VoiceHash, v.Redub, v.Silent, v.Lines, v.Mix = task.OwnedRawKey, filmLinesHash(in.Voices), nil, !in.Audio && !task.AudioRef, task.OwnedLines, filmMixVersion
 		// Moved line positions belonged to the previous clip's lines.
 		sh.LineAt = nil
 		if v.RawKey == "" && len(in.Voices) == 0 {
@@ -503,7 +562,7 @@ func (f *FilmFacade) storeVideo(c context.Context, j *models.FilmJob, in *filmVi
 			if d.Drafts == nil {
 				d.Drafts = map[string]filmDraft{}
 			}
-			d.Drafts[in.ShotID] = filmDraft{TaskID: task.TaskID, Provider: in.ProviderModel, ModelID: in.ModelID, Hash: in.Hash, Seconds: in.Seconds, CreatedAt: task.SubmittedAt, SourceFrameKey: v.SourceFrameKey, Silent: !in.Audio}
+			d.Drafts[in.ShotID] = filmDraft{TaskID: task.TaskID, Provider: in.ProviderModel, ModelID: in.ModelID, Hash: in.Hash, Seconds: in.Seconds, CreatedAt: task.SubmittedAt, SourceFrameKey: v.SourceFrameKey, Silent: !in.Audio && !task.AudioRef, Lines: task.OwnedLines}
 		} else {
 			delete(d.Drafts, in.ShotID)
 		}

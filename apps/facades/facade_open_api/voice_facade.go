@@ -75,6 +75,9 @@ var voiceEmotions = []struct{ Label, Prompt string }{
 	{"จริงจัง", "serious and firm"},
 	{"เศร้า", "sad and subdued"},
 	{"กระซิบ", "whispering softly"},
+	{"ตะโกน", "shouting loudly with force, voice projected over noise"},
+	{"โกรธ", "angry and tense, clipped words"},
+	{"หวาดกลัว", "fearful, trembling and breathless"},
 }
 
 type voiceGenerator interface {

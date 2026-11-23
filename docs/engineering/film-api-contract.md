@@ -135,6 +135,19 @@ stale because the clip key changes.
 - The export mixes moved lines again over the raw clip; unmoved clips are used as they are.
 - Music `PATCH {idempotencyKey, start}` places the music on the film timeline.
 
+## Voice first and per-line emotion (2026-11-23)
+
+- Dialogue lines carry `emotion` (a Voice-menu emotion; "" = the speaker's voice setting). The planner
+  picks it per line from the shot and scene; the voice also hears the shot's action as context.
+  Emotions added: ตะโกน, โกรธ, หวาดกลัว.
+- Voice first (`FilmOptions.VoiceFirst`, on in main.go): before submitting a shot with dubbed lines the
+  worker generates the lines, stores them and a dialogue track (`{job}-dialogue.wav`, lines at their
+  times, as long as the shot) and sends it as `audio_url` role `reference_audio` ("audio 1") with
+  `generate_audio=true`; the prompt asks for lip-sync to audio 1. The same stored lines are mixed over
+  the returned clip (clip audio muted), so timing matches. If the provider refuses the audio reference
+  (4xx, e.g. continue mode with a first frame) or the task fails, the shot is submitted once more
+  without it and dubbed after the video. A finalized draft keeps its draft's lines.
+
 ## Not yet built
 
 TTS/music mixing, integration tests against PostgreSQL.

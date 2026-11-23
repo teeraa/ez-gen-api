@@ -28,6 +28,8 @@ type filmBrief struct {
 	Filmed   bool
 	// Dubbed are speakers whose lines are dubbed with their bound voice after the clip returns.
 	Dubbed map[string]bool
+	// AudioRef: the dubbed lines are sent as reference audio ("audio 1") so lips follow them.
+	AudioRef bool
 }
 
 // filmText removes art-style words from user text in realistic/cinematic mode (same rule as Director).
@@ -77,7 +79,28 @@ func filmPerformance(b *filmBrief, w *strings.Builder) {
 	if len(sh.Dialogue) > 0 || sh.Audio != "" {
 		w.WriteString("[AUDIO]:\n")
 	}
+	if b.AudioRef && len(b.Dubbed) > 0 {
+		// Voice-first: audio 1 already holds every dubbed line at its time; the picture performs it.
+		w.WriteString("- Audio 1 is the finished dialogue track of this shot. Lip-sync to audio 1 exactly: each speaker's lips, jaw and face move only while their own line plays in audio 1, matching every syllable and pause; mouths stay closed in the silences. Lines in audio 1, in order:\n")
+		n := 0
+		for _, l := range sh.Dialogue {
+			if !b.Dubbed[l.SpeakerID] {
+				continue
+			}
+			n++
+			spoke[l.SpeakerID] = true
+			delivery := ""
+			if l.Delivery != "" {
+				delivery = " (" + filmText(b, l.Delivery) + ")"
+			}
+			fmt.Fprintf(w, "  %d. %s says in Thai%s: \"%s\"\n", n, names[l.SpeakerID], delivery, l.Line)
+		}
+		w.WriteString("- Facial expression and body language match the emotion heard in audio 1. Do not add other speech.\n")
+	}
 	for _, l := range sh.Dialogue {
+		if b.AudioRef && b.Dubbed[l.SpeakerID] {
+			continue
+		}
 		spoke[l.SpeakerID] = true
 		delivery := ""
 		if l.Delivery != "" {
@@ -90,7 +113,7 @@ func filmPerformance(b *filmBrief, w *strings.Builder) {
 		}
 		fmt.Fprintf(w, "- %s speaks in Thai%s: \"%s\"\n", names[l.SpeakerID], delivery, l.Line)
 	}
-	if len(b.Dubbed) > 0 {
+	if len(b.Dubbed) > 0 && !b.AudioRef {
 		w.WriteString("- Audio contains only ambience, sound effects and music for the dubbed lines; no audible human speech from dubbed characters.\n")
 	}
 	if len(sh.Dialogue) > 0 {
