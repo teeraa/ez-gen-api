@@ -6,7 +6,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// FilmElement is a reusable character, location or prop of one film series (สร้างหนัง).
+// FilmElement is a reusable character, location or prop of one film series (ภาพยนตร์).
 type FilmElement struct {
 	Base
 	UserID         uuid.UUID `gorm:"type:uuid;not null"`

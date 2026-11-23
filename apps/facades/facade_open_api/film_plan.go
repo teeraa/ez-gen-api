@@ -1,6 +1,6 @@
 package facade_open_api
 
-// Film chat planning (สร้างหนัง phase 3). A "plan" job asks the story LLM for the episode's story,
+// Film chat planning (ภาพยนตร์ phase 3). A "plan" job asks the story LLM for the episode's story,
 // elements and shots, or rewrites one shot; the result replaces the episode's shots and adds any
 // new elements. Isolated from Director: it only calls Director's JSON decoder and text clipper.
 

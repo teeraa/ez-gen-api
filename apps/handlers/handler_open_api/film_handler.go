@@ -11,7 +11,7 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/limiter"
 )
 
-// FilmHandler serves the สร้างหนัง menu under /film. It is separate from DirectorHandler.
+// FilmHandler serves the ภาพยนตร์ menu under /film. It is separate from DirectorHandler.
 type FilmHandler struct {
 	facade *f.FilmFacade
 	rate   int

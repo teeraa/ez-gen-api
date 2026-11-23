@@ -515,7 +515,7 @@ func TestDirectorUpdateSeriesNoopKeepsRevision(t *testing.T) {
 	}
 }
 
-// Series mode scopes listing to the menu that created the series (ผู้กำกับ or สร้างหนัง) and never changes.
+// Series mode scopes listing to the menu that created the series (ผู้กำกับ or ภาพยนตร์) and never changes.
 func TestDirectorSeriesModeScopesMenuAndIsFixed(t *testing.T) {
 	t.Parallel()
 	base := func() req.DirectorSeriesRequest {

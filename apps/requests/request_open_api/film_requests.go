@@ -1,6 +1,6 @@
 package request_open_api
 
-// Film (สร้างหนัง) requests. Optional fields are pointers so PATCH can tell "absent" from "empty".
+// Film (ภาพยนตร์) requests. Optional fields are pointers so PATCH can tell "absent" from "empty".
 
 type FilmElementRequest struct {
 	IdempotencyKey string  `json:"idempotencyKey,omitempty"`

@@ -12,7 +12,7 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// Film (สร้างหนัง) persistence. It never writes Director tables except the shared point wallet
+// Film (ภาพยนตร์) persistence. It never writes Director tables except the shared point wallet
 // (director_point_accounts); Director series and project rows are only read and row-locked.
 
 var (

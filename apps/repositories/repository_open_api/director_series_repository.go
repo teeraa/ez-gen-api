@@ -32,7 +32,7 @@ type DirectorEpisodeBrief struct {
 type DirectorSeriesStats struct {
 	EpisodeCount int
 	CoverKey     string
-	// Film (สร้างหนัง) episodes have no storyboard images: EpisodeCovers holds each episode's first
+	// Film (ภาพยนตร์) episodes have no storyboard images: EpisodeCovers holds each episode's first
 	// finished clip frame and ElementCover a reference image of the series (a location first).
 	EpisodeCovers map[uuid.UUID]string
 	ElementCover  string

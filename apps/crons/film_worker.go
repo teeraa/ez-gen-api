@@ -9,7 +9,7 @@ import (
 	"github.com/ez-gen/ez-gen-api/apps/facades/facade_open_api"
 )
 
-// FilmWorker runs the สร้างหนัง jobs (film_jobs). It never touches director_jobs.
+// FilmWorker runs the ภาพยนตร์ jobs (film_jobs). It never touches director_jobs.
 type FilmWorker struct {
 	facade *facade_open_api.FilmFacade
 	n      int

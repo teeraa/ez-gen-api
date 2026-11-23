@@ -1,6 +1,6 @@
 package facade_open_api
 
-// Film export (สร้างหนัง phase 4): merges the episode's shot clips, in order, into one MP4 with
+// Film export (ภาพยนตร์ phase 4): merges the episode's shot clips, in order, into one MP4 with
 // optional Thai dialogue subtitles. Uses the shared FFmpeg processor; Director code is not changed.
 
 import (
@@ -83,7 +83,7 @@ func (f *FilmFacade) RequestExport(c context.Context, projectID, user string, in
 			return nil, e
 		}
 		if d.Export != nil && (d.Export.Status == "queued" || d.Export.Status == "processing") {
-			return nil, &DirectorError{Status: 409, Code: "EXPORT_BUSY", Message: "กำลังรวมหนังอยู่ กรุณารอสักครู่"}
+			return nil, &DirectorError{Status: 409, Code: "EXPORT_BUSY", Message: "กำลังรวมภาพยนตร์อยู่ กรุณารอสักครู่"}
 		}
 		keys, subs, skipped := filmExportClips(&d, filmElementMap(elements))
 		if len(keys) == 0 {
@@ -177,7 +177,7 @@ func (f *FilmFacade) exportJob(c context.Context, j *models.FilmJob) error {
 			e = os.WriteFile(path, data, 0o600)
 		}
 		if e != nil {
-			return f.exportFail(c, j, "โหลดคลิปสำหรับรวมหนังไม่ได้ กรุณาลองใหม่", fmt.Errorf("clip %d: %w", i+1, e))
+			return f.exportFail(c, j, "โหลดคลิปสำหรับรวมภาพยนตร์ไม่ได้ กรุณาลองใหม่", fmt.Errorf("clip %d: %w", i+1, e))
 		}
 		clips = append(clips, videoprocessing.Clip{Path: path})
 		if e = progress(5 + (i+1)*50/len(in.ClipKeys)); e != nil {
@@ -209,14 +209,14 @@ func (f *FilmFacade) exportJob(c context.Context, j *models.FilmJob) error {
 		}
 	}
 	if e != nil || len(data) == 0 {
-		return f.exportFail(c, j, "รวมหนังไม่สำเร็จ กรุณาลองใหม่", fmt.Errorf("merge %d clips: %v", len(clips), e))
+		return f.exportFail(c, j, "รวมภาพยนตร์ไม่สำเร็จ กรุณาลองใหม่", fmt.Errorf("merge %d clips: %v", len(clips), e))
 	}
 	if e = progress(90); e != nil {
 		return e
 	}
 	key := fmt.Sprintf("film/%s/%s/export/%s.mp4", j.UserID, *j.ProjectID, j.ID)
 	if e = f.storage.Upload(c, key, data, "video/mp4"); e != nil {
-		return f.exportFail(c, j, "บันทึกไฟล์หนังไม่ได้ กรุณาลองใหม่", e)
+		return f.exportFail(c, j, "บันทึกไฟล์ภาพยนตร์ไม่ได้ กรุณาลองใหม่", e)
 	}
 	return f.exportState(c, j, "succeeded", func(x *filmExport) {
 		x.Status, x.Progress, x.Key, x.FailureMessage = "succeeded", 100, key, nil

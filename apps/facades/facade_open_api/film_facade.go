@@ -1,6 +1,6 @@
 package facade_open_api
 
-// Film (สร้างหนัง) — isolated from Director. Elements (characters, locations, props) belong to a
+// Film (ภาพยนตร์) — isolated from Director. Elements (characters, locations, props) belong to a
 // film series; each shot video is generated straight from element reference images
 // (reference-to-video) or, for "continue" shots, from the previous clip's last frame.
 // Realistic/cinematic characters are referenced through a faceless costume image (synthetic
