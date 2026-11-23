@@ -68,3 +68,14 @@ type VoiceGenerationListDTO struct {
 	Page  int                  `json:"page"`
 	Limit int                  `json:"limit"`
 }
+
+// CharacterVoiceDTO is the voice bound to a character asset or film element.
+type CharacterVoiceDTO struct {
+	VoiceID    string  `json:"voiceId"`
+	VoiceName  string  `json:"voiceName"`
+	Kind       string  `json:"kind"`
+	Emotion    string  `json:"emotion"`
+	Speed      float64 `json:"speed"`
+	Pitch      int     `json:"pitch"`
+	TemplateID *string `json:"templateId"`
+}

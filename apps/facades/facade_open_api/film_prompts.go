@@ -26,6 +26,8 @@ type filmBrief struct {
 	Props    []*models.FilmElement
 	Style    string
 	Filmed   bool
+	// Dubbed are speakers whose lines are dubbed with their bound voice after the clip returns.
+	Dubbed map[string]bool
 }
 
 // filmText removes art-style words from user text in realistic/cinematic mode (same rule as Director).
@@ -81,7 +83,15 @@ func filmPerformance(b *filmBrief, w *strings.Builder) {
 		if l.Delivery != "" {
 			delivery = ", " + filmText(b, l.Delivery)
 		}
+		if b.Dubbed[l.SpeakerID] {
+			// The voice is added in post, so only the performance is generated here.
+			fmt.Fprintf(w, "- %s says in Thai%s: \"%s\" — lips and face move naturally with the words, but this line is dubbed later: generate NO voice for %s.\n", names[l.SpeakerID], delivery, l.Line, names[l.SpeakerID])
+			continue
+		}
 		fmt.Fprintf(w, "- %s speaks in Thai%s: \"%s\"\n", names[l.SpeakerID], delivery, l.Line)
+	}
+	if len(b.Dubbed) > 0 {
+		w.WriteString("- Audio contains only ambience, sound effects and music for the dubbed lines; no audible human speech from dubbed characters.\n")
 	}
 	if len(sh.Dialogue) > 0 {
 		for _, el := range b.Cast {

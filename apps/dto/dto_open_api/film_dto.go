@@ -23,6 +23,8 @@ type FilmElement struct {
 	// Prepared is true when the element has the reference a shot video needs (for realistic and
 	// cinematic characters: the faceless costume reference).
 	Prepared bool `json:"prepared"`
+	// Voice is set only on characters that have one.
+	Voice *CharacterVoiceDTO `json:"voice"`
 	FilmFailure
 	UpdatedAt time.Time `json:"updatedAt"`
 }

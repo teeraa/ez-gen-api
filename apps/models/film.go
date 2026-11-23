@@ -20,6 +20,8 @@ type FilmElement struct {
 	FailureCode    *string
 	FailureMessage *string
 	Revision       int
+	// Voice is a CharacterVoice JSON (characters only); NULL means no voice.
+	Voice []byte `gorm:"type:jsonb"`
 }
 
 func (FilmElement) TableName() string { return "film_elements" }

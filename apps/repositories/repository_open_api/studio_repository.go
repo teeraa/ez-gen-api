@@ -62,7 +62,7 @@ func (r *studioRepository) SaveAsset(c context.Context, a *models.LibraryAsset) 
 	if a.ID == uuid.Nil {
 		e = r.db.WithContext(c).Create(a).Error
 	} else {
-		e = r.db.WithContext(c).Model(a).Where("user_id = ?", a.UserID).Select("name", "description", "updated_at").Updates(a).Error
+		e = r.db.WithContext(c).Model(a).Where("user_id = ?", a.UserID).Select("name", "description", "voice", "updated_at").Updates(a).Error
 	}
 	if e != nil {
 		return studioErr(e)

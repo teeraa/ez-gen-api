@@ -9,6 +9,8 @@ type FilmElementRequest struct {
 	Name           *string `json:"name,omitempty"`
 	Spec           *string `json:"spec,omitempty"`
 	AssetID        *string `json:"assetId,omitempty"`
+	// Voice (characters only): same shape as the library; omitted on create copies the asset's voice.
+	Voice *CharacterVoiceRequest `json:"voice,omitempty"`
 }
 
 // FilmElementImageRequest mode: "generate" makes a new reference image; "prepare" only builds the

@@ -34,10 +34,16 @@ type StudioFacade struct {
 	imageModel             string
 	maxJobs                int64
 	referenceAnalysisModel string
+	voices                 characterVoiceResolver
 }
 
 func NewStudioFacade(r repo.StudioRepository, j repo.JobRepository, u repo.UploadRepository, s mediaStorage, secret string, expiry time.Duration, imageModel string, max int) *StudioFacade {
 	return &StudioFacade{repo: r, jobs: j, uploads: u, storage: s, secret: secret, expiry: expiry, imageModel: imageModel, maxJobs: int64(max)}
+}
+// WithCharacterVoices enables binding Voice-menu voices to character assets.
+func (f *StudioFacade) WithCharacterVoices(r characterVoiceResolver) *StudioFacade {
+	f.voices = r
+	return f
 }
 func (f *StudioFacade) WithReferenceAnalysisModel(model string) *StudioFacade {
 	f.referenceAnalysisModel = strings.TrimSpace(model)
@@ -322,6 +328,9 @@ func durableKey(s string) bool {
 }
 func (f *StudioFacade) assetView(c context.Context, a *models.LibraryAsset) (*dto_open_api.AssetDTO, error) {
 	d := &dto_open_api.AssetDTO{ID: a.ID.String(), Name: a.Name, AssetType: a.AssetType, Description: a.Description, Prompt: a.Prompt, Scope: a.Scope, Version: a.Version, Status: "draft", CreatedAt: a.CreatedAt.UTC().Format(time.RFC3339), UpdatedAt: a.UpdatedAt.UTC().Format(time.RFC3339)}
+	if a.AssetType == "character" {
+		d.Voice = characterVoiceView(a.Voice)
+	}
 	if a.JobID != nil {
 		v := a.JobID.String()
 		d.JobID = &v
@@ -377,6 +386,16 @@ func (f *StudioFacade) UpdateAsset(c context.Context, id, user string, in reques
 	}
 	if in.Description != nil {
 		a.Description = *in.Description
+	}
+	if in.Voice != nil {
+		if a.AssetType != "character" || f.voices == nil {
+			return nil, ErrValidation
+		}
+		v, e := f.voices.ResolveCharacterVoice(c, user, *in.Voice)
+		if e != nil {
+			return nil, e
+		}
+		a.Voice = models.EncodeCharacterVoice(v)
 	}
 	if e = f.repo.SaveAsset(c, a); e != nil {
 		return nil, e

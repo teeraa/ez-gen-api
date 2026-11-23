@@ -397,6 +397,16 @@ func (f *FilmFacade) pollVideo(c context.Context, j *models.FilmJob, in *filmVid
 		if !strings.HasPrefix(kind, "video/") || len(data) == 0 {
 			return f.videoFail(c, j, in, false, "VIDEO_DOWNLOAD_FAILED", "ได้ไฟล์วิดีโอที่ใช้งานไม่ได้", nil)
 		}
+		// Dialogue of characters with a bound voice is dubbed into the clip before it is stored.
+		if dubbed, e := f.dubClip(c, j.UserID.String(), in, data); e != nil {
+			if errors.Is(e, errFilmDubRetry) && age <= filmDubRetryWindow {
+				log.Printf("film: job=%s shot=%s dubbing retry: %v", j.ID, in.ShotID, e)
+				return f.wait(c, j, task, filmVideoRetry)
+			}
+			return f.videoFail(c, j, in, true, "VOICE_FAILED", "สร้างเสียงพากย์ของตัวละครไม่สำเร็จ กรุณาลองใหม่ หรือเปลี่ยนเสียงของตัวละคร", e)
+		} else {
+			data = dubbed
+		}
 		key := fmt.Sprintf("film/%s/%s/%s/%s.mp4", j.UserID, *j.ProjectID, in.ShotID, j.ID)
 		if e = f.storage.Upload(c, key, data, "video/mp4"); e != nil {
 			return f.wait(c, j, task, filmVideoRetry)

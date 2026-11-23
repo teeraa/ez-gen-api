@@ -975,3 +975,16 @@ func renderScaledEditorText(ctx context.Context, tl TextLayer, width, height int
 	}
 	return box, float64(pad) * sx, float64(pad) * sy, nil
 }
+
+// AudioDuration returns the duration of a media file's audio, for placing generated speech
+// on a timeline (AudioTrack.TrimEnd must not exceed it).
+func AudioDuration(ctx context.Context, path string) (float64, error) {
+	info, e := probe(ctx, path)
+	if e != nil {
+		return 0, e
+	}
+	if !info.Audio || info.Duration <= 0 {
+		return 0, fmt.Errorf("no audio stream")
+	}
+	return info.Duration, nil
+}

@@ -28,6 +28,8 @@ type AssetDTO struct {
 	Version        int     `json:"version"`
 	CreatedAt      string  `json:"createdAt"`
 	UpdatedAt      string  `json:"updatedAt"`
+	// Voice is set only on characters that have one.
+	Voice *CharacterVoiceDTO `json:"voice"`
 }
 type AssetListDTO struct {
 	Items []AssetDTO `json:"items"`

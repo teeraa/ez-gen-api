@@ -17,6 +17,18 @@ type CreateAssetRequest struct {
 type UpdateAssetRequest struct {
 	Name        *string `json:"name" validate:"omitempty,min=1,max=100"`
 	Description *string `json:"description" validate:"omitempty,max=2000"`
+	// Voice binds a voice to a character asset; {"voiceId":""} with no templateId removes it.
+	Voice *CharacterVoiceRequest `json:"voice"`
+}
+
+// CharacterVoiceRequest picks a Voice-menu voice (preset id or own profile id) with its settings,
+// or copies all of them from one of the caller's voice generations (templateId wins).
+type CharacterVoiceRequest struct {
+	VoiceID    string  `json:"voiceId"`
+	Emotion    string  `json:"emotion"`
+	Speed      float64 `json:"speed"`
+	Pitch      int     `json:"pitch"`
+	TemplateID string  `json:"templateId"`
 }
 type CreateImageRequest struct {
 	Category         string  `json:"category" validate:"omitempty,oneof=character product"`

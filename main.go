@@ -210,7 +210,10 @@ func main() {
 	videoEditorFacade := facade_open_api.NewVideoEditorFacade(repository_open_api.NewVideoEditorRepository(database), storageClient, videoProcessor).WithMaxSourceBytes(cfg.EditorMaxSourceMB << 20).WithVoice(voiceClient)
 	handler_open_api.NewVideoEditorHandler(videoEditorFacade).RegisterRoutes(apiV1)
 	// Voice menu (/api/v1/voice): text-to-speech with seed-audio-1.0 and a saved history.
-	handler_open_api.NewVoiceHandler(facade_open_api.NewVoiceFacade(repository_open_api.NewVoiceRepository(database), storageClient, voiceClient), 10).RegisterRoutes(apiV1)
+	voiceFacade := facade_open_api.NewVoiceFacade(repository_open_api.NewVoiceRepository(database), storageClient, voiceClient)
+	handler_open_api.NewVoiceHandler(voiceFacade, 10).RegisterRoutes(apiV1)
+	// Characters (library assets, film elements) can be bound to a Voice-menu voice.
+	studioFacade.WithCharacterVoices(voiceFacade)
 	editorTranscriber := editorai.SelectTranscriber(cfg.EditorASRProvider, &editorai.LocalASR{Python: cfg.WhisperPython, Runner: cfg.WhisperRunner, Model: cfg.WhisperModelPath, Version: cfg.WhisperModelVersion, Device: cfg.WhisperDevice, Compute: cfg.WhisperComputeType, Language: cfg.WhisperLanguage}, &editorai.TyphoonASR{Python: cfg.TyphoonPython, Runner: cfg.TyphoonRunner, Model: cfg.TyphoonModelPath, Version: cfg.TyphoonModelVersion})
 	editorAIFacade := facade_open_api.NewVideoEditorAIFacade(repository_open_api.NewVideoEditorAIRepository(database), videoEditorFacade, editorai.NewGemini(cfg.GeminiAPIKey, cfg.GeminiModel, cfg.GeminiModelVersion), editorTranscriber, facade_open_api.EditorAIOptions{Enabled: cfg.EditorAIEnabled})
 	handler_open_api.NewVideoEditorAIHandler(editorAIFacade).RegisterRoutes(apiV1)
@@ -226,6 +229,7 @@ func main() {
 	handler_open_api.NewDirectorHandler(directorFacade, cfg.RateLimitJobsPerMinute).RegisterRoutes(apiV1)
 	// สร้างหนัง (film menu): separate tables, routes and worker; shares the point wallet and prices.
 	filmFacade := facade_open_api.NewFilmFacade(repository_open_api.NewFilmRepository(database), storageClient, modelark.NewImageClient(cfg.ArkImageAPIKey, cfg.ArkImageBaseURL, cfg.ArkImageModel), modelark.NewClient(cfg.ArkAPIKey, cfg.ArkBaseURL), mediaFetcher, facade_open_api.FilmOptions{Enabled: imageEnabled, ImageModel: imageModel, ImagePoints: cfg.DirectorImagePoints, VideoPoints: cfg.DirectorVideoPoints, DraftPoints: cfg.DirectorDraftPoints, VideoEnabled: cfg.ArkAPIKey != "", ReferenceCheck: storage.Reachable, Processor: videoProcessor, Analyzer: directorAnalyzer, AnalysisModel: directorAnalysisModel, PlanPoints: cfg.DirectorStoryPoints, VideoFetch: func(c context.Context, u string) ([]byte, string, error) { return storage.FetchVideo(c, u, 300<<20) }})
+	filmFacade.WithCharacterVoices(voiceFacade)
 	handler_open_api.NewFilmHandler(filmFacade, cfg.RateLimitJobsPerMinute).RegisterRoutes(apiV1)
 
 	// Jobs

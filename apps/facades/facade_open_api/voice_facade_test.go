@@ -114,6 +114,14 @@ func (r *voiceRepoFake) List(_ context.Context, user uuid.UUID, limit, offset in
 	return out, int64(len(out)), nil
 }
 func (r *voiceRepoFake) Find(_ context.Context, id, user uuid.UUID) (*models.VoiceGeneration, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, row := range r.rows {
+		if row.ID == id && row.UserID == user {
+			out := row
+			return &out, nil
+		}
+	}
 	return nil, repo.ErrNotFound
 }
 func (r *voiceRepoFake) Delete(_ context.Context, id, user uuid.UUID) error {

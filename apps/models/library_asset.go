@@ -15,6 +15,8 @@ type LibraryAsset struct {
 	UploadID    *uuid.UUID `gorm:"type:uuid"`
 	StorageKey  *string
 	MediaType   *string
+	// Voice is a CharacterVoice JSON (characters only); NULL means no voice.
+	Voice []byte `gorm:"type:jsonb"`
 }
 
 func (LibraryAsset) TableName() string { return "library_assets" }

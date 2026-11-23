@@ -10,6 +10,7 @@ package facade_open_api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -95,6 +96,28 @@ type FilmFacade struct {
 	video   modelark.Client
 	fetcher mediaFetcher
 	options FilmOptions
+	voices  filmVoiceService
+}
+
+// WithCharacterVoices enables binding Voice-menu voices to character elements and dubbing
+// their dialogue into shot clips.
+func (f *FilmFacade) WithCharacterVoices(r filmVoiceService) *FilmFacade {
+	f.voices = r
+	return f
+}
+
+// filmVoice resolves an element voice request outside the element transaction.
+func (f *FilmFacade) filmVoice(c context.Context, user string, in *req.CharacterVoiceRequest) ([]byte, error) {
+	if f.voices == nil {
+		return nil, directorInvalid("voice")
+	}
+	v, e := f.voices.ResolveCharacterVoice(c, user, *in)
+	if errors.Is(e, ErrValidation) {
+		return nil, directorInvalid("voice")
+	} else if e != nil {
+		return nil, e
+	}
+	return models.EncodeCharacterVoice(v), nil
 }
 
 func NewFilmFacade(s filmStore, st mediaStorage, i modelark.ImageGenerator, v modelark.Client, fe mediaFetcher, o FilmOptions) *FilmFacade {
@@ -243,13 +266,14 @@ func filmShotHash(sh *filmShot, elements map[string]*models.FilmElement, style s
 			refs = append(refs, ref{el.ID.String(), el.Name, el.Spec, filmString(el.ImageKey), filmString(el.SyntheticKey)})
 		}
 	}
-	return storyHash(struct {
+	base := storyHash(struct {
 		Seconds                    int
 		Transition, Action, Camera string
 		Audio, Style               string
 		Dialogue                   []filmLine
 		Refs                       []ref
 	}{sh.Seconds, sh.Transition, sh.Action, sh.Camera, sh.Audio, style, sh.Dialogue, refs})
+	return filmVoiceHash(base, filmVoiceLines(sh, elements))
 }
 
 func filmString(p *string) string {
@@ -317,6 +341,9 @@ func (f *FilmFacade) ListElements(c context.Context, seriesID, user string) (dto
 
 func (f *FilmFacade) presentElement(c context.Context, el *models.FilmElement, filmed bool) (dto.FilmElement, error) {
 	out := dto.FilmElement{ID: el.ID.String(), SeriesID: el.SeriesID.String(), Kind: el.Kind, Name: el.Name, Spec: el.Spec, Revision: el.Revision, ImageStatus: el.ImageStatus, Prepared: filmPrepared(el, filmed), UpdatedAt: el.UpdatedAt.UTC()}
+	if el.Kind == "character" {
+		out.Voice = characterVoiceView(el.Voice)
+	}
 	out.FailureCode, out.FailureMessage, out.CanRetry = el.FailureCode, el.FailureMessage, el.ImageStatus == "failed"
 	if key := filmString(el.ImageKey); key != "" && f.storage != nil {
 		u, t, e := f.storage.SignedURL(c, key, time.Hour)
@@ -365,8 +392,17 @@ func (f *FilmFacade) CreateElement(c context.Context, seriesID, user string, in 
 	if e != nil {
 		return dto.FilmElement{}, e
 	}
+	var voice []byte
+	if in.Voice != nil {
+		if *in.Kind != "character" {
+			return dto.FilmElement{}, directorInvalid("voice")
+		}
+		if voice, e = f.filmVoice(c, user, in.Voice); e != nil {
+			return dto.FilmElement{}, e
+		}
+	}
 	now := time.Now().UTC()
-	el := &models.FilmElement{Base: models.Base{ID: uuid.New(), CreatedAt: now, UpdatedAt: now}, UserID: owner, SeriesID: s.ID, Kind: *in.Kind, Name: strings.TrimSpace(*in.Name), Spec: spec, ImageStatus: "idle", Revision: 1}
+	el := &models.FilmElement{Base: models.Base{ID: uuid.New(), CreatedAt: now, UpdatedAt: now}, UserID: owner, SeriesID: s.ID, Kind: *in.Kind, Name: strings.TrimSpace(*in.Name), Spec: spec, ImageStatus: "idle", Revision: 1, Voice: voice}
 	hash := storyHash(struct {
 		Action, Series string
 		Input          req.FilmElementRequest
@@ -384,6 +420,10 @@ func (f *FilmFacade) CreateElement(c context.Context, seriesID, user string, in 
 		}
 		key := *a.StorageKey
 		el.ImageKey, el.ImageStatus = &key, "succeeded"
+		// A character imported from the library keeps its voice unless the request chose one.
+		if in.Voice == nil && el.Kind == "character" {
+			el.Voice = a.Voice
+		}
 		return nil
 	})
 	if e != nil {
@@ -401,6 +441,13 @@ func (f *FilmFacade) UpdateElement(c context.Context, id, user string, in req.Fi
 	}
 	if in.Kind != nil || in.AssetID != nil {
 		return dto.FilmElement{}, directorInvalid("request")
+	}
+	var voice []byte
+	if in.Voice != nil {
+		var e error
+		if voice, e = f.filmVoice(c, user, in.Voice); e != nil {
+			return dto.FilmElement{}, e
+		}
 	}
 	filmed := false
 	el, e := f.store.ChangeElement(c, id, user, "", "", func(el *models.FilmElement, s *models.DirectorSeries, _ repo.FilmAssetLoader) ([]models.FilmJob, error) {
@@ -420,6 +467,12 @@ func (f *FilmFacade) UpdateElement(c context.Context, id, user string, in req.Fi
 				return nil, directorInvalid("spec")
 			}
 			el.Spec, changed = strings.TrimSpace(*in.Spec), true
+		}
+		if in.Voice != nil {
+			if el.Kind != "character" {
+				return nil, directorInvalid("voice")
+			}
+			el.Voice, changed = voice, true
 		}
 		if changed {
 			el.Revision++
@@ -777,6 +830,8 @@ type filmVideoJob struct {
 	// DraftTaskID refines that draft into the full clip; the provider reuses its prompt and frames.
 	DraftTaskID string    `json:"draftTaskId,omitempty"`
 	QueuedAt    time.Time `json:"queuedAt"`
+	// Voices are dialogue lines dubbed with the speakers' bound voices after the clip returns.
+	Voices []filmVoiceLine `json:"voices,omitempty"`
 }
 
 func filmVideoCost(points, seconds int) int {
@@ -835,13 +890,13 @@ func (f *FilmFacade) RequestVideo(c context.Context, projectID, shotID, user str
 			if !ok || draft.Provider != model.ProviderModelID {
 				return nil, &DirectorError{Status: 409, Code: "DRAFT_NOT_AVAILABLE", Message: "ไม่มี draft ล่าสุดของช็อตนี้ให้ทำเป็นตัวเต็ม กรุณาสร้าง draft ใหม่"}
 			}
-			snap := filmVideoJob{ShotID: sh.ID, Hash: draft.Hash, ModelID: draft.ModelID, ProviderModel: draft.Provider, Ratio: s.AspectRatio, Resolution: directorVideoResolution(s.Resolution, model), Seconds: sh.Seconds, Filmed: filmed, Transition: sh.Transition, DraftTaskID: draft.TaskID, QueuedAt: time.Now().UTC()}
+			snap := filmVideoJob{ShotID: sh.ID, Hash: draft.Hash, ModelID: draft.ModelID, ProviderModel: draft.Provider, Ratio: s.AspectRatio, Resolution: directorVideoResolution(s.Resolution, model), Seconds: sh.Seconds, Filmed: filmed, Transition: sh.Transition, DraftTaskID: draft.TaskID, QueuedAt: time.Now().UTC(), Voices: f.filmDubLines(sh, byID)}
 			raw, e := json.Marshal(snap)
 			if e != nil {
 				return nil, e
 			}
 			jobID := uuid.New()
-			cost := filmVideoCost(f.options.VideoPoints, sh.Seconds)
+			cost := filmVideoCost(f.options.VideoPoints, sh.Seconds) + filmVoicePoints(snap.Voices)
 			sh.Video = &filmVideo{Status: "queued", JobID: jobID.String(), Hash: snap.Hash, ModelID: snap.ModelID, Seconds: sh.Seconds, Mode: "finalize", PointsCharged: cost, SourceFrameKey: draft.SourceFrameKey}
 			if e = filmEncode(ep, &d); e != nil {
 				return nil, e
@@ -886,6 +941,13 @@ func (f *FilmFacade) RequestVideo(c context.Context, projectID, shotID, user str
 			return nil, &DirectorError{Status: 409, Code: "ELEMENT_NOT_READY", Message: "สถานที่ของช็อตนี้ถูกลบไปแล้ว กรุณาแก้ช็อตก่อน"}
 		}
 		brief := filmBrief{Shot: sh, Cast: cast, Location: location, Props: props, Style: s.Style, Filmed: filmed}
+		dub := f.filmDubLines(sh, byID)
+		for _, l := range dub {
+			if brief.Dubbed == nil {
+				brief.Dubbed = map[string]bool{}
+			}
+			brief.Dubbed[l.SpeakerID] = true
+		}
 		if sh.Transition == "continue" && i > 0 {
 			listed := map[string]bool{}
 			for _, id := range sh.CharacterIDs {
@@ -901,7 +963,7 @@ func (f *FilmFacade) RequestVideo(c context.Context, projectID, shotID, user str
 		if len(refs) > filmMaxReferences {
 			return nil, directorInvalid("shots.references")
 		}
-		snap := filmVideoJob{ShotID: sh.ID, Hash: filmShotHash(sh, byID, s.Style), ModelID: directorCanonicalVideoModel(modelID), ProviderModel: model.ProviderModelID, Ratio: s.AspectRatio, Resolution: directorVideoResolution(s.Resolution, model), Seconds: sh.Seconds, Filmed: filmed, Transition: sh.Transition, ReferencePrompt: filmReferencePrompt(&brief), Refs: refs, Audio: model.SupportsAudio && (len(sh.Dialogue) > 0 || sh.Audio != ""), Draft: in.Draft, QueuedAt: time.Now().UTC()}
+		snap := filmVideoJob{ShotID: sh.ID, Hash: filmShotHash(sh, byID, s.Style), ModelID: directorCanonicalVideoModel(modelID), ProviderModel: model.ProviderModelID, Ratio: s.AspectRatio, Resolution: directorVideoResolution(s.Resolution, model), Seconds: sh.Seconds, Filmed: filmed, Transition: sh.Transition, ReferencePrompt: filmReferencePrompt(&brief), Refs: refs, Audio: model.SupportsAudio && (len(sh.Dialogue) > 0 || sh.Audio != ""), Draft: in.Draft, QueuedAt: time.Now().UTC(), Voices: dub}
 		if sh.Transition == "continue" && i > 0 {
 			snap.PrevShotID = d.Shots[i-1].ID
 			snap.ContinuePrompt = filmContinuePrompt(&brief)
@@ -920,6 +982,7 @@ func (f *FilmFacade) RequestVideo(c context.Context, projectID, shotID, user str
 		if in.Draft {
 			cost = filmVideoCost(f.options.DraftPoints, sh.Seconds)
 		}
+		cost += filmVoicePoints(snap.Voices)
 		mode := "reference"
 		if sh.Transition == "continue" {
 			mode = "continue"
