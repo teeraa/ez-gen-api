@@ -37,6 +37,9 @@ type FilmShotRequest struct {
 	Camera       string            `json:"camera"`
 	Dialogue     []FilmLineRequest `json:"dialogue"`
 	Audio        string            `json:"audio,omitempty"`
+	// TrimIn/TrimOut cut seconds from the start/end of the shot's clip in the studio and the export.
+	TrimIn  float64 `json:"trimIn,omitempty"`
+	TrimOut float64 `json:"trimOut,omitempty"`
 }
 
 type FilmShotsRequest struct {
@@ -59,6 +62,14 @@ type FilmPlanRequest struct {
 	Prompt         string `json:"prompt"`
 	TargetSeconds  int    `json:"targetSeconds,omitempty"`
 	ShotID         string `json:"shotId,omitempty"`
+}
+
+// FilmMusicRequest changes the episode's music track: its volume (0..1) or, with Remove, removes it.
+// The file itself is uploaded as multipart to the same path.
+type FilmMusicRequest struct {
+	IdempotencyKey string   `json:"idempotencyKey,omitempty"`
+	Volume         *float64 `json:"volume,omitempty"`
+	Remove         bool     `json:"remove,omitempty"`
 }
 
 // FilmRedubRequest re-dubs every finished clip whose characters' voices changed.

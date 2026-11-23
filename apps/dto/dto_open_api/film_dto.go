@@ -77,7 +77,18 @@ type FilmShot struct {
 	Camera       string         `json:"camera"`
 	Dialogue     []FilmLine     `json:"dialogue"`
 	Audio        string         `json:"audio"`
+	TrimIn       float64        `json:"trimIn"`
+	TrimOut      float64        `json:"trimOut"`
 	Video        *FilmShotVideo `json:"video"`
+}
+
+// FilmMusic is the episode's music track, mixed under the whole film from its start.
+type FilmMusic struct {
+	Name      string     `json:"name"`
+	Seconds   float64    `json:"seconds"`
+	Volume    float64    `json:"volume"`
+	URL       *string    `json:"url"`
+	ExpiresAt *time.Time `json:"expiresAt"`
 }
 
 type FilmVideoModel struct {
@@ -119,6 +130,7 @@ type FilmEpisode struct {
 	Plan             *FilmPlan     `json:"plan"`
 	Export           *FilmExport   `json:"export"`
 	ExportAvailable  bool          `json:"exportAvailable"`
+	Music            *FilmMusic    `json:"music"`
 	// RedubShots clips can take their characters' current voices for RedubPoints points.
 	RedubShots     int  `json:"redubShots"`
 	RedubPoints    int  `json:"redubPoints"`

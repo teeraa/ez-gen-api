@@ -87,6 +87,8 @@ type FilmOptions struct {
 	PlanPoints    int
 	// VideoFetch downloads stored clips for export.
 	VideoFetch func(context.Context, string) ([]byte, string, error)
+	// MusicFetch downloads the stored music track for export.
+	MusicFetch func(context.Context, string) ([]byte, string, error)
 }
 
 type FilmFacade struct {
@@ -177,7 +179,10 @@ type filmShot struct {
 	Camera       string     `json:"camera"`
 	Dialogue     []filmLine `json:"dialogue"`
 	Audio        string     `json:"audio,omitempty"`
-	Video        *filmVideo `json:"video,omitempty"`
+	// TrimIn/TrimOut are studio cuts at the clip's start/end; they never make the video stale.
+	TrimIn  float64    `json:"trimIn,omitempty"`
+	TrimOut float64    `json:"trimOut,omitempty"`
+	Video   *filmVideo `json:"video,omitempty"`
 }
 
 type filmDocument struct {
@@ -187,6 +192,7 @@ type filmDocument struct {
 	Plan          *filmPlanState `json:"plan,omitempty"`
 	TargetSeconds int            `json:"targetSeconds,omitempty"`
 	Export        *filmExport    `json:"export,omitempty"`
+	Music         *filmMusic     `json:"music,omitempty"`
 	// Drafts holds each shot's latest successful draft task, kept apart from the shot's video so a
 	// failed finalize can be retried. Provider task ids stay server-side.
 	Drafts map[string]filmDraft `json:"drafts,omitempty"`
@@ -639,9 +645,18 @@ func (f *FilmFacade) presentEpisode(c context.Context, p *models.DirectorProject
 	}
 	out.ExportAvailable = f.options.Processor != nil && f.options.VideoFetch != nil
 	out.RedubAvailable = f.redubAvailable()
+	if m := d.Music; m != nil {
+		out.Music = &dto.FilmMusic{Name: m.Name, Seconds: m.Seconds, Volume: m.Volume}
+		if f.storage != nil {
+			u, t, e := f.storage.SignedURL(c, m.Key, time.Hour)
+			if e != nil {
+				return out, e
+			}
+			out.Music.URL, out.Music.ExpiresAt = &u, &t
+		}
+	}
 	if x := d.Export; x != nil {
-		keys, _, _ := filmExportClips(&d, filmElementMap(elements))
-		ex := &dto.FilmExport{Status: x.Status, Progress: x.Progress, ClipCount: x.ClipCount, Skipped: x.Skipped, Subtitles: x.Subtitles, FailureMessage: x.FailureMessage, Stale: x.Status == "succeeded" && x.Source != filmExportSource(keys)}
+		ex := &dto.FilmExport{Status: x.Status, Progress: x.Progress, ClipCount: x.ClipCount, Skipped: x.Skipped, Subtitles: x.Subtitles, FailureMessage: x.FailureMessage, Stale: x.Status == "succeeded" && x.Source != filmExportSourceOf(&d)}
 		if x.Key != "" && f.storage != nil {
 			u, t, e := f.storage.SignedURL(c, x.Key, time.Hour)
 			if e != nil {
@@ -666,7 +681,7 @@ func (f *FilmFacade) presentEpisode(c context.Context, p *models.DirectorProject
 		for _, l := range sh.Dialogue {
 			lines = append(lines, dto.FilmLine{SpeakerID: l.SpeakerID, Line: l.Line, Delivery: l.Delivery})
 		}
-		item := dto.FilmShot{ID: sh.ID, Index: i, Seconds: sh.Seconds, Start: start, Transition: sh.Transition, CharacterIDs: filmNonNil(sh.CharacterIDs), LocationID: sh.LocationID, PropIDs: filmNonNil(sh.PropIDs), Action: sh.Action, Camera: sh.Camera, Dialogue: lines, Audio: sh.Audio}
+		item := dto.FilmShot{ID: sh.ID, Index: i, Seconds: sh.Seconds, Start: start, Transition: sh.Transition, CharacterIDs: filmNonNil(sh.CharacterIDs), LocationID: sh.LocationID, PropIDs: filmNonNil(sh.PropIDs), Action: sh.Action, Camera: sh.Camera, Dialogue: lines, Audio: sh.Audio, TrimIn: sh.TrimIn, TrimOut: sh.TrimOut}
 		start += sh.Seconds
 		if v := sh.Video; v != nil {
 			hash := filmShotHash(sh, byID, s.Style)
@@ -730,6 +745,10 @@ func filmValidateShots(in []req.FilmShotRequest, current []filmShot, elements ma
 		seen[sh.ID] = true
 		if sh.Seconds < filmMinSeconds || sh.Seconds > filmMaxSeconds {
 			return nil, directorInvalid("shots.seconds")
+		}
+		var ok bool
+		if sh.TrimIn, sh.TrimOut, ok = filmTrim(r.TrimIn, r.TrimOut, sh.Seconds); !ok {
+			return nil, directorInvalid("shots.trim")
 		}
 		total += sh.Seconds
 		if sh.Transition == "" {

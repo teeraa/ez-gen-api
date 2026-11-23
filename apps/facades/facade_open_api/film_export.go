@@ -40,6 +40,9 @@ type filmExportJob struct {
 	Subtitles  []string `json:"subtitles"`
 	Resolution string   `json:"resolution"`
 	Ratio      string   `json:"ratio"`
+	// Trims match ClipKeys; Music is mixed under the whole film.
+	Trims []filmClipTrim `json:"trims,omitempty"`
+	Music *filmMusic     `json:"music,omitempty"`
 }
 
 // filmExportClips lists the succeeded clips in shot order and the matching subtitle text.
@@ -92,12 +95,16 @@ func (f *FilmFacade) RequestExport(c context.Context, projectID, user string, in
 		if !in.Subtitles {
 			subs = nil
 		}
-		raw, e := json.Marshal(filmExportJob{ClipKeys: keys, Subtitles: subs, Resolution: s.Resolution, Ratio: s.AspectRatio})
+		music := d.Music
+		if music != nil && f.options.MusicFetch == nil {
+			music = nil
+		}
+		raw, e := json.Marshal(filmExportJob{ClipKeys: keys, Subtitles: subs, Resolution: s.Resolution, Ratio: s.AspectRatio, Trims: filmExportTrims(&d), Music: music})
 		if e != nil {
 			return nil, e
 		}
 		jobID := uuid.New()
-		d.Export = &filmExport{Status: "queued", JobID: jobID.String(), Source: filmExportSource(keys), ClipCount: len(keys), Skipped: skipped, Subtitles: in.Subtitles}
+		d.Export = &filmExport{Status: "queued", JobID: jobID.String(), Source: filmExportSourceOf(&d), ClipCount: len(keys), Skipped: skipped, Subtitles: in.Subtitles}
 		if e = filmEncode(ep, &d); e != nil {
 			return nil, e
 		}
@@ -166,6 +173,7 @@ func (f *FilmFacade) exportJob(c context.Context, j *models.FilmJob) error {
 	}
 	defer os.RemoveAll(dir)
 	clips := make([]videoprocessing.Clip, 0, len(in.ClipKeys))
+	filmLength := 0.0
 	for i, key := range in.ClipKeys {
 		u, _, e := f.storage.SignedURL(c, key, 30*time.Minute)
 		var data []byte
@@ -176,17 +184,38 @@ func (f *FilmFacade) exportJob(c context.Context, j *models.FilmJob) error {
 		if e == nil {
 			e = os.WriteFile(path, data, 0o600)
 		}
+		clip := videoprocessing.Clip{Path: path}
+		trimmed := i < len(in.Trims) && (in.Trims[i].In > 0 || in.Trims[i].Out > 0)
+		if e == nil && (trimmed || in.Music != nil) {
+			var length float64
+			if length, e = videoprocessing.MediaDuration(c, path); e == nil {
+				var t filmClipTrim
+				if i < len(in.Trims) {
+					t = in.Trims[i]
+				}
+				clip.TrimStart, clip.TrimEnd = filmClipWindow(t, length)
+				end := clip.TrimEnd
+				if end == 0 {
+					end = length
+				}
+				filmLength += end - clip.TrimStart
+			}
+		}
 		if e != nil {
 			return f.exportFail(c, j, "โหลดคลิปสำหรับรวมภาพยนตร์ไม่ได้ กรุณาลองใหม่", fmt.Errorf("clip %d: %w", i+1, e))
 		}
-		clips = append(clips, videoprocessing.Clip{Path: path})
+		clips = append(clips, clip)
 		if e = progress(5 + (i+1)*50/len(in.ClipKeys)); e != nil {
 			return e
 		}
 	}
+	music, e := f.exportMusic(c, in.Music, dir, filmLength)
+	if e != nil {
+		return f.exportFail(c, j, "โหลดเพลงประกอบไม่ได้ กรุณาลองใหม่", e)
+	}
 	var data []byte
 	if len(clips) <= filmMergeBatch {
-		data, e = f.options.Processor.Merge(c, videoprocessing.MergeRequest{Clips: clips, OutputResolution: in.Resolution, OutputAspectRatio: in.Ratio, AudioVolume: 1, TextLayers: filmTextLayers(in.Subtitles, 0)})
+		data, e = f.options.Processor.Merge(c, videoprocessing.MergeRequest{Clips: clips, OutputResolution: in.Resolution, OutputAspectRatio: in.Ratio, AudioVolume: 1, TextLayers: filmTextLayers(in.Subtitles, 0), AudioTracks: music})
 	} else {
 		parts := []videoprocessing.Clip{}
 		for start := 0; start < len(clips) && e == nil; start += filmMergeBatch {
@@ -205,7 +234,7 @@ func (f *FilmFacade) exportJob(c context.Context, j *models.FilmJob) error {
 			}
 		}
 		if e == nil {
-			data, e = f.options.Processor.Merge(c, videoprocessing.MergeRequest{Clips: parts, OutputResolution: in.Resolution, OutputAspectRatio: in.Ratio, AudioVolume: 1})
+			data, e = f.options.Processor.Merge(c, videoprocessing.MergeRequest{Clips: parts, OutputResolution: in.Resolution, OutputAspectRatio: in.Ratio, AudioVolume: 1, AudioTracks: music})
 		}
 	}
 	if e != nil || len(data) == 0 {
@@ -229,4 +258,29 @@ func filmTextLayersRange(subs []string, start int) []videoprocessing.TextLayer {
 		return nil
 	}
 	return filmTextLayers(subs[start:], 0)
+}
+
+// exportMusic downloads the music track and places it under the whole film with a short fade-out.
+func (f *FilmFacade) exportMusic(c context.Context, m *filmMusic, dir string, length float64) ([]videoprocessing.AudioTrack, error) {
+	if m == nil || f.options.MusicFetch == nil || length <= 0 {
+		return nil, nil
+	}
+	u, _, e := f.storage.SignedURL(c, m.Key, 30*time.Minute)
+	var data []byte
+	if e == nil {
+		data, _, e = f.options.MusicFetch(c, u)
+	}
+	if e != nil {
+		return nil, e
+	}
+	path := filepath.Join(dir, "music"+filepath.Ext(m.Key))
+	if e = os.WriteFile(path, data, 0o600); e != nil {
+		return nil, e
+	}
+	seconds, e := videoprocessing.AudioDuration(c, path)
+	if e != nil {
+		return nil, e
+	}
+	end := min(seconds, length)
+	return []videoprocessing.AudioTrack{{Path: path, TrimEnd: end, Volume: m.Volume, FadeOut: min(2, end/4)}}, nil
 }

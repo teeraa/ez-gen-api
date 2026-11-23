@@ -2,6 +2,7 @@ package handler_open_api
 
 import (
 	"errors"
+	"io"
 	"time"
 
 	f "github.com/ez-gen/ez-gen-api/apps/facades/facade_open_api"
@@ -106,6 +107,34 @@ func (h *FilmHandler) RegisterRoutes(r fiber.Router) {
 		}
 		v, e := h.facade.RequestExport(c.Context(), c.Params("id"), productionUser(c), in)
 		return respond(c, 202, v, e)
+	})
+	g.Post("/episodes/:id/music", rate, func(c *fiber.Ctx) error {
+		file, e := c.FormFile("file")
+		if e != nil {
+			return filmHTTPError(c, &f.DirectorError{Status: 422, Code: "VALIDATION_ERROR", Message: "กรุณาเลือกไฟล์เพลง"})
+		}
+		if file.Size > f.FilmMusicMaxBytes {
+			return utils.Error(c, fiber.StatusRequestEntityTooLarge, "FILE_TOO_LARGE", "ไฟล์เพลงใหญ่เกิน 30 MB", nil)
+		}
+		reader, e := file.Open()
+		if e != nil {
+			return filmHTTPError(c, &f.DirectorError{Status: 422, Code: "VALIDATION_ERROR", Message: "อ่านไฟล์เพลงไม่ได้"})
+		}
+		defer reader.Close()
+		data, e := io.ReadAll(io.LimitReader(reader, f.FilmMusicMaxBytes+1))
+		if e != nil {
+			return filmHTTPError(c, &f.DirectorError{Status: 422, Code: "VALIDATION_ERROR", Message: "อ่านไฟล์เพลงไม่ได้"})
+		}
+		v, e := h.facade.SetMusic(c.Context(), c.Params("id"), productionUser(c), c.FormValue("idempotencyKey"), file.Filename, data)
+		return respond(c, 200, v, e)
+	})
+	g.Patch("/episodes/:id/music", func(c *fiber.Ctx) error {
+		var in req.FilmMusicRequest
+		if e := storyFlowBody(c, &in); e != nil {
+			return filmHTTPError(c, e)
+		}
+		v, e := h.facade.UpdateMusic(c.Context(), c.Params("id"), productionUser(c), in)
+		return respond(c, 200, v, e)
 	})
 	g.Post("/episodes/:id/redub", rate, func(c *fiber.Ctx) error {
 		var in req.FilmRedubRequest

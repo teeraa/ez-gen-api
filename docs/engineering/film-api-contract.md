@@ -115,6 +115,16 @@ fresh clip whose voice is `outdated`/`failed` (1 pt per started 10 s of speech, 
 raw clip into `{job}-dub.mp4`; a new video for the shot cancels it (refunded). The export becomes
 stale because the clip key changes.
 
+## Studio edits (2026-11-23)
+
+- Shots carry `trimIn`/`trimOut` (seconds, rounded to 0.1, at least 1 s kept) in `PUT .../shots` and
+  the episode DTO. Trims never make a video stale; the export cuts each clip by them.
+- Music track: `POST /film/episodes/:id/music` multipart `file` (MP3/WAV/M4A, ≤30 MB, ≤20 min) +
+  `idempotencyKey` → 200 episode with `music {name, seconds, volume, url, expiresAt}` (default volume
+  0.35). `PATCH` same path `{idempotencyKey, volume}` or `{idempotencyKey, remove: true}`; 409 `NO_MUSIC`.
+  The export mixes it from 0 s under the whole film with a 2 s fade-out.
+- `export.stale` now also follows trims and music (an episode with neither keeps the old hash).
+
 ## Not yet built
 
 TTS/music mixing, integration tests against PostgreSQL.

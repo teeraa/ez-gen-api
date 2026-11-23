@@ -976,6 +976,11 @@ func renderScaledEditorText(ctx context.Context, tl TextLayer, width, height int
 	return box, float64(pad) * sx, float64(pad) * sy, nil
 }
 
+// MediaDuration returns a media file's duration in seconds (for trimming a clip from its end).
+func MediaDuration(ctx context.Context, path string) (float64, error) {
+	return probeDuration(ctx, path)
+}
+
 // AudioDuration returns the duration of a media file's audio, for placing generated speech
 // on a timeline (AudioTrack.TrimEnd must not exceed it).
 func AudioDuration(ctx context.Context, path string) (float64, error) {

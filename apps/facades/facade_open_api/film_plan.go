@@ -144,7 +144,7 @@ func filmShotRequest(sh *filmShot) req.FilmShotRequest {
 	for _, l := range sh.Dialogue {
 		lines = append(lines, req.FilmLineRequest{SpeakerID: l.SpeakerID, Line: l.Line, Delivery: l.Delivery})
 	}
-	return req.FilmShotRequest{ID: sh.ID, Seconds: sh.Seconds, Transition: sh.Transition, CharacterIDs: append([]string{}, sh.CharacterIDs...), LocationID: sh.LocationID, PropIDs: append([]string{}, sh.PropIDs...), Action: sh.Action, Camera: sh.Camera, Dialogue: lines, Audio: sh.Audio}
+	return req.FilmShotRequest{ID: sh.ID, Seconds: sh.Seconds, Transition: sh.Transition, CharacterIDs: append([]string{}, sh.CharacterIDs...), LocationID: sh.LocationID, PropIDs: append([]string{}, sh.PropIDs...), Action: sh.Action, Camera: sh.Camera, Dialogue: lines, Audio: sh.Audio, TrimIn: sh.TrimIn, TrimOut: sh.TrimOut}
 }
 
 func (f *FilmFacade) RequestPlan(c context.Context, projectID, user string, in req.FilmPlanRequest) (dto.FilmEpisode, error) {

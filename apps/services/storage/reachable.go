@@ -41,6 +41,11 @@ func FetchVideo(ctx context.Context, rawURL string, max int64) ([]byte, string, 
 	return fetchOwned(ctx, rawURL, max, "video/")
 }
 
+// FetchAudio downloads a signed owned-storage audio file (MP3, WAV, M4A), bounded to max bytes.
+func FetchAudio(ctx context.Context, rawURL string, max int64) ([]byte, string, error) {
+	return fetchOwned(ctx, rawURL, max, "audio/")
+}
+
 var ownedClient = &http.Client{Timeout: 5 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 
 func fetchOwned(ctx context.Context, rawURL string, max int64, prefix string) ([]byte, string, error) {
@@ -66,6 +71,9 @@ func fetchOwned(ctx context.Context, rawURL string, max int64, prefix string) ([
 	kind := http.DetectContentType(data)
 	if prefix == "video/" && !strings.HasPrefix(kind, "video/") && len(data) > 8 && string(data[4:8]) == "ftyp" {
 		kind = "video/mp4"
+	}
+	if prefix == "audio/" && !strings.HasPrefix(kind, "audio/") && len(data) > 8 && string(data[4:8]) == "ftyp" {
+		kind = "audio/mp4"
 	}
 	if !strings.HasPrefix(kind, prefix) {
 		return nil, "", fmt.Errorf("unexpected media type %s", kind)
