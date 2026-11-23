@@ -168,6 +168,8 @@ type filmVideo struct {
 	Silent bool `json:"silent,omitempty"`
 	// Lines are the dialogue audio dubbed into ClipKey, kept apart so the studio can play and move them.
 	Lines []filmDubLine `json:"lines,omitempty"`
+	// Mix is the filmMixVersion ClipKey was mixed with; older mixes are redone from RawKey on export.
+	Mix int `json:"mix,omitempty"`
 }
 
 type filmShot struct {

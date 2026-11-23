@@ -103,7 +103,9 @@ func filmExportDubs(d *filmDocument) []*filmExportDub {
 		if v == nil || v.Status != "succeeded" || v.ClipKey == "" {
 			continue
 		}
-		if len(sh.LineAt) == 0 || len(sh.LineAt) != len(v.Lines) || v.RawKey == "" {
+		// Clips are mixed again when their lines were moved or their mix kept the clip's own audio.
+		moved := len(sh.LineAt) > 0 && len(sh.LineAt) == len(v.Lines)
+		if len(v.Lines) == 0 || v.RawKey == "" || !moved && v.Mix >= filmMixVersion {
 			out = append(out, nil)
 			continue
 		}

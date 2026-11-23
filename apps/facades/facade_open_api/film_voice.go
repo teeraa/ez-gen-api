@@ -25,8 +25,11 @@ const (
 	// filmDubLead is where the first dubbed line starts; filmDubGap separates lines.
 	filmDubLead = 0.4
 	filmDubGap  = 0.25
-	// filmDubClipVolume keeps the provider's ambience/effects under the dubbed speech.
-	filmDubClipVolume = 0.55
+	// filmDubClipVolume mutes the clip's own audio under dubbed lines: the provider may still speak
+	// the lines (it ignored "do not voice" and, before generate_audio=false was sent, made audio).
+	filmDubClipVolume = 0.0
+	// filmMixVersion marks clips mixed with the muted clip audio; older mixes kept it at 55 %.
+	filmMixVersion = 1
 	// filmDubRunesPerSecond estimates Thai speech length for pricing before the audio exists.
 	filmDubRunesPerSecond = 12.0
 	// filmDubRetryWindow bounds retries of a failing dub (measured from video submission).

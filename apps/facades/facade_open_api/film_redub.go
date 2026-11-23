@@ -286,7 +286,7 @@ func (f *FilmFacade) redubJob(c context.Context, j *models.FilmJob) error {
 		if len(sh.LineAt) != len(stored) {
 			sh.LineAt = nil
 		}
-		sh.Video.ClipKey, sh.Video.VoiceHash, sh.Video.Redub, sh.Video.Lines = key, in.VoiceHash, nil, stored
+		sh.Video.ClipKey, sh.Video.VoiceHash, sh.Video.Redub, sh.Video.Lines, sh.Video.Mix = key, in.VoiceHash, nil, stored, filmMixVersion
 		return filmEncode(ep, &d)
 	})
 }

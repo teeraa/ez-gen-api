@@ -65,7 +65,7 @@ func TestFilmLineAtAndPlaces(t *testing.T) {
 	if _, ok := filmLineAt([]float64{7}, 6); ok {
 		t.Fatal("a line cannot start after the clip")
 	}
-	sh := &filmShot{Seconds: 6, Video: &filmVideo{Status: "succeeded", ClipKey: "c", RawKey: "r", Lines: []filmDubLine{{Key: "l0", At: 0.4, Seconds: 1}, {Key: "l1", At: 1.6, Seconds: 1}}}}
+	sh := &filmShot{Seconds: 6, Video: &filmVideo{Status: "succeeded", ClipKey: "c", RawKey: "r", Lines: []filmDubLine{{Key: "l0", At: 0.4, Seconds: 1}, {Key: "l1", At: 1.6, Seconds: 1}}, Mix: filmMixVersion}}
 	if p := filmLinePlaces(sh); p[0].At != 0.4 || p[1].At != 1.6 {
 		t.Fatalf("generated places without moves: %+v", p)
 	}
@@ -83,5 +83,20 @@ func TestFilmLineAtAndPlaces(t *testing.T) {
 	}
 	if filmExportSourceOf(&d) == before {
 		t.Fatal("moving a line makes the export stale")
+	}
+}
+
+func TestFilmExportRemixesOldMixes(t *testing.T) {
+	sh := filmShot{Seconds: 6, Video: &filmVideo{Status: "succeeded", ClipKey: "c", RawKey: "r", Lines: []filmDubLine{{Key: "l0", At: 0.4, Seconds: 1}}}}
+	d := filmDocument{Shots: []filmShot{sh}}
+	if dubs := filmExportDubs(&d); dubs[0] == nil || dubs[0].RawKey != "r" {
+		t.Fatal("a clip mixed with the provider's own audio is mixed again from its raw clip")
+	}
+	d.Shots[0].Video.Mix = filmMixVersion
+	if dubs := filmExportDubs(&d); dubs[0] != nil {
+		t.Fatal("a current mix is exported as it is")
+	}
+	if filmDubClipVolume != 0 {
+		t.Fatal("dubbed lines play over a muted clip")
 	}
 }

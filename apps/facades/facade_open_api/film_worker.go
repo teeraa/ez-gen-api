@@ -266,7 +266,8 @@ func (f *FilmFacade) submitVideo(c context.Context, j *models.FilmJob, in *filmV
 	if !f.videoAvailable() {
 		return f.videoFail(c, j, in, true, "VIDEO_UNAVAILABLE", "ระบบสร้างวิดีโอยังไม่พร้อมใช้งาน", nil)
 	}
-	request := modelark.CreateTaskRequest{Model: in.ProviderModel, Ratio: in.Ratio, DurationSeconds: int64(in.Seconds), Resolution: in.Resolution, GenerateAudio: in.Audio, ReturnLastFrame: true}
+	// Dialogue shots ask for no provider audio explicitly (the provider speaks lines otherwise).
+	request := modelark.CreateTaskRequest{Model: in.ProviderModel, Ratio: in.Ratio, DurationSeconds: int64(in.Seconds), Resolution: in.Resolution, GenerateAudio: in.Audio, NoAudio: !in.Audio && len(in.Voices) > 0, ReturnLastFrame: true}
 	task.Mode = "reference"
 	if in.DraftTaskID != "" {
 		// Refining a draft: the provider inherits prompt, frames, ratio and duration and rejects resubmission.
@@ -487,7 +488,7 @@ func (f *FilmFacade) storeVideo(c context.Context, j *models.FilmJob, in *filmVi
 			v.SourceFrameKey = task.FirstFrameKey
 		}
 		v.FailureCode, v.FailureMessage, v.CanRetry = nil, nil, false
-		v.RawKey, v.VoiceHash, v.Redub, v.Silent, v.Lines = task.OwnedRawKey, filmLinesHash(in.Voices), nil, !in.Audio, task.OwnedLines
+		v.RawKey, v.VoiceHash, v.Redub, v.Silent, v.Lines, v.Mix = task.OwnedRawKey, filmLinesHash(in.Voices), nil, !in.Audio, task.OwnedLines, filmMixVersion
 		// Moved line positions belonged to the previous clip's lines.
 		sh.LineAt = nil
 		if v.RawKey == "" && len(in.Voices) == 0 {

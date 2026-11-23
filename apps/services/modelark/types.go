@@ -33,13 +33,16 @@ type ContentItem struct {
 // CreateTaskRequest is the application-domain representation of a generation request.
 // All fields are validated before reaching this point.
 type CreateTaskRequest struct {
-	Model               string
-	Content             []ContentItem
-	Ratio               string
-	DurationSeconds     int64
-	Resolution          string
-	OptimizePrompt      bool
-	GenerateAudio       bool
+	Model           string
+	Content         []ContentItem
+	Ratio           string
+	DurationSeconds int64
+	Resolution      string
+	OptimizePrompt  bool
+	GenerateAudio   bool
+	// NoAudio sends generate_audio=false explicitly: models such as Seedance 2.5 make audio by
+	// default, so leaving the field out is not enough to get a silent clip.
+	NoAudio             bool
 	Watermark           bool
 	ReturnLastFrame     bool
 	ExpiresAfterSeconds int64

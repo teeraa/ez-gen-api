@@ -72,6 +72,8 @@ func (a *arkClient) CreateTask(ctx context.Context, req CreateTaskRequest) (stri
 	}
 	if req.GenerateAudio {
 		sdkReq.GenerateAudio = contentgeneration.OptBool{Value: true, Set: true}
+	} else if req.NoAudio {
+		sdkReq.GenerateAudio = contentgeneration.OptBool{Value: false, Set: true}
 	}
 	sdkReq.Watermark = contentgeneration.OptBool{Value: req.Watermark, Set: true}
 	if req.ReturnLastFrame {
