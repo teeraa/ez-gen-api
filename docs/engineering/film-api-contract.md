@@ -125,6 +125,16 @@ stale because the clip key changes.
   The export mixes it from 0 s under the whole film with a 2 s fade-out.
 - `export.stale` now also follows trims and music (an episode with neither keeps the old hash).
 
+## Dialogue as audio clips, moved lines, music start (2026-11-23)
+
+- A clip keeps each generated dialogue line as its own MP3 (`{clip}-line-NN.mp3`). `video.rawUrl` is the
+  clip without dialogue and `video.lines [{speakerId, text, url, seconds, at}]` the lines with the
+  place they were generated at (seconds from the clip start). `video.url` stays the mixed clip.
+- Shots carry `lineAt` (same order as `video.lines`, 0.1 s steps, ≤ clip seconds) to move lines in the
+  studio. It never makes the video stale; a new video clears it; a re-dub keeps it if the count matches.
+- The export mixes moved lines again over the raw clip; unmoved clips are used as they are.
+- Music `PATCH {idempotencyKey, start}` places the music on the film timeline.
+
 ## Not yet built
 
 TTS/music mixing, integration tests against PostgreSQL.

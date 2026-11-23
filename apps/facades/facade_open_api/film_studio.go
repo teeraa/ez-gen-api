@@ -34,6 +34,8 @@ type filmMusic struct {
 	Name    string  `json:"name"`
 	Seconds float64 `json:"seconds"`
 	Volume  float64 `json:"volume"`
+	// Start places the music on the film timeline (seconds after trims).
+	Start float64 `json:"start,omitempty"`
 }
 
 type filmClipTrim struct {
@@ -51,6 +53,63 @@ func filmTrim(in, out float64, seconds int) (float64, float64, bool) {
 		return 0, 0, false
 	}
 	return in, out, true
+}
+
+// filmLineAt validates moved dubbed-line positions (seconds from the clip start), rounded to 0.1.
+func filmLineAt(in []float64, seconds int) ([]float64, bool) {
+	if len(in) == 0 {
+		return nil, true
+	}
+	if len(in) > filmMaxLines {
+		return nil, false
+	}
+	out := make([]float64, len(in))
+	for i, at := range in {
+		if math.IsNaN(at) || math.IsInf(at, 0) || at < 0 || at > float64(seconds) {
+			return nil, false
+		}
+		out[i] = math.Round(at*10) / 10
+	}
+	return out, true
+}
+
+// filmLinePlaces are a clip's dubbed lines at their current places: moved ones at LineAt.
+func filmLinePlaces(sh *filmShot) []filmDubLine {
+	v := sh.Video
+	if v == nil {
+		return nil
+	}
+	out := append([]filmDubLine(nil), v.Lines...)
+	if len(sh.LineAt) == len(out) {
+		for i := range out {
+			out[i].At = sh.LineAt[i]
+		}
+	}
+	return out
+}
+
+// filmExportDub is a clip the export mixes again from its raw clip because its lines were moved.
+type filmExportDub struct {
+	RawKey string        `json:"rawKey"`
+	Lines  []filmDubLine `json:"lines"`
+}
+
+// filmExportDubs matches filmExportClips: nil for clips used as they are.
+func filmExportDubs(d *filmDocument) []*filmExportDub {
+	out := []*filmExportDub{}
+	for i := range d.Shots {
+		sh := &d.Shots[i]
+		v := sh.Video
+		if v == nil || v.Status != "succeeded" || v.ClipKey == "" {
+			continue
+		}
+		if len(sh.LineAt) == 0 || len(sh.LineAt) != len(v.Lines) || v.RawKey == "" {
+			out = append(out, nil)
+			continue
+		}
+		out = append(out, &filmExportDub{RawKey: v.RawKey, Lines: filmLinePlaces(sh)})
+	}
+	return out
 }
 
 // filmExportTrims lists the trims of the clips filmExportClips returns, in the same order.
@@ -75,14 +134,27 @@ func filmExportSourceOf(d *filmDocument) string {
 	for _, t := range trims {
 		trimmed = trimmed || t.In > 0 || t.Out > 0
 	}
-	if !trimmed && d.Music == nil {
+	dubs := filmExportDubs(d)
+	moved := false
+	for _, x := range dubs {
+		moved = moved || x != nil
+	}
+	if !trimmed && d.Music == nil && !moved {
 		return filmExportSource(keys)
+	}
+	if !moved {
+		return storyHash(struct {
+			Keys  []string
+			Trims []filmClipTrim
+			Music *filmMusic
+		}{keys, trims, d.Music})
 	}
 	return storyHash(struct {
 		Keys  []string
 		Trims []filmClipTrim
 		Music *filmMusic
-	}{keys, trims, d.Music})
+		Dubs  []*filmExportDub
+	}{keys, trims, d.Music, dubs})
 }
 
 // filmClipWindow turns a shot's trims into the processor's trim window for a clip of `duration`.
@@ -169,8 +241,14 @@ func (f *FilmFacade) UpdateMusic(c context.Context, projectID, user string, in r
 	if !filmUUID(in.IdempotencyKey) {
 		return dto.FilmEpisode{}, directorInvalid("idempotencyKey")
 	}
-	if !in.Remove && (in.Volume == nil || math.IsNaN(*in.Volume) || *in.Volume < 0 || *in.Volume > 1) {
+	if !in.Remove && in.Volume == nil && in.Start == nil {
 		return dto.FilmEpisode{}, directorInvalid("volume")
+	}
+	if in.Volume != nil && (math.IsNaN(*in.Volume) || *in.Volume < 0 || *in.Volume > 1) {
+		return dto.FilmEpisode{}, directorInvalid("volume")
+	}
+	if in.Start != nil && (math.IsNaN(*in.Start) || *in.Start < 0 || *in.Start > float64(filmTotalMax)) {
+		return dto.FilmEpisode{}, directorInvalid("start")
 	}
 	hash := storyHash(struct {
 		Action, Project string
@@ -184,10 +262,16 @@ func (f *FilmFacade) UpdateMusic(c context.Context, projectID, user string, in r
 		if d.Music == nil {
 			return nil, &DirectorError{Status: 409, Code: "NO_MUSIC", Message: "ตอนนี้ยังไม่มีเพลงประกอบ"}
 		}
-		if in.Remove {
+		switch {
+		case in.Remove:
 			d.Music = nil
-		} else {
-			d.Music.Volume = math.Round(*in.Volume*100) / 100
+		default:
+			if in.Volume != nil {
+				d.Music.Volume = math.Round(*in.Volume*100) / 100
+			}
+			if in.Start != nil {
+				d.Music.Start = math.Round(*in.Start*10) / 10
+			}
 		}
 		return nil, filmEncode(ep, &d)
 	})

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	dto "github.com/ez-gen/ez-gen-api/apps/dto/dto_open_api"
@@ -257,7 +258,7 @@ func (f *FilmFacade) redubJob(c context.Context, j *models.FilmJob) error {
 	if e != nil || len(clip) == 0 {
 		return f.redubRetry(c, j, &in, fmt.Errorf("raw clip: %v", e))
 	}
-	dubbed, e := f.dubClip(c, j.UserID.String(), &filmVideoJob{ShotID: in.ShotID, Seconds: in.Seconds, Ratio: in.Ratio, Resolution: in.Resolution, Draft: in.Draft, Voices: in.Voices}, clip)
+	dubbed, lines, e := f.dubClip(c, j.UserID.String(), &filmVideoJob{ShotID: in.ShotID, Seconds: in.Seconds, Ratio: in.Ratio, Resolution: in.Resolution, Draft: in.Draft, Voices: in.Voices}, clip)
 	if errors.Is(e, errFilmDubRetry) {
 		return f.redubRetry(c, j, &in, e)
 	}
@@ -265,12 +266,27 @@ func (f *FilmFacade) redubJob(c context.Context, j *models.FilmJob) error {
 		return f.redubFail(c, j, &in, "สร้างเสียงพากย์ไม่สำเร็จ กรุณาลองใหม่ หรือเปลี่ยนเสียงของตัวละคร", e)
 	}
 	key := fmt.Sprintf("film/%s/%s/%s/%s-dub.mp4", j.UserID, *j.ProjectID, in.ShotID, j.ID)
-	if e = f.storage.Upload(c, key, dubbed, "video/mp4"); e != nil {
+	stored, e := f.filmStoreLines(c, strings.TrimSuffix(key, ".mp4"), lines)
+	if e == nil {
+		e = f.storage.Upload(c, key, dubbed, "video/mp4")
+	}
+	if e != nil {
 		return f.redubRetry(c, j, &in, e)
 	}
 	return f.store.CompleteEpisode(c, j, "succeeded", false, func(ep *models.FilmEpisode) error {
-		return filmUpdateRedub(ep, &in, j.ID.String(), func(v *filmVideo) {
-			v.ClipKey, v.VoiceHash, v.Redub = key, in.VoiceHash, nil
-		})
+		d, e := filmDecode(ep)
+		if e != nil {
+			return e
+		}
+		_, sh := filmFindShot(&d, in.ShotID)
+		if !filmOwnsRedub(sh, j.ID.String(), in.RawKey) {
+			return nil
+		}
+		// New voices keep moved line positions when the lines still match one to one.
+		if len(sh.LineAt) != len(stored) {
+			sh.LineAt = nil
+		}
+		sh.Video.ClipKey, sh.Video.VoiceHash, sh.Video.Redub, sh.Video.Lines = key, in.VoiceHash, nil, stored
+		return filmEncode(ep, &d)
 	})
 }

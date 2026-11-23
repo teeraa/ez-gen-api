@@ -183,6 +183,8 @@ type filmVideoTask struct {
 	OwnedVideoKey string `json:"ownedVideoKey,omitempty"`
 	// OwnedRawKey is the clip before dubbing, kept so voices can change later without a new video.
 	OwnedRawKey string `json:"ownedRawKey,omitempty"`
+	// OwnedLines are the generated dialogue lines stored next to the clip.
+	OwnedLines []filmDubLine `json:"ownedLines,omitempty"`
 }
 
 func (f *FilmFacade) videoFail(c context.Context, j *models.FilmJob, in *filmVideoJob, refund bool, code, message string, cause error) error {
@@ -404,16 +406,22 @@ func (f *FilmFacade) pollVideo(c context.Context, j *models.FilmJob, in *filmVid
 		// Dialogue of characters with a bound voice is dubbed into the clip before it is stored; the
 		// provider's clip is kept as well, so a voice can change later without a new video.
 		undubbed := data
-		if dubbed, e := f.dubClip(c, j.UserID.String(), in, data); e != nil {
+		var spoken []filmDubbed
+		if dubbed, lines, e := f.dubClip(c, j.UserID.String(), in, data); e != nil {
 			if errors.Is(e, errFilmDubRetry) && age <= filmDubRetryWindow {
 				log.Printf("film: job=%s shot=%s dubbing retry: %v", j.ID, in.ShotID, e)
 				return f.wait(c, j, task, filmVideoRetry)
 			}
 			return f.videoFail(c, j, in, true, "VOICE_FAILED", "สร้างเสียงพากย์ของตัวละครไม่สำเร็จ กรุณาลองใหม่ หรือเปลี่ยนเสียงของตัวละคร", e)
 		} else {
-			data = dubbed
+			data, spoken = dubbed, lines
 		}
 		key := fmt.Sprintf("film/%s/%s/%s/%s.mp4", j.UserID, *j.ProjectID, in.ShotID, j.ID)
+		stored, e := f.filmStoreLines(c, strings.TrimSuffix(key, ".mp4"), spoken)
+		if e != nil {
+			return f.wait(c, j, task, filmVideoRetry)
+		}
+		task.OwnedLines = stored
 		rawKey := key
 		if len(in.Voices) > 0 {
 			rawKey = strings.TrimSuffix(key, ".mp4") + "-raw.mp4"
@@ -479,7 +487,9 @@ func (f *FilmFacade) storeVideo(c context.Context, j *models.FilmJob, in *filmVi
 			v.SourceFrameKey = task.FirstFrameKey
 		}
 		v.FailureCode, v.FailureMessage, v.CanRetry = nil, nil, false
-		v.RawKey, v.VoiceHash, v.Redub, v.Silent = task.OwnedRawKey, filmLinesHash(in.Voices), nil, !in.Audio
+		v.RawKey, v.VoiceHash, v.Redub, v.Silent, v.Lines = task.OwnedRawKey, filmLinesHash(in.Voices), nil, !in.Audio, task.OwnedLines
+		// Moved line positions belonged to the previous clip's lines.
+		sh.LineAt = nil
 		if v.RawKey == "" && len(in.Voices) == 0 {
 			// A job queued before raw clips were kept: an undubbed clip is its own raw clip.
 			v.RawKey = task.OwnedVideoKey

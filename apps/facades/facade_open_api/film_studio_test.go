@@ -57,3 +57,31 @@ func TestFilmAudioKind(t *testing.T) {
 		t.Fatal("non-audio is rejected")
 	}
 }
+
+func TestFilmLineAtAndPlaces(t *testing.T) {
+	if at, ok := filmLineAt([]float64{0.44, 3}, 6); !ok || at[0] != 0.4 || at[1] != 3 {
+		t.Fatalf("line places round to 0.1: %v %v", at, ok)
+	}
+	if _, ok := filmLineAt([]float64{7}, 6); ok {
+		t.Fatal("a line cannot start after the clip")
+	}
+	sh := &filmShot{Seconds: 6, Video: &filmVideo{Status: "succeeded", ClipKey: "c", RawKey: "r", Lines: []filmDubLine{{Key: "l0", At: 0.4, Seconds: 1}, {Key: "l1", At: 1.6, Seconds: 1}}}}
+	if p := filmLinePlaces(sh); p[0].At != 0.4 || p[1].At != 1.6 {
+		t.Fatalf("generated places without moves: %+v", p)
+	}
+	d := filmDocument{Shots: []filmShot{*sh}}
+	before := filmExportSourceOf(&d)
+	if dubs := filmExportDubs(&d); len(dubs) != 1 || dubs[0] != nil {
+		t.Fatal("an unmoved clip is exported as it is")
+	}
+	d.Shots[0].LineAt = []float64{2, 0.5}
+	if p := filmLinePlaces(&d.Shots[0]); p[0].At != 2 || p[1].At != 0.5 {
+		t.Fatalf("moved places: %+v", p)
+	}
+	if dubs := filmExportDubs(&d); dubs[0] == nil || dubs[0].RawKey != "r" || dubs[0].Lines[0].At != 2 {
+		t.Fatal("a clip with moved lines is mixed again from its raw clip")
+	}
+	if filmExportSourceOf(&d) == before {
+		t.Fatal("moving a line makes the export stale")
+	}
+}

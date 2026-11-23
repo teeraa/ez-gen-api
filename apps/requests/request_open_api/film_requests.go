@@ -40,6 +40,8 @@ type FilmShotRequest struct {
 	// TrimIn/TrimOut cut seconds from the start/end of the shot's clip in the studio and the export.
 	TrimIn  float64 `json:"trimIn,omitempty"`
 	TrimOut float64 `json:"trimOut,omitempty"`
+	// LineAt moves the clip's dubbed lines (order of video.lines), seconds from the clip start.
+	LineAt []float64 `json:"lineAt,omitempty"`
 }
 
 type FilmShotsRequest struct {
@@ -69,7 +71,9 @@ type FilmPlanRequest struct {
 type FilmMusicRequest struct {
 	IdempotencyKey string   `json:"idempotencyKey,omitempty"`
 	Volume         *float64 `json:"volume,omitempty"`
-	Remove         bool     `json:"remove,omitempty"`
+	// Start places the music on the film timeline, in seconds.
+	Start  *float64 `json:"start,omitempty"`
+	Remove bool     `json:"remove,omitempty"`
 }
 
 // FilmRedubRequest re-dubs every finished clip whose characters' voices changed.

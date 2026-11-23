@@ -124,29 +124,33 @@ func filmVoiceHash(base string, lines []filmVoiceLine) string {
 // errFilmDubRetry marks a dubbing failure worth retrying (provider or storage hiccup).
 var errFilmDubRetry = errors.New("film dubbing temporarily failed")
 
-// dubClip mixes the job's voice lines over the clip. Lines whose voice no longer exists are skipped.
-func (f *FilmFacade) dubClip(c context.Context, user string, in *filmVideoJob, clip []byte) ([]byte, error) {
-	if len(in.Voices) == 0 {
-		return clip, nil
-	}
-	if f.voices == nil || f.options.Processor == nil {
-		return clip, nil
-	}
-	dir, e := os.MkdirTemp("", "film-dub-*")
-	if e != nil {
-		return nil, fmt.Errorf("%w: %v", errFilmDubRetry, e)
-	}
-	defer os.RemoveAll(dir)
-	clipPath := filepath.Join(dir, "clip.mp4")
-	if e = os.WriteFile(clipPath, clip, 0o600); e != nil {
-		return nil, fmt.Errorf("%w: %v", errFilmDubRetry, e)
-	}
-	tracks := []videoprocessing.AudioTrack{}
+// filmDubLine is one generated dialogue line kept next to a clip: its audio file, length and the
+// time in the clip where it was placed. Voice is its index in the job's voice lines.
+type filmDubLine struct {
+	Voice     int     `json:"voice"`
+	SpeakerID string  `json:"speakerId"`
+	Text      string  `json:"text"`
+	Key       string  `json:"key"`
+	Seconds   float64 `json:"seconds"`
+	At        float64 `json:"at"`
+}
+
+// filmDubbed is a generated line before it is stored.
+type filmDubbed struct {
+	filmDubLine
+	Path string
+	Data []byte
+}
+
+// speakLines generates the voice lines into dir and places them one after another from filmDubLead.
+// Lines whose voice no longer exists are skipped.
+func (f *FilmFacade) speakLines(c context.Context, user, shotID string, voices []filmVoiceLine, dir string) ([]filmDubbed, error) {
+	out := []filmDubbed{}
 	at := filmDubLead
-	for i, l := range in.Voices {
+	for i, l := range voices {
 		audio, e := f.voices.SpeakLine(c, user, l.Voice, l.Text, l.Delivery)
 		if errors.Is(e, ErrValidation) {
-			log.Printf("film: shot=%s line %d skipped, voice %s no longer available", in.ShotID, i, l.Voice.VoiceID)
+			log.Printf("film: shot=%s line %d skipped, voice %s no longer available", shotID, i, l.Voice.VoiceID)
 			continue
 		}
 		if errors.Is(e, ErrVoiceRejected) || errors.Is(e, ErrVoiceNotGranted) || errors.Is(e, ErrVoiceUnavailable) {
@@ -163,26 +167,74 @@ func (f *FilmFacade) dubClip(c context.Context, user string, in *filmVideoJob, c
 		if e != nil {
 			return nil, fmt.Errorf("%w: line %d: %v", errFilmDubRetry, i, e)
 		}
-		tracks = append(tracks, videoprocessing.AudioTrack{Path: path, TrimEnd: d, At: at, Volume: 1, FadeOut: math.Min(0.08, d/4)})
+		out = append(out, filmDubbed{filmDubLine: filmDubLine{Voice: i, SpeakerID: l.SpeakerID, Text: l.Text, Seconds: math.Round(d*1000) / 1000, At: at}, Path: path, Data: audio})
 		at += d + filmDubGap
 	}
-	if len(tracks) == 0 {
-		return clip, nil
+	return out, nil
+}
+
+// mixLines mixes placed lines over a clip file. At is seconds from the clip start.
+func (f *FilmFacade) mixLines(c context.Context, clipPath string, lines []filmDubbed, resolution, ratio string, draft bool) ([]byte, error) {
+	tracks := make([]videoprocessing.AudioTrack, 0, len(lines))
+	for _, l := range lines {
+		tracks = append(tracks, videoprocessing.AudioTrack{Path: l.Path, TrimEnd: l.Seconds, At: l.At, Volume: 1, FadeOut: math.Min(0.08, l.Seconds/4)})
 	}
-	if at-filmDubGap > float64(in.Seconds)+0.05 {
-		log.Printf("film: shot=%s dubbed lines run %.1fs, longer than the %ds clip; the tail is cut", in.ShotID, at-filmDubGap, in.Seconds)
-	}
-	resolution := "720p"
-	if in.Resolution == "1080p" && !in.Draft {
-		resolution = "1080p"
+	out := "720p"
+	if resolution == "1080p" && !draft {
+		out = "1080p"
 	}
 	volume := filmDubClipVolume
-	out, e := f.options.Processor.Merge(c, videoprocessing.MergeRequest{
-		Clips: []videoprocessing.Clip{{Path: clipPath, Volume: &volume}}, OutputResolution: resolution, OutputAspectRatio: in.Ratio,
+	data, e := f.options.Processor.Merge(c, videoprocessing.MergeRequest{
+		Clips: []videoprocessing.Clip{{Path: clipPath, Volume: &volume}}, OutputResolution: out, OutputAspectRatio: ratio,
 		AudioVolume: 1, AudioTracks: tracks,
 	})
-	if e != nil || len(out) == 0 {
+	if e != nil || len(data) == 0 {
 		return nil, fmt.Errorf("%w: mix: %v", errFilmDubRetry, e)
+	}
+	return data, nil
+}
+
+// dubClip generates the job's voice lines and mixes them over the clip. It returns the mixed clip
+// and the lines (with their audio) so they can be stored and moved later without a new video.
+func (f *FilmFacade) dubClip(c context.Context, user string, in *filmVideoJob, clip []byte) ([]byte, []filmDubbed, error) {
+	if len(in.Voices) == 0 || f.voices == nil || f.options.Processor == nil {
+		return clip, nil, nil
+	}
+	dir, e := os.MkdirTemp("", "film-dub-*")
+	if e != nil {
+		return nil, nil, fmt.Errorf("%w: %v", errFilmDubRetry, e)
+	}
+	defer os.RemoveAll(dir)
+	clipPath := filepath.Join(dir, "clip.mp4")
+	if e = os.WriteFile(clipPath, clip, 0o600); e != nil {
+		return nil, nil, fmt.Errorf("%w: %v", errFilmDubRetry, e)
+	}
+	lines, e := f.speakLines(c, user, in.ShotID, in.Voices, dir)
+	if e != nil {
+		return nil, nil, e
+	}
+	if len(lines) == 0 {
+		return clip, nil, nil
+	}
+	if end := lines[len(lines)-1].At + lines[len(lines)-1].Seconds; end > float64(in.Seconds)+0.05 {
+		log.Printf("film: shot=%s dubbed lines run %.1fs, longer than the %ds clip; the tail is cut", in.ShotID, end, in.Seconds)
+	}
+	out, e := f.mixLines(c, clipPath, lines, in.Resolution, in.Ratio, in.Draft)
+	if e != nil {
+		return nil, nil, e
+	}
+	return out, lines, nil
+}
+
+// filmStoreLines uploads generated lines next to a clip (prefix without extension) and returns them.
+func (f *FilmFacade) filmStoreLines(c context.Context, prefix string, lines []filmDubbed) ([]filmDubLine, error) {
+	out := make([]filmDubLine, 0, len(lines))
+	for _, l := range lines {
+		l.Key = fmt.Sprintf("%s-line-%02d.mp3", prefix, l.Voice)
+		if e := f.storage.Upload(c, l.Key, l.Data, "audio/mpeg"); e != nil {
+			return nil, e
+		}
+		out = append(out, l.filmDubLine)
 	}
 	return out, nil
 }

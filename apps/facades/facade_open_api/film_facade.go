@@ -166,6 +166,8 @@ type filmVideo struct {
 	Redub     *filmRedub `json:"redub,omitempty"`
 	// Silent clips were made without provider audio, so dubbed lines cannot double the provider's speech.
 	Silent bool `json:"silent,omitempty"`
+	// Lines are the dialogue audio dubbed into ClipKey, kept apart so the studio can play and move them.
+	Lines []filmDubLine `json:"lines,omitempty"`
 }
 
 type filmShot struct {
@@ -180,9 +182,12 @@ type filmShot struct {
 	Dialogue     []filmLine `json:"dialogue"`
 	Audio        string     `json:"audio,omitempty"`
 	// TrimIn/TrimOut are studio cuts at the clip's start/end; they never make the video stale.
-	TrimIn  float64    `json:"trimIn,omitempty"`
-	TrimOut float64    `json:"trimOut,omitempty"`
-	Video   *filmVideo `json:"video,omitempty"`
+	TrimIn  float64 `json:"trimIn,omitempty"`
+	TrimOut float64 `json:"trimOut,omitempty"`
+	// LineAt moves the video's dubbed lines (same order as Video.Lines), in seconds from the clip
+	// start; studio-only like trims, so it never makes the video stale.
+	LineAt []float64  `json:"lineAt,omitempty"`
+	Video  *filmVideo `json:"video,omitempty"`
 }
 
 type filmDocument struct {
@@ -646,7 +651,7 @@ func (f *FilmFacade) presentEpisode(c context.Context, p *models.DirectorProject
 	out.ExportAvailable = f.options.Processor != nil && f.options.VideoFetch != nil
 	out.RedubAvailable = f.redubAvailable()
 	if m := d.Music; m != nil {
-		out.Music = &dto.FilmMusic{Name: m.Name, Seconds: m.Seconds, Volume: m.Volume}
+		out.Music = &dto.FilmMusic{Name: m.Name, Seconds: m.Seconds, Volume: m.Volume, Start: m.Start}
 		if f.storage != nil {
 			u, t, e := f.storage.SignedURL(c, m.Key, time.Hour)
 			if e != nil {
@@ -681,7 +686,7 @@ func (f *FilmFacade) presentEpisode(c context.Context, p *models.DirectorProject
 		for _, l := range sh.Dialogue {
 			lines = append(lines, dto.FilmLine{SpeakerID: l.SpeakerID, Line: l.Line, Delivery: l.Delivery})
 		}
-		item := dto.FilmShot{ID: sh.ID, Index: i, Seconds: sh.Seconds, Start: start, Transition: sh.Transition, CharacterIDs: filmNonNil(sh.CharacterIDs), LocationID: sh.LocationID, PropIDs: filmNonNil(sh.PropIDs), Action: sh.Action, Camera: sh.Camera, Dialogue: lines, Audio: sh.Audio, TrimIn: sh.TrimIn, TrimOut: sh.TrimOut}
+		item := dto.FilmShot{ID: sh.ID, Index: i, Seconds: sh.Seconds, Start: start, Transition: sh.Transition, CharacterIDs: filmNonNil(sh.CharacterIDs), LocationID: sh.LocationID, PropIDs: filmNonNil(sh.PropIDs), Action: sh.Action, Camera: sh.Camera, Dialogue: lines, Audio: sh.Audio, TrimIn: sh.TrimIn, TrimOut: sh.TrimOut, LineAt: sh.LineAt}
 		start += sh.Seconds
 		if v := sh.Video; v != nil {
 			hash := filmShotHash(sh, byID, s.Style)
@@ -707,6 +712,21 @@ func (f *FilmFacade) presentEpisode(c context.Context, p *models.DirectorProject
 					return out, e
 				}
 				video.URL, video.ExpiresAt = &u, &t
+			}
+			video.Lines = []dto.FilmDubLine{}
+			if len(v.Lines) > 0 && v.RawKey != "" && f.storage != nil {
+				u, _, e := f.storage.SignedURL(c, v.RawKey, time.Hour)
+				if e != nil {
+					return out, e
+				}
+				video.RawURL = &u
+				for _, l := range v.Lines {
+					lu, _, e := f.storage.SignedURL(c, l.Key, time.Hour)
+					if e != nil {
+						return out, e
+					}
+					video.Lines = append(video.Lines, dto.FilmDubLine{SpeakerID: l.SpeakerID, Text: l.Text, URL: lu, Seconds: l.Seconds, At: l.At})
+				}
 			}
 			item.Video = video
 		}
@@ -749,6 +769,9 @@ func filmValidateShots(in []req.FilmShotRequest, current []filmShot, elements ma
 		var ok bool
 		if sh.TrimIn, sh.TrimOut, ok = filmTrim(r.TrimIn, r.TrimOut, sh.Seconds); !ok {
 			return nil, directorInvalid("shots.trim")
+		}
+		if sh.LineAt, ok = filmLineAt(r.LineAt, sh.Seconds); !ok {
+			return nil, directorInvalid("shots.lineAt")
 		}
 		total += sh.Seconds
 		if sh.Transition == "" {

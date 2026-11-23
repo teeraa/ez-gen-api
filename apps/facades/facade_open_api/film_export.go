@@ -43,6 +43,8 @@ type filmExportJob struct {
 	// Trims match ClipKeys; Music is mixed under the whole film.
 	Trims []filmClipTrim `json:"trims,omitempty"`
 	Music *filmMusic     `json:"music,omitempty"`
+	// Dubs match ClipKeys: a clip whose dialogue lines were moved is mixed again from its raw clip.
+	Dubs []*filmExportDub `json:"dubs,omitempty"`
 }
 
 // filmExportClips lists the succeeded clips in shot order and the matching subtitle text.
@@ -99,7 +101,7 @@ func (f *FilmFacade) RequestExport(c context.Context, projectID, user string, in
 		if music != nil && f.options.MusicFetch == nil {
 			music = nil
 		}
-		raw, e := json.Marshal(filmExportJob{ClipKeys: keys, Subtitles: subs, Resolution: s.Resolution, Ratio: s.AspectRatio, Trims: filmExportTrims(&d), Music: music})
+		raw, e := json.Marshal(filmExportJob{ClipKeys: keys, Subtitles: subs, Resolution: s.Resolution, Ratio: s.AspectRatio, Trims: filmExportTrims(&d), Music: music, Dubs: filmExportDubs(&d)})
 		if e != nil {
 			return nil, e
 		}
@@ -181,6 +183,9 @@ func (f *FilmFacade) exportJob(c context.Context, j *models.FilmJob) error {
 			data, _, e = f.options.VideoFetch(c, u)
 		}
 		path := filepath.Join(dir, fmt.Sprintf("clip-%03d.mp4", i))
+		if e == nil && i < len(in.Dubs) && in.Dubs[i] != nil {
+			data, e = f.exportRedub(c, in.Dubs[i], dir, i, in)
+		}
 		if e == nil {
 			e = os.WriteFile(path, data, 0o600)
 		}
@@ -281,6 +286,57 @@ func (f *FilmFacade) exportMusic(c context.Context, m *filmMusic, dir string, le
 	if e != nil {
 		return nil, e
 	}
-	end := min(seconds, length)
-	return []videoprocessing.AudioTrack{{Path: path, TrimEnd: end, Volume: m.Volume, FadeOut: min(2, end/4)}}, nil
+	end := min(seconds, length-m.Start)
+	if end < 0.1 {
+		return nil, nil
+	}
+	return []videoprocessing.AudioTrack{{Path: path, TrimEnd: end, At: m.Start, Volume: m.Volume, FadeOut: min(2, end/4)}}, nil
+}
+
+// exportRedub mixes a clip's dialogue lines at their moved places over its raw clip.
+func (f *FilmFacade) exportRedub(c context.Context, x *filmExportDub, dir string, n int, in filmExportJob) ([]byte, error) {
+	if f.options.MusicFetch == nil || f.options.Processor == nil {
+		return nil, fmt.Errorf("audio fetch not configured")
+	}
+	fetch := func(key string, get func(context.Context, string) ([]byte, string, error)) ([]byte, error) {
+		u, _, e := f.storage.SignedURL(c, key, 30*time.Minute)
+		if e != nil {
+			return nil, e
+		}
+		data, _, e := get(c, u)
+		return data, e
+	}
+	raw, e := fetch(x.RawKey, f.options.VideoFetch)
+	if e != nil {
+		return nil, fmt.Errorf("raw clip: %w", e)
+	}
+	rawPath := filepath.Join(dir, fmt.Sprintf("raw-%03d.mp4", n))
+	if e = os.WriteFile(rawPath, raw, 0o600); e != nil {
+		return nil, e
+	}
+	length, e := videoprocessing.MediaDuration(c, rawPath)
+	if e != nil {
+		return nil, e
+	}
+	lines := []filmDubbed{}
+	for k, l := range x.Lines {
+		audio, e := fetch(l.Key, f.options.MusicFetch)
+		if e != nil {
+			return nil, fmt.Errorf("line %d: %w", k, e)
+		}
+		path := filepath.Join(dir, fmt.Sprintf("line-%03d-%02d.mp3", n, k))
+		if e = os.WriteFile(path, audio, 0o600); e != nil {
+			return nil, e
+		}
+		// A line moved near the end is cut at the clip end; one past it is dropped.
+		if l.At >= length-0.05 {
+			continue
+		}
+		l.Seconds = min(l.Seconds, length-l.At)
+		lines = append(lines, filmDubbed{filmDubLine: l, Path: path})
+	}
+	if len(lines) == 0 {
+		return raw, nil
+	}
+	return f.mixLines(c, rawPath, lines, in.Resolution, in.Ratio, false)
 }

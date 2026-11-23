@@ -61,7 +61,20 @@ type FilmShotVideo struct {
 	// (dubbed over the provider's own speech; the clip is also stale and needs a new video).
 	Voice        string  `json:"voice"`
 	VoiceMessage *string `json:"voiceMessage"`
+	// RawURL is the clip without dubbed dialogue; Lines are the generated dialogue audio clips (at =
+	// where the line was placed when generated). The studio plays them together and can move lines.
+	RawURL *string       `json:"rawUrl"`
+	Lines  []FilmDubLine `json:"lines"`
 	FilmFailure
+}
+
+// FilmDubLine is one generated dialogue line of a clip.
+type FilmDubLine struct {
+	SpeakerID string  `json:"speakerId"`
+	Text      string  `json:"text"`
+	URL       string  `json:"url"`
+	Seconds   float64 `json:"seconds"`
+	At        float64 `json:"at"`
 }
 
 type FilmShot struct {
@@ -79,6 +92,7 @@ type FilmShot struct {
 	Audio        string         `json:"audio"`
 	TrimIn       float64        `json:"trimIn"`
 	TrimOut      float64        `json:"trimOut"`
+	LineAt       []float64      `json:"lineAt"`
 	Video        *FilmShotVideo `json:"video"`
 }
 
@@ -87,6 +101,7 @@ type FilmMusic struct {
 	Name      string     `json:"name"`
 	Seconds   float64    `json:"seconds"`
 	Volume    float64    `json:"volume"`
+	Start     float64    `json:"start"`
 	URL       *string    `json:"url"`
 	ExpiresAt *time.Time `json:"expiresAt"`
 }
