@@ -28,11 +28,11 @@ func TestFilmVoiceLinesPointsAndHash(t *testing.T) {
 		t.Fatal("no dubbing costs nothing")
 	}
 
-	withVoice := filmShotHash(sh, byID, "cinematic")
+	withVoice, withLines := filmShotHash(sh, byID, "cinematic"), filmLinesHash(filmVoiceLines(sh, byID))
 	byID[voiced.ID.String()].Voice = nil
-	without := filmShotHash(sh, byID, "cinematic")
-	if withVoice == without {
-		t.Fatal("binding a voice must make the shot stale")
+	without, withoutLines := filmShotHash(sh, byID, "cinematic"), filmLinesHash(filmVoiceLines(sh, byID))
+	if withVoice != without || withLines == withoutLines || withoutLines != filmNoVoices {
+		t.Fatal("a voice changes the dubbed lines, never the video hash")
 	}
 	if filmVoiceHash("base", nil) != "base" {
 		t.Fatal("shots without voiced lines keep their old hash")

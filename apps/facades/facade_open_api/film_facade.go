@@ -156,6 +156,12 @@ type filmVideo struct {
 	// SourceFrameKey is the previous clip's last frame a "continue" clip started on; a new previous
 	// clip makes this one stale because the cut no longer matches.
 	SourceFrameKey string `json:"sourceFrameKey,omitempty"`
+
+	// RawKey is the provider's clip before dubbing; ClipKey is RawKey plus the voices of VoiceHash.
+	// Both are empty on clips made before dubbing was kept apart ("legacy").
+	RawKey    string     `json:"rawKey,omitempty"`
+	VoiceHash string     `json:"voiceHash,omitempty"`
+	Redub     *filmRedub `json:"redub,omitempty"`
 }
 
 type filmShot struct {
@@ -256,7 +262,8 @@ func filmActive(v *filmVideo) bool {
 func filmFilmed(style string) bool { return style == "realistic" || style == "cinematic" }
 
 // filmShotHash covers everything that shapes a shot's video, including the referenced elements'
-// text and images, so a clip becomes stale when any of them changes.
+// text and images, so a clip becomes stale when any of them changes. Voices are not part of it:
+// they are dubbed over the clip and can change without a new video (filmVoiceStatus).
 func filmShotHash(sh *filmShot, elements map[string]*models.FilmElement, style string) string {
 	type ref struct{ ID, Name, Spec, Image, Synthetic string }
 	refs := []ref{}
@@ -266,14 +273,13 @@ func filmShotHash(sh *filmShot, elements map[string]*models.FilmElement, style s
 			refs = append(refs, ref{el.ID.String(), el.Name, el.Spec, filmString(el.ImageKey), filmString(el.SyntheticKey)})
 		}
 	}
-	base := storyHash(struct {
+	return storyHash(struct {
 		Seconds                    int
 		Transition, Action, Camera string
 		Audio, Style               string
 		Dialogue                   []filmLine
 		Refs                       []ref
 	}{sh.Seconds, sh.Transition, sh.Action, sh.Camera, sh.Audio, style, sh.Dialogue, refs})
-	return filmVoiceHash(base, filmVoiceLines(sh, elements))
 }
 
 func filmString(p *string) string {
@@ -628,6 +634,7 @@ func (f *FilmFacade) presentEpisode(c context.Context, p *models.DirectorProject
 		out.Plan = &dto.FilmPlan{Status: d.Plan.Status, ShotID: d.Plan.ShotID, FailureMessage: d.Plan.FailureMessage}
 	}
 	out.ExportAvailable = f.options.Processor != nil && f.options.VideoFetch != nil
+	out.RedubAvailable = f.redubAvailable()
 	if x := d.Export; x != nil {
 		keys, _, _ := filmExportClips(&d, filmElementMap(elements))
 		ex := &dto.FilmExport{Status: x.Status, Progress: x.Progress, ClipCount: x.ClipCount, Skipped: x.Skipped, Subtitles: x.Subtitles, FailureMessage: x.FailureMessage, Stale: x.Status == "succeeded" && x.Source != filmExportSource(keys)}
@@ -659,7 +666,16 @@ func (f *FilmFacade) presentEpisode(c context.Context, p *models.DirectorProject
 		start += sh.Seconds
 		if v := sh.Video; v != nil {
 			hash := filmShotHash(sh, byID, s.Style)
-			video := &dto.FilmShotVideo{Status: v.Status, Progress: v.Progress, ModelID: v.ModelID, Seconds: v.Seconds, Mode: v.Mode, PointsCharged: v.PointsCharged, PointsRefunded: v.PointsRefunded, Stale: v.Status == "succeeded" && (v.Hash != hash || filmSourceChanged(d.Shots, i)), Draft: v.Draft}
+			fresh := filmVideoFresh(v, sh, byID, s.Style)
+			video := &dto.FilmShotVideo{Status: v.Status, Progress: v.Progress, ModelID: v.ModelID, Seconds: v.Seconds, Mode: v.Mode, PointsCharged: v.PointsCharged, PointsRefunded: v.PointsRefunded, Stale: v.Status == "succeeded" && (!fresh || filmSourceChanged(d.Shots, i)), Draft: v.Draft}
+			video.Voice = filmVoiceStatus(v, sh, byID, s.Style)
+			if video.Voice == "failed" && v.Redub != nil {
+				video.VoiceMessage = v.Redub.FailureMessage
+			}
+			if fresh && (video.Voice == "outdated" || video.Voice == "failed") {
+				out.RedubShots++
+				out.RedubPoints += filmVoicePoints(filmVoiceLines(sh, byID))
+			}
 			_, video.CanFinalize = filmFinalizable(&d, sh, hash)
 			video.CanFinalize = video.CanFinalize && f.options.DraftPoints > 0
 			video.FailureCode, video.FailureMessage, video.CanRetry = v.FailureCode, v.FailureMessage, v.CanRetry

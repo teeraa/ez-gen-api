@@ -55,6 +55,11 @@ type FilmShotVideo struct {
 	CanFinalize    bool `json:"canFinalize"`
 	PointsCharged  int  `json:"pointsCharged"`
 	PointsRefunded int  `json:"pointsRefunded"`
+	// Voice is the state of the dubbed dialogue: "current", "outdated" (a character's voice changed;
+	// POST /redub updates it without a new video), "updating", "failed" or "legacy" (made before
+	// dubbing was kept apart from the clip: only a new video changes its voices).
+	Voice        string  `json:"voice"`
+	VoiceMessage *string `json:"voiceMessage"`
 	FilmFailure
 }
 
@@ -113,6 +118,10 @@ type FilmEpisode struct {
 	Plan             *FilmPlan     `json:"plan"`
 	Export           *FilmExport   `json:"export"`
 	ExportAvailable  bool          `json:"exportAvailable"`
+	// RedubShots clips can take their characters' current voices for RedubPoints points.
+	RedubShots     int  `json:"redubShots"`
+	RedubPoints    int  `json:"redubPoints"`
+	RedubAvailable bool `json:"redubAvailable"`
 }
 
 // FilmExport is the merged film of an episode; Stale means a clip changed after it was made.

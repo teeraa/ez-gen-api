@@ -107,6 +107,14 @@ func (h *FilmHandler) RegisterRoutes(r fiber.Router) {
 		v, e := h.facade.RequestExport(c.Context(), c.Params("id"), productionUser(c), in)
 		return respond(c, 202, v, e)
 	})
+	g.Post("/episodes/:id/redub", rate, func(c *fiber.Ctx) error {
+		var in req.FilmRedubRequest
+		if e := storyFlowBody(c, &in); e != nil {
+			return filmHTTPError(c, e)
+		}
+		v, e := h.facade.RequestRedub(c.Context(), c.Params("id"), productionUser(c), in)
+		return respond(c, 202, v, e)
+	})
 	g.Post("/episodes/:id/plan", rate, func(c *fiber.Ctx) error {
 		var in req.FilmPlanRequest
 		if e := storyFlowBody(c, &in); e != nil {

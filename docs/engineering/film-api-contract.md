@@ -94,6 +94,22 @@ clipCount, skipped, subtitles, failureMessage}`. `stale` is true when the set of
 changed after the export was made. Errors: 409 `EXPORT_BUSY`, 409 `VIDEO_INCOMPLETE` (no
 finished clip), 503 `EXPORT_UNAVAILABLE`.
 
+## Voices and re-dubbing (2026-11-23, `migrations/041_film_redub.sql`)
+
+Every character in a shot needs a voice: `POST .../shots/:shot/video` (draft/full) → 422 `VOICE_REQUIRED`.
+A finished clip keeps the provider clip before dubbing (`rawKey`, `{job}-raw.mp4`) next to the dubbed
+`clipKey`. The video hash no longer contains voices, so changing a voice does **not** make a clip stale.
+
+`video.voice` per shot: `current` · `outdated` (a speaker's voice changed) · `updating` · `failed`
+(`voiceMessage`) · `legacy` (made before raw clips were kept, or voiced by the provider: only a new
+video changes its voices). Episode: `redubShots`, `redubPoints`, `redubAvailable`.
+
+`POST /film/episodes/:id/redub` `{idempotencyKey}` → 202 episode. Queues one `shot_redub` job per
+fresh clip whose voice is `outdated`/`failed` (1 pt per started 10 s of speech, refunded on failure);
+409 `NOTHING_TO_REDUB` when none; 503 `VOICE_UNAVAILABLE`. The job mixes the current voices over the
+raw clip into `{job}-dub.mp4`; a new video for the shot cancels it (refunded). The export becomes
+stale because the clip key changes.
+
 ## Not yet built
 
 TTS/music mixing, integration tests against PostgreSQL.

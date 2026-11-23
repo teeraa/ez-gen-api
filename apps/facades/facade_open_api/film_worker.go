@@ -43,6 +43,8 @@ func (f *FilmFacade) Tick(ctx context.Context) error {
 		return f.planJob(c, j)
 	case "export":
 		return f.exportJob(c, j)
+	case "shot_redub":
+		return f.redubJob(c, j)
 	}
 	return f.store.CompleteEpisode(c, j, "failed", true, func(*models.FilmEpisode) error { return nil })
 }
@@ -179,6 +181,8 @@ type filmVideoTask struct {
 	// Fallback is set when a realistic last frame was rejected and the shot is re-sent from references.
 	Fallback      bool   `json:"fallback,omitempty"`
 	OwnedVideoKey string `json:"ownedVideoKey,omitempty"`
+	// OwnedRawKey is the clip before dubbing, kept so voices can change later without a new video.
+	OwnedRawKey string `json:"ownedRawKey,omitempty"`
 }
 
 func (f *FilmFacade) videoFail(c context.Context, j *models.FilmJob, in *filmVideoJob, refund bool, code, message string, cause error) error {
@@ -397,7 +401,9 @@ func (f *FilmFacade) pollVideo(c context.Context, j *models.FilmJob, in *filmVid
 		if !strings.HasPrefix(kind, "video/") || len(data) == 0 {
 			return f.videoFail(c, j, in, false, "VIDEO_DOWNLOAD_FAILED", "ได้ไฟล์วิดีโอที่ใช้งานไม่ได้", nil)
 		}
-		// Dialogue of characters with a bound voice is dubbed into the clip before it is stored.
+		// Dialogue of characters with a bound voice is dubbed into the clip before it is stored; the
+		// provider's clip is kept as well, so a voice can change later without a new video.
+		undubbed := data
 		if dubbed, e := f.dubClip(c, j.UserID.String(), in, data); e != nil {
 			if errors.Is(e, errFilmDubRetry) && age <= filmDubRetryWindow {
 				log.Printf("film: job=%s shot=%s dubbing retry: %v", j.ID, in.ShotID, e)
@@ -408,10 +414,17 @@ func (f *FilmFacade) pollVideo(c context.Context, j *models.FilmJob, in *filmVid
 			data = dubbed
 		}
 		key := fmt.Sprintf("film/%s/%s/%s/%s.mp4", j.UserID, *j.ProjectID, in.ShotID, j.ID)
+		rawKey := key
+		if len(in.Voices) > 0 {
+			rawKey = strings.TrimSuffix(key, ".mp4") + "-raw.mp4"
+			if e = f.storage.Upload(c, rawKey, undubbed, "video/mp4"); e != nil {
+				return f.wait(c, j, task, filmVideoRetry)
+			}
+		}
 		if e = f.storage.Upload(c, key, data, "video/mp4"); e != nil {
 			return f.wait(c, j, task, filmVideoRetry)
 		}
-		task.OwnedVideoKey = key
+		task.OwnedVideoKey, task.OwnedRawKey = key, rawKey
 		raw, e := json.Marshal(task)
 		if e != nil {
 			return e
@@ -466,6 +479,14 @@ func (f *FilmFacade) storeVideo(c context.Context, j *models.FilmJob, in *filmVi
 			v.SourceFrameKey = task.FirstFrameKey
 		}
 		v.FailureCode, v.FailureMessage, v.CanRetry = nil, nil, false
+		v.RawKey, v.VoiceHash, v.Redub = task.OwnedRawKey, filmLinesHash(in.Voices), nil
+		if v.RawKey == "" && len(in.Voices) == 0 {
+			// A job queued before raw clips were kept: an undubbed clip is its own raw clip.
+			v.RawKey = task.OwnedVideoKey
+		}
+		if v.RawKey == "" {
+			v.VoiceHash = ""
+		}
 		// Only the newest draft can be finalized; a full clip retires it.
 		if in.Draft && task.TaskID != "" {
 			if d.Drafts == nil {

@@ -109,8 +109,8 @@ func filmVoicePoints(lines []filmVoiceLine) int {
 	return max(1, int(math.Ceil(float64(runes)/filmDubRunesPerSecond/10)))
 }
 
-// filmVoiceHash folds the speakers' voices into a shot hash, so changing a voice makes the clip
-// stale. Shots without voiced lines keep their previous hash.
+// filmVoiceHash is the combined shot+voices hash clips carried before voices were kept apart from
+// the video hash; it only recognises those legacy clips now (filmVideoFresh, filmVoiceStatus).
 func filmVoiceHash(base string, lines []filmVoiceLine) string {
 	if len(lines) == 0 {
 		return base

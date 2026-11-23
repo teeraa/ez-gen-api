@@ -61,6 +61,11 @@ type FilmPlanRequest struct {
 	ShotID         string `json:"shotId,omitempty"`
 }
 
+// FilmRedubRequest re-dubs every finished clip whose characters' voices changed.
+type FilmRedubRequest struct {
+	IdempotencyKey string `json:"idempotencyKey,omitempty"`
+}
+
 // FilmExportRequest merges the episode's finished clips into one film.
 type FilmExportRequest struct {
 	IdempotencyKey string `json:"idempotencyKey,omitempty"`
