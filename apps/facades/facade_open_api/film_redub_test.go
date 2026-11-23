@@ -27,7 +27,7 @@ func TestFilmVoiceStatus(t *testing.T) {
 	sh, byID, hero := filmRedubFixture()
 	base := filmShotHash(sh, byID, "cinematic")
 	lines := filmVoiceLines(sh, byID)
-	current := &filmVideo{Status: "succeeded", Hash: base, ClipKey: "c", RawKey: "r", VoiceHash: filmLinesHash(lines)}
+	current := &filmVideo{Status: "succeeded", Hash: base, ClipKey: "c", RawKey: "r", VoiceHash: filmLinesHash(lines), Silent: true}
 	if st := filmVoiceStatus(current, sh, byID, "cinematic"); st != "current" || !filmVideoFresh(current, sh, byID, "cinematic") {
 		t.Fatalf("fresh clip with the current voices: %s", st)
 	}
@@ -59,10 +59,19 @@ func TestFilmVoiceStatus(t *testing.T) {
 	if st := filmVoiceStatus(legacy, sh, byID, "cinematic"); st != "legacy" || !filmVideoFresh(legacy, sh, byID, "cinematic") {
 		t.Fatalf("legacy clip keeps its video but cannot change voice: %s", st)
 	}
-	// Made while voices were part of the shot hash, with the voices bound today.
+	// Made while voices were part of the shot hash: dubbed over the provider's own speech.
 	combined := &filmVideo{Status: "succeeded", Hash: filmVoiceHash(base, filmVoiceLines(sh, byID)), ClipKey: "c"}
-	if st := filmVoiceStatus(combined, sh, byID, "cinematic"); st != "current" || !filmVideoFresh(combined, sh, byID, "cinematic") {
-		t.Fatalf("combined-hash clip with today's voices is fresh and current: %s", st)
+	if st := filmVoiceStatus(combined, sh, byID, "cinematic"); st != "overlap" || !filmVideoFresh(combined, sh, byID, "cinematic") {
+		t.Fatalf("combined-hash clip plays two voices at once: %s", st)
+	}
+	// Dubbed over provider audio after raw clips were kept: also two voices.
+	loud := &filmVideo{Status: "succeeded", Hash: base, ClipKey: "c", RawKey: "r", VoiceHash: filmLinesHash(filmVoiceLines(sh, byID))}
+	if st := filmVoiceStatus(loud, sh, byID, "cinematic"); st != "overlap" {
+		t.Fatalf("dubbed clip with provider audio overlaps: %s", st)
+	}
+	// A draft made with provider audio cannot become a dubbed full clip.
+	if filmDraftDubbable(filmDraft{}, sh, byID) || !filmDraftDubbable(filmDraft{Silent: true}, sh, byID) {
+		t.Fatal("only silent drafts are finalized for dubbed shots")
 	}
 	sh.Action = "he shouts"
 	if filmVideoFresh(current, sh, byID, "cinematic") || filmVideoFresh(combined, sh, byID, "cinematic") {
@@ -142,8 +151,8 @@ func TestFilmRequestRedubQueuesOutdatedClipsOnly(t *testing.T) {
 	stale.ID, stale.Action = "s2", "other"
 	base := filmShotHash(sh, byID, "cinematic")
 	voiced := filmLinesHash(filmVoiceLines(sh, byID))
-	sh.Video = &filmVideo{Status: "succeeded", Hash: base, ClipKey: "clip1", RawKey: "raw1", VoiceHash: voiced}
-	stale.Video = &filmVideo{Status: "succeeded", Hash: "old", ClipKey: "clip2", RawKey: "raw2", VoiceHash: voiced}
+	sh.Video = &filmVideo{Status: "succeeded", Hash: base, ClipKey: "clip1", RawKey: "raw1", VoiceHash: voiced, Silent: true}
+	stale.Video = &filmVideo{Status: "succeeded", Hash: "old", ClipKey: "clip2", RawKey: "raw2", VoiceHash: voiced, Silent: true}
 	doc := filmDocument{Shots: []filmShot{*sh, stale}}
 	raw, _ := json.Marshal(doc)
 

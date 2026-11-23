@@ -479,7 +479,7 @@ func (f *FilmFacade) storeVideo(c context.Context, j *models.FilmJob, in *filmVi
 			v.SourceFrameKey = task.FirstFrameKey
 		}
 		v.FailureCode, v.FailureMessage, v.CanRetry = nil, nil, false
-		v.RawKey, v.VoiceHash, v.Redub = task.OwnedRawKey, filmLinesHash(in.Voices), nil
+		v.RawKey, v.VoiceHash, v.Redub, v.Silent = task.OwnedRawKey, filmLinesHash(in.Voices), nil, !in.Audio
 		if v.RawKey == "" && len(in.Voices) == 0 {
 			// A job queued before raw clips were kept: an undubbed clip is its own raw clip.
 			v.RawKey = task.OwnedVideoKey
@@ -492,7 +492,7 @@ func (f *FilmFacade) storeVideo(c context.Context, j *models.FilmJob, in *filmVi
 			if d.Drafts == nil {
 				d.Drafts = map[string]filmDraft{}
 			}
-			d.Drafts[in.ShotID] = filmDraft{TaskID: task.TaskID, Provider: in.ProviderModel, ModelID: in.ModelID, Hash: in.Hash, Seconds: in.Seconds, CreatedAt: task.SubmittedAt, SourceFrameKey: v.SourceFrameKey}
+			d.Drafts[in.ShotID] = filmDraft{TaskID: task.TaskID, Provider: in.ProviderModel, ModelID: in.ModelID, Hash: in.Hash, Seconds: in.Seconds, CreatedAt: task.SubmittedAt, SourceFrameKey: v.SourceFrameKey, Silent: !in.Audio}
 		} else {
 			delete(d.Drafts, in.ShotID)
 		}

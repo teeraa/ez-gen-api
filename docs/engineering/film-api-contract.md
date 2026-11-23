@@ -100,6 +100,11 @@ Every character in a shot needs a voice: `POST .../shots/:shot/video` (draft/ful
 A finished clip keeps the provider clip before dubbing (`rawKey`, `{job}-raw.mp4`) next to the dubbed
 `clipKey`. The video hash no longer contains voices, so changing a voice does **not** make a clip stale.
 
+Shots with dubbed lines are rendered **without provider audio** (`generate_audio` off): Seedance voices
+dialogue even when told not to, which doubled the speech. Such clips have no sound effects/ambience from
+the provider. Clips (and drafts) made with provider audio and dubbed lines report `voice: "overlap"` and
+are `stale`; a draft like that cannot be finalized (409 `DRAFT_NOT_AVAILABLE`).
+
 `video.voice` per shot: `current` · `outdated` (a speaker's voice changed) · `updating` · `failed`
 (`voiceMessage`) · `legacy` (made before raw clips were kept, or voiced by the provider: only a new
 video changes its voices). Episode: `redubShots`, `redubPoints`, `redubAvailable`.

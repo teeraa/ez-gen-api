@@ -162,6 +162,8 @@ type filmVideo struct {
 	RawKey    string     `json:"rawKey,omitempty"`
 	VoiceHash string     `json:"voiceHash,omitempty"`
 	Redub     *filmRedub `json:"redub,omitempty"`
+	// Silent clips were made without provider audio, so dubbed lines cannot double the provider's speech.
+	Silent bool `json:"silent,omitempty"`
 }
 
 type filmShot struct {
@@ -200,6 +202,8 @@ type filmDraft struct {
 
 	// SourceFrameKey carries a continuation draft's starting frame over to its full clip.
 	SourceFrameKey string `json:"sourceFrameKey,omitempty"`
+	// Silent drafts were made without provider audio; the full clip inherits that.
+	Silent bool `json:"silent,omitempty"`
 }
 
 // filmSourceChanged reports whether a continuation clip started on a frame that is no longer the
@@ -667,7 +671,9 @@ func (f *FilmFacade) presentEpisode(c context.Context, p *models.DirectorProject
 		if v := sh.Video; v != nil {
 			hash := filmShotHash(sh, byID, s.Style)
 			fresh := filmVideoFresh(v, sh, byID, s.Style)
-			video := &dto.FilmShotVideo{Status: v.Status, Progress: v.Progress, ModelID: v.ModelID, Seconds: v.Seconds, Mode: v.Mode, PointsCharged: v.PointsCharged, PointsRefunded: v.PointsRefunded, Stale: v.Status == "succeeded" && (!fresh || filmSourceChanged(d.Shots, i)), Draft: v.Draft}
+			// A clip whose dubbed lines play over the provider's own speech needs a new (silent) video.
+			overlap := v.Status == "succeeded" && filmVoiceOverlap(v, sh, byID, s.Style)
+			video := &dto.FilmShotVideo{Status: v.Status, Progress: v.Progress, ModelID: v.ModelID, Seconds: v.Seconds, Mode: v.Mode, PointsCharged: v.PointsCharged, PointsRefunded: v.PointsRefunded, Stale: v.Status == "succeeded" && (!fresh || overlap || filmSourceChanged(d.Shots, i)), Draft: v.Draft}
 			video.Voice = filmVoiceStatus(v, sh, byID, s.Style)
 			if video.Voice == "failed" && v.Redub != nil {
 				video.VoiceMessage = v.Redub.FailureMessage
@@ -676,7 +682,8 @@ func (f *FilmFacade) presentEpisode(c context.Context, p *models.DirectorProject
 				out.RedubShots++
 				out.RedubPoints += filmVoicePoints(filmVoiceLines(sh, byID))
 			}
-			_, video.CanFinalize = filmFinalizable(&d, sh, hash)
+			draft, finalizable := filmFinalizable(&d, sh, hash)
+			video.CanFinalize = finalizable && filmDraftDubbable(draft, sh, byID)
 			video.CanFinalize = video.CanFinalize && f.options.DraftPoints > 0
 			video.FailureCode, video.FailureMessage, video.CanRetry = v.FailureCode, v.FailureMessage, v.CanRetry
 			if v.ClipKey != "" && f.storage != nil {
@@ -903,10 +910,10 @@ func (f *FilmFacade) RequestVideo(c context.Context, projectID, shotID, user str
 			// The provider inherits prompt, frames, ratio and duration from the draft, so element and
 			// dependency checks already passed when the draft was made.
 			draft, ok := filmFinalizable(&d, sh, filmShotHash(sh, byID, s.Style))
-			if !ok || draft.Provider != model.ProviderModelID {
+			if !ok || draft.Provider != model.ProviderModelID || !filmDraftDubbable(draft, sh, byID) {
 				return nil, &DirectorError{Status: 409, Code: "DRAFT_NOT_AVAILABLE", Message: "ไม่มี draft ล่าสุดของช็อตนี้ให้ทำเป็นตัวเต็ม กรุณาสร้าง draft ใหม่"}
 			}
-			snap := filmVideoJob{ShotID: sh.ID, Hash: draft.Hash, ModelID: draft.ModelID, ProviderModel: draft.Provider, Ratio: s.AspectRatio, Resolution: directorVideoResolution(s.Resolution, model), Seconds: sh.Seconds, Filmed: filmed, Transition: sh.Transition, DraftTaskID: draft.TaskID, QueuedAt: time.Now().UTC(), Voices: f.filmDubLines(sh, byID)}
+			snap := filmVideoJob{ShotID: sh.ID, Hash: draft.Hash, ModelID: draft.ModelID, ProviderModel: draft.Provider, Ratio: s.AspectRatio, Resolution: directorVideoResolution(s.Resolution, model), Seconds: sh.Seconds, Filmed: filmed, Transition: sh.Transition, DraftTaskID: draft.TaskID, Audio: !draft.Silent, QueuedAt: time.Now().UTC(), Voices: f.filmDubLines(sh, byID)}
 			raw, e := json.Marshal(snap)
 			if e != nil {
 				return nil, e
@@ -985,7 +992,9 @@ func (f *FilmFacade) RequestVideo(c context.Context, projectID, shotID, user str
 		if len(refs) > filmMaxReferences {
 			return nil, directorInvalid("shots.references")
 		}
-		snap := filmVideoJob{ShotID: sh.ID, Hash: filmShotHash(sh, byID, s.Style), ModelID: directorCanonicalVideoModel(modelID), ProviderModel: model.ProviderModelID, Ratio: s.AspectRatio, Resolution: directorVideoResolution(s.Resolution, model), Seconds: sh.Seconds, Filmed: filmed, Transition: sh.Transition, ReferencePrompt: filmReferencePrompt(&brief), Refs: refs, Audio: model.SupportsAudio && (len(sh.Dialogue) > 0 || sh.Audio != ""), Draft: in.Draft, QueuedAt: time.Now().UTC(), Voices: dub}
+		// Shots with dubbed lines are made without provider audio: the provider voices dialogue even
+		// when told not to, and its speech would play over the dubbed voices.
+		snap := filmVideoJob{ShotID: sh.ID, Hash: filmShotHash(sh, byID, s.Style), ModelID: directorCanonicalVideoModel(modelID), ProviderModel: model.ProviderModelID, Ratio: s.AspectRatio, Resolution: directorVideoResolution(s.Resolution, model), Seconds: sh.Seconds, Filmed: filmed, Transition: sh.Transition, ReferencePrompt: filmReferencePrompt(&brief), Refs: refs, Audio: model.SupportsAudio && (len(sh.Dialogue) > 0 || sh.Audio != "") && len(dub) == 0, Draft: in.Draft, QueuedAt: time.Now().UTC(), Voices: dub}
 		if sh.Transition == "continue" && i > 0 {
 			snap.PrevShotID = d.Shots[i-1].ID
 			snap.ContinuePrompt = filmContinuePrompt(&brief)

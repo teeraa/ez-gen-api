@@ -61,6 +61,26 @@ func filmVideoFresh(v *filmVideo, sh *filmShot, byID map[string]*models.FilmElem
 	return v.Hash == base || v.VoiceHash == "" && v.Hash == filmVoiceHash(base, filmVoiceLines(sh, byID))
 }
 
+// filmVoiceOverlap tells whether a clip's dubbed lines play over the provider's own audio (clips
+// made before dialogue shots were rendered silent). Only a new video fixes it.
+func filmVoiceOverlap(v *filmVideo, sh *filmShot, byID map[string]*models.FilmElement, style string) bool {
+	if v.Silent {
+		return false
+	}
+	if v.VoiceHash != "" {
+		return v.VoiceHash != filmNoVoices
+	}
+	lines := filmVoiceLines(sh, byID)
+	base := filmShotHash(sh, byID, style)
+	return len(lines) > 0 && v.Hash != base && v.Hash == filmVoiceHash(base, lines)
+}
+
+// filmDraftDubbable tells whether a draft can become a full clip without its dubbed lines playing
+// over provider speech: the full clip inherits the draft's audio.
+func filmDraftDubbable(draft filmDraft, sh *filmShot, byID map[string]*models.FilmElement) bool {
+	return draft.Silent || len(filmVoiceLines(sh, byID)) == 0
+}
+
 func filmRedubActive(r *filmRedub) bool {
 	return r != nil && (r.Status == "queued" || r.Status == "processing")
 }
@@ -69,6 +89,9 @@ func filmRedubActive(r *filmRedub) bool {
 func filmVoiceStatus(v *filmVideo, sh *filmShot, byID map[string]*models.FilmElement, style string) string {
 	if v == nil || v.Status != "succeeded" {
 		return ""
+	}
+	if filmVoiceOverlap(v, sh, byID, style) {
+		return "overlap"
 	}
 	if filmRedubActive(v.Redub) {
 		return "updating"

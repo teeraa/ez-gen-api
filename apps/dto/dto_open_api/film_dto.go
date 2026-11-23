@@ -57,7 +57,8 @@ type FilmShotVideo struct {
 	PointsRefunded int  `json:"pointsRefunded"`
 	// Voice is the state of the dubbed dialogue: "current", "outdated" (a character's voice changed;
 	// POST /redub updates it without a new video), "updating", "failed" or "legacy" (made before
-	// dubbing was kept apart from the clip: only a new video changes its voices).
+	// dubbing was kept apart from the clip: only a new video changes its voices) or "overlap"
+	// (dubbed over the provider's own speech; the clip is also stale and needs a new video).
 	Voice        string  `json:"voice"`
 	VoiceMessage *string `json:"voiceMessage"`
 	FilmFailure
