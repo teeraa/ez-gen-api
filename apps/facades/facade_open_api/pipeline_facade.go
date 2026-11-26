@@ -56,6 +56,8 @@ type pipelineSnapshot struct {
 	Request          req.CreatePipelineRequest `json:"request"`
 	ImageModel       string                    `json:"imageModel"`
 	VideoModel       modelark.ModelConfig      `json:"videoModel"`
+	// Voice is the resolved Voice-menu voice that dubs the dialogue (pipeline_voice.go).
+	Voice *models.CharacterVoice `json:"voice,omitempty"`
 }
 type PipelineFacade struct {
 	store        pipelineStore
@@ -67,6 +69,7 @@ type PipelineFacade struct {
 	registry     modelRegistry
 	storage      mediaStorage
 	videoEnabled bool
+	voice        PipelineVoiceOptions
 }
 
 func NewPipelineFacade(s pipelineStore, i pipelineImages, j JobFacade, r pipelineJobReader, a repo.StudioRepository, u repo.UploadRepository, m modelRegistry, storage mediaStorage, enabled bool) *PipelineFacade {
@@ -118,11 +121,20 @@ func (f *PipelineFacade) Preflight(in req.CreatePipelineRequest) dto.PipelinePre
 	if in.Draft && !m.SupportsDraft() {
 		add("draft", "unsupported", "โมเดลนี้ไม่มีโหมดแบบร่าง")
 	}
+	if in.Voice != nil && strings.TrimSpace(in.Voice.VoiceID+in.Voice.TemplateID) != "" {
+		if strings.TrimSpace(in.Dialogue) == "" {
+			add("voice", "required", "ใส่บทพูดก่อนเลือกเสียงพากย์")
+		} else if !f.voiceAvailable() || !pipelineVoiceModel(m) {
+			add("voice", "unsupported", "โมเดลนี้พากย์ด้วยเสียงที่เลือกไม่ได้ เลือกโมเดลอื่นหรือใช้เสียงของโมเดล")
+		}
+	}
 	if in.AspectRatio != "" && in.DurationSeconds != 0 && !m.SupportsOutput(in.AspectRatio, in.DurationSeconds) {
 		add("aspectRatio", "unsupported", "โมเดลนี้ไม่รองรับสัดส่วนหรือความยาวที่เลือก")
 	}
 	if utf8.RuneCountInString(in.Dialogue) <= 1000 && (in.Dialogue == "" || m.SupportsAudio) {
-		used, limit := promptcompiler.PromptUsage(pipelineCompileInputs(in), m)
+		compile := pipelineCompileInputs(in)
+		compile.DialogueAudio = in.Voice != nil && strings.TrimSpace(in.Voice.VoiceID+in.Voice.TemplateID) != "" && pipelineVoiceModel(m)
+		used, limit := promptcompiler.PromptUsage(compile, m)
 		out.PromptRunes, out.PromptLimit = used, limit
 		if used > limit {
 			if in.Dialogue != "" {
@@ -151,6 +163,7 @@ func (f *PipelineFacade) modelCapabilities(id string) dto.PipelineCapabilitiesDT
 	m, ok := f.registry.Lookup(id)
 	image := f.images.Capabilities()
 	d := dto.PipelineCapabilitiesDTO{Enabled: f.videoEnabled && image.SupportsCharacterReferenceImage && ok && m.SupportsRefImage, SupportsDialogue: ok && m.SupportsAudio, AspectRatios: []string{}, Durations: []int{}}
+	d.SupportsVoice = ok && f.voiceAvailable() && pipelineVoiceModel(m)
 	if ok {
 		for _, ratio := range m.SupportedRatios {
 			for duration := 4; duration <= 15; duration++ {
@@ -222,6 +235,15 @@ func normalizePipeline(in req.CreatePipelineRequest) req.CreatePipelineRequest {
 	if in.Quality == "" {
 		in.Quality = "standard"
 	}
+	if in.Voice != nil {
+		v := *in.Voice
+		v.VoiceID, v.TemplateID = strings.TrimSpace(v.VoiceID), strings.TrimSpace(v.TemplateID)
+		in.Voice = &v
+		if v.VoiceID == "" && v.TemplateID == "" {
+			// An empty voice is the same request as none (keeps the idempotency hash stable).
+			in.Voice = nil
+		}
+	}
 	return in
 }
 func (f *PipelineFacade) Create(c context.Context, user string, in req.CreatePipelineRequest) (*dto.PipelineDTO, error) {
@@ -291,10 +313,29 @@ func (f *PipelineFacade) Create(c context.Context, user string, in req.CreatePip
 	if in.Draft && !m.SupportsDraft() {
 		return nil, ErrModelInvalid
 	}
+	var voice *models.CharacterVoice
+	if in.Voice != nil {
+		if in.Dialogue == "" {
+			return nil, pipelineValidation("voice", "required", "ใส่บทพูดก่อนเลือกเสียงพากย์")
+		}
+		if !f.voiceAvailable() || !pipelineVoiceModel(m) {
+			return nil, pipelineValidation("voice", "invalid_option", "โมเดลนี้พากย์ด้วยเสียงที่เลือกไม่ได้ กรุณาเลือกโมเดลอื่นหรือใช้เสียงของโมเดล")
+		}
+		v, err := f.voice.Voices.ResolveCharacterVoice(c, user, *in.Voice)
+		if errors.Is(err, ErrValidation) || (err == nil && !pipelineWantsVoice(v)) {
+			return nil, pipelineValidation("voice", "invalid_option", "ไม่พบเสียงที่เลือก กรุณาเลือกเสียงใหม่")
+		}
+		if err != nil {
+			return nil, err
+		}
+		voice = v
+	}
 	if e := ValidateVideoSettings(models.VideoSettings{Model: in.ModelID, Mode: "image_image", AspectRatio: in.AspectRatio, Duration: in.DurationSeconds, Quality: in.Quality}, m); e != nil {
 		return nil, e
 	}
-	if _, err := promptcompiler.Compile(pipelineCompileInputs(in), m); err != nil {
+	compile := pipelineCompileInputs(in)
+	compile.DialogueAudio = voice != nil
+	if _, err := promptcompiler.Compile(compile, m); err != nil {
 		if errors.Is(err, promptcompiler.ErrPromptBudget) {
 			return nil, pipelineValidation("scenePrompt", "prompt_budget", "รายละเอียดฉากและบทพูดรวมกันยาวเกินขีดจำกัด กรุณาย่อฉากหรือบทพูดแล้วลองอีกครั้ง")
 		}
@@ -327,9 +368,12 @@ func (f *PipelineFacade) Create(c context.Context, user string, in req.CreatePip
 		}
 		assetID = &a.ID
 		stage = "video"
+		if voice != nil {
+			stage = "voice"
+		}
 		imageModel = ""
 	}
-	snapshot, _ := json.Marshal(pipelineSnapshot{SourceMode: source, RenderingVersion: pipelineRenderingVersion(in.VisualStyle), Request: in, ImageModel: imageModel, VideoModel: m})
+	snapshot, _ := json.Marshal(pipelineSnapshot{SourceMode: source, RenderingVersion: pipelineRenderingVersion(in.VisualStyle), Request: in, ImageModel: imageModel, VideoModel: m, Voice: voice})
 	p, e := f.store.Create(c, &models.StudioPipeline{UserID: uid, IdempotencyKey: in.IdempotencyKey, RequestHash: hash, Inputs: snapshot, Status: "queued", Stage: stage, CharacterAssetID: assetID})
 	if e != nil {
 		if errors.Is(e, repo.ErrConflict) {
@@ -447,7 +491,17 @@ func (f *PipelineFacade) Finalize(c context.Context, id, user string, in req.Fin
 	}
 	sum := sha256.Sum256(snapshot)
 	hash := hex.EncodeToString(sum[:])
-	p, err := f.store.Create(c, &models.StudioPipeline{UserID: source.UserID, IdempotencyKey: in.IdempotencyKey, RequestHash: hash, Inputs: snapshot, Status: "queued", Stage: "video", CharacterAssetID: source.CharacterAssetID})
+	final := &models.StudioPipeline{UserID: source.UserID, IdempotencyKey: in.IdempotencyKey, RequestHash: hash, Inputs: snapshot, Status: "queued", Stage: "video", CharacterAssetID: source.CharacterAssetID}
+	if pipelineWantsVoice(frozen.Voice) {
+		// The final refines the draft task (which already lip-synced to the line); the same line
+		// is mixed over the final clip, so no voice is generated or charged again.
+		st := pipelineVoiceRead(source)
+		if st.LineKey == "" {
+			return nil, ErrConflict
+		}
+		pipelineVoiceWrite(final, pipelineVoiceState{LineKey: st.LineKey, Seconds: st.Seconds, At: st.At, TrackKey: st.TrackKey})
+	}
+	p, err := f.store.Create(c, final)
 	if err != nil {
 		if errors.Is(err, repo.ErrConflict) {
 			return nil, ErrRateLimit
@@ -483,7 +537,7 @@ func (f *PipelineFacade) view(c context.Context, p *models.StudioPipeline) (*dto
 	}
 	var frozen pipelineSnapshot
 	_ = json.Unmarshal(p.Inputs, &frozen)
-	d := &dto.PipelineDTO{IsDraft: frozen.Request.Draft, ModelID: frozen.Request.ModelID, ModelLabel: frozen.VideoModel.PublicLabel(), AspectRatio: frozen.Request.AspectRatio, DurationSeconds: frozen.Request.DurationSeconds, Quality: frozen.Request.Quality, SourceMode: pipelineSource(frozen.Request), CharacterPrompt: frozen.Request.CharacterPrompt, ScenePrompt: frozen.Request.ScenePrompt, Dialogue: frozen.Request.Dialogue, ID: p.ID.String(), Status: p.Status, Stage: p.Stage, CanRetry: p.Status == "failed" && (p.Stage == "save_character" || p.Stage == "save_video" || (p.Stage == "video" && p.VideoJobID != nil)), FailureCode: p.FailureCode, FailureMessage: p.FailureMessage, CharacterJobID: pipelineStringID(p.CharacterJobID), CharacterAssetID: pipelineStringID(p.CharacterAssetID), VideoJobID: pipelineStringID(p.VideoJobID), VideoAssetID: pipelineStringID(p.VideoAssetID), CreatedAt: p.CreatedAt.UTC().Format(time.RFC3339), UpdatedAt: p.UpdatedAt.UTC().Format(time.RFC3339)}
+	d := &dto.PipelineDTO{IsDraft: frozen.Request.Draft, ModelID: frozen.Request.ModelID, ModelLabel: frozen.VideoModel.PublicLabel(), AspectRatio: frozen.Request.AspectRatio, DurationSeconds: frozen.Request.DurationSeconds, Quality: frozen.Request.Quality, SourceMode: pipelineSource(frozen.Request), CharacterPrompt: frozen.Request.CharacterPrompt, ScenePrompt: frozen.Request.ScenePrompt, Dialogue: frozen.Request.Dialogue, ID: p.ID.String(), Status: p.Status, Stage: p.Stage, CanRetry: p.Status == "failed" && (p.Stage == "save_character" || p.Stage == "save_video" || p.Stage == "voice" || p.Stage == "dub" || (p.Stage == "video" && p.VideoJobID != nil)), FailureCode: p.FailureCode, FailureMessage: p.FailureMessage, Voice: characterVoiceView(models.EncodeCharacterVoice(frozen.Voice)), CharacterJobID: pipelineStringID(p.CharacterJobID), CharacterAssetID: pipelineStringID(p.CharacterAssetID), VideoJobID: pipelineStringID(p.VideoJobID), VideoAssetID: pipelineStringID(p.VideoAssetID), CreatedAt: p.CreatedAt.UTC().Format(time.RFC3339), UpdatedAt: p.UpdatedAt.UTC().Format(time.RFC3339)}
 	if historicalTerminal || pipelineRequiresNewRequest(strValOrDefault(p.FailureCode, "")) {
 		d.CanRetry = false
 	}
@@ -608,13 +662,22 @@ func (f *PipelineFacade) advance(c context.Context, p *models.StudioPipeline, fr
 		}
 		return pipelineChild(p, j, "save_character")
 	case "save_character":
-		id, e := f.saveAsset(c, p, p.CharacterJobID, "character", "ตัวละครสังเคราะห์")
+		id, e := f.saveAsset(c, p, p.CharacterJobID, "character", "ตัวละครสังเคราะห์", "")
 		if e != nil {
 			return f.markSaveFailure(p)
 		}
 		p.CharacterAssetID = &id
 		p.Stage = "video"
+		if pipelineWantsVoice(frozen.Voice) {
+			p.Stage = "voice"
+		}
+	case "voice":
+		return f.speakVoice(c, p, frozen)
 	case "video":
+		afterVideo := "save_video"
+		if pipelineWantsVoice(frozen.Voice) {
+			afterVideo = "dub"
+		}
 		if p.VideoJobID == nil {
 			key := pipelineKey(p, fmt.Sprintf("video:%d", p.VideoAttempt))
 			asset := pipelineStringID(p.CharacterAssetID)
@@ -625,13 +688,20 @@ func (f *PipelineFacade) advance(c context.Context, p *models.StudioPipeline, fr
 			if frozen.SourceDraftJobID != "" {
 				input.draftSourceJobID = frozen.SourceDraftJobID
 				input.ReferenceAssetID = nil
+			} else if pipelineWantsVoice(frozen.Voice) {
+				st := pipelineVoiceRead(p)
+				if st.TrackKey == "" {
+					p.Stage = "voice"
+					return nil
+				}
+				input.dialogueAudioKey = st.TrackKey
 			}
 			j, e := f.jobs.CreateJob(c, user, input)
 			if e != nil {
 				old, lookup := f.reader.FindByIdempotencyKey(c, key, user)
 				if lookup == nil {
 					p.VideoJobID = &old.ID
-					return pipelineChild(p, old, "save_video")
+					return pipelineChild(p, old, afterVideo)
 				}
 				if !errors.Is(lookup, repo.ErrNotFound) {
 					return lookup
@@ -649,9 +719,11 @@ func (f *PipelineFacade) advance(c context.Context, p *models.StudioPipeline, fr
 		if e != nil {
 			return e
 		}
-		return pipelineChild(p, j, "save_video")
+		return pipelineChild(p, j, afterVideo)
+	case "dub":
+		return f.dubVideo(c, p, frozen)
 	case "save_video":
-		id, e := f.saveAsset(c, p, p.VideoJobID, "video", "วิดีโอจากตัวละคร")
+		id, e := f.saveAsset(c, p, p.VideoJobID, "video", "วิดีโอจากตัวละคร", pipelineVoiceRead(p).DubbedKey)
 		if e != nil {
 			return f.markSaveFailure(p)
 		}
@@ -680,7 +752,7 @@ func pipelineConfirmedTerminal(j *models.VideoGenerationJob) bool {
 	return status == "failed" || status == "cancelled"
 }
 func pipelineRequiresNewRequest(code string) bool {
-	return code == "PROVIDER_OUTPUT_REJECTED" || code == "PROVIDER_GENERATION_FAILED"
+	return code == "PROVIDER_OUTPUT_REJECTED" || code == "PROVIDER_GENERATION_FAILED" || code == "VOICE_REJECTED" || code == "VOICE_NOT_FOUND"
 }
 func pipelineChild(p *models.StudioPipeline, j *models.VideoGenerationJob, next string) error {
 	switch j.Status {
@@ -711,7 +783,10 @@ func pipelineChild(p *models.StudioPipeline, j *models.VideoGenerationJob, next 
 	}
 	return nil
 }
-func (f *PipelineFacade) saveAsset(c context.Context, p *models.StudioPipeline, jobID *uuid.UUID, kind, name string) (uuid.UUID, error) {
+
+// saveAsset saves a child job's output to the Library; storageKey, when set, replaces the job's
+// output (the dubbed clip of a voiced pipeline).
+func (f *PipelineFacade) saveAsset(c context.Context, p *models.StudioPipeline, jobID *uuid.UUID, kind, name, storageKey string) (uuid.UUID, error) {
 	if jobID == nil {
 		return uuid.Nil, ErrAssetSource
 	}
@@ -726,8 +801,12 @@ func (f *PipelineFacade) saveAsset(c context.Context, p *models.StudioPipeline, 
 	if j.Status != models.JobStatusSucceeded || j.OutputMediaKey == nil || !durableKey(*j.OutputMediaKey) || j.OutputMediaType == nil || *j.OutputMediaType != expected {
 		return uuid.Nil, ErrAssetSource
 	}
+	key := j.OutputMediaKey
+	if storageKey != "" {
+		key = &storageKey
+	}
 	id := pipelineID(p, "asset:"+kind)
-	a := &models.LibraryAsset{Base: models.Base{ID: id}, UserID: p.UserID, Name: name, AssetType: kind, Prompt: j.Prompt, Scope: "personal", Version: 1, JobID: &j.ID, StorageKey: j.OutputMediaKey, MediaType: j.OutputMediaType}
+	a := &models.LibraryAsset{Base: models.Base{ID: id}, UserID: p.UserID, Name: name, AssetType: kind, Prompt: j.Prompt, Scope: "personal", Version: 1, JobID: &j.ID, StorageKey: key, MediaType: j.OutputMediaType}
 	if e = f.store.InsertAsset(c, a); e != nil {
 		return uuid.Nil, e
 	}

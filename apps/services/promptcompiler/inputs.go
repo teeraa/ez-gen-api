@@ -19,6 +19,9 @@ type Inputs struct {
 	FilmedLook               FilmedLook
 	PipelineRenderingVersion string
 	Dialogue                 string
+	// DialogueAudio: the dialogue is already spoken in reference audio 1 (a dubbed voice track),
+	// so the video lip-syncs to it instead of voicing the line itself.
+	DialogueAudio bool
 	// Characters featured in the scene, in billing order (at most 3).
 	Characters []CharacterInputs
 	// Style profile to draw visual/tone tokens from.

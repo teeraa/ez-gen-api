@@ -86,7 +86,7 @@ func (r *PipelineRepository) Claim(c context.Context) (*models.StudioPipeline, e
 	return &p, studioErr(e)
 }
 func (r *PipelineRepository) Advance(c context.Context, p *models.StudioPipeline) error {
-	q := r.db.WithContext(c).Model(&models.StudioPipeline{}).Where("id=? AND user_id=? AND lease_token=?", p.ID, p.UserID, p.LeaseToken).Updates(map[string]any{"status": p.Status, "stage": p.Stage, "character_job_id": p.CharacterJobID, "character_asset_id": p.CharacterAssetID, "video_job_id": p.VideoJobID, "video_asset_id": p.VideoAssetID, "failure_code": p.FailureCode, "failure_message": p.FailureMessage, "lease_token": nil, "lease_until": nil, "updated_at": time.Now()})
+	q := r.db.WithContext(c).Model(&models.StudioPipeline{}).Where("id=? AND user_id=? AND lease_token=?", p.ID, p.UserID, p.LeaseToken).Updates(map[string]any{"status": p.Status, "stage": p.Stage, "character_job_id": p.CharacterJobID, "character_asset_id": p.CharacterAssetID, "video_job_id": p.VideoJobID, "video_asset_id": p.VideoAssetID, "voice": p.Voice, "failure_code": p.FailureCode, "failure_message": p.FailureMessage, "lease_token": nil, "lease_until": nil, "updated_at": time.Now()})
 	if q.Error != nil {
 		return studioErr(q.Error)
 	}
@@ -132,7 +132,7 @@ func (r *PipelineRepository) Retry(c context.Context, id, user string) error {
 			}
 			updates["video_job_id"] = nil
 			updates["video_attempt"] = p.VideoAttempt + 1
-		} else if p.Stage != "save_character" && p.Stage != "save_video" {
+		} else if p.Stage != "save_character" && p.Stage != "save_video" && p.Stage != "voice" && p.Stage != "dub" {
 			return ErrConflict
 		}
 		return tx.Model(&p).Updates(updates).Error

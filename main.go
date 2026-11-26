@@ -215,6 +215,12 @@ func main() {
 	handler_open_api.NewVoiceHandler(voiceFacade, 10).RegisterRoutes(apiV1)
 	// Characters (library assets, film elements) can be bound to a Voice-menu voice.
 	studioFacade.WithCharacterVoices(voiceFacade)
+	// สร้างวิดีโอ dialogue can be dubbed with a Voice-menu voice, the same way films dub.
+	pipelineFacade.WithVoice(facade_open_api.PipelineVoiceOptions{Voices: voiceFacade, Processor: videoProcessor,
+		FetchVideo: func(c context.Context, u string) ([]byte, string, error) { return storage.FetchVideo(c, u, 300<<20) },
+		FetchAudio: func(c context.Context, u string) ([]byte, string, error) {
+			return storage.FetchAudio(c, u, facade_open_api.FilmMusicMaxBytes)
+		}})
 	editorTranscriber := editorai.SelectTranscriber(cfg.EditorASRProvider, &editorai.LocalASR{Python: cfg.WhisperPython, Runner: cfg.WhisperRunner, Model: cfg.WhisperModelPath, Version: cfg.WhisperModelVersion, Device: cfg.WhisperDevice, Compute: cfg.WhisperComputeType, Language: cfg.WhisperLanguage}, &editorai.TyphoonASR{Python: cfg.TyphoonPython, Runner: cfg.TyphoonRunner, Model: cfg.TyphoonModelPath, Version: cfg.TyphoonModelVersion})
 	editorAIFacade := facade_open_api.NewVideoEditorAIFacade(repository_open_api.NewVideoEditorAIRepository(database), videoEditorFacade, editorAIProvider(cfg), editorTranscriber, facade_open_api.EditorAIOptions{Enabled: cfg.EditorAIEnabled})
 	handler_open_api.NewVideoEditorAIHandler(editorAIFacade).RegisterRoutes(apiV1)

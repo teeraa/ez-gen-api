@@ -102,7 +102,7 @@ var pipelineFieldLabels = map[string]string{
 	"referenceImageId": "ภาพอ้างอิง", "characterAssetId": "ตัวละครจากคลัง", "idempotencyKey": "รหัสคำขอ",
 	"characterPrompt": "ลักษณะตัวละคร", "scenePrompt": "ฉากและการเคลื่อนไหว", "dialogue": "บทพูด",
 	"visualStyle": "สไตล์ภาพ", "aspectRatio": "สัดส่วนวิดีโอ", "modelId": "โมเดล", "quality": "คุณภาพวิดีโอ",
-	"durationSeconds": "ความยาววิดีโอ", "draft": "โหมดร่าง",
+	"durationSeconds": "ความยาววิดีโอ", "draft": "โหมดร่าง", "voice": "เสียงพากย์",
 }
 
 func pipelineInputDetail(field, reason string) pipelineValidationDetail {

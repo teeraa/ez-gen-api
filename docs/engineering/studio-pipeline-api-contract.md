@@ -155,3 +155,29 @@ message. Projection copies the aggregate first, performs no repository write,
 preserves the underlying historical state and always keeps `canRetry:false`.
 Foreign child lookup cannot authorize projection. This is an observation-only
 compatibility behavior, not reconciliation or a database repair.
+
+## Voice dubbing (2026-11-26, migration 047)
+
+`POST /studio-pipelines` accepts optional `voice` (same shape as a character voice:
+`{voiceId, emotion, speed, pitch, templateId}`; `voiceId` is a Voice-menu preset or one of the
+caller's own voice profiles). It requires `dialogue` and a model whose capabilities report
+`supportsVoice` (Seedance 2.x with reference audio, and seed-audio configured). An empty voice is
+the same request as none. Errors: 400 `VALIDATION_ERROR` with field `voice` (`required`,
+`invalid_option`).
+
+The dialogue is then dubbed the way films dub (voice first, `pipeline_voice.go`):
+
+1. Stage `voice` (after `save_character`, or first for library sources): the line is spoken with
+   seed-audio, treated like film dialogue, fitted to the clip (up to 1.3× tempo, then one brisk
+   take) and stored with a dialogue track at `studio-pipelines/<user>/<id>/voice-<n>-*`.
+   Charged `Voice` points per attempt (ref `voice:<n>`), refunded when the attempt fails.
+2. Stage `video`: the dialogue track is sent as reference audio 1 and the prompt asks the video
+   to lip-sync to it instead of speaking the line.
+3. Stage `dub`: the line is mixed over the finished clip (clip audio muted, room tone at
+   −50 dBFS), stored as `studio-pipelines/<user>/<id>/dubbed-<jobId>.mp4`, and that file is the
+   Library video saved by `save_video`.
+
+A final made from a voiced draft reuses the draft's line (no new voice charge) and is dubbed again.
+`voice` and `dub` failures are retryable (`DUB_FAILED`, `VOICE_FAILED`, `VOICE_UNAVAILABLE`);
+`VOICE_REJECTED` and `VOICE_NOT_FOUND` need a new request. The pipeline DTO adds `voice`
+(`CharacterVoiceDTO` or null) and capabilities add `supportsVoice` (top level and per model).

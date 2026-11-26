@@ -18,10 +18,12 @@ type StudioPipeline struct {
 	VideoJobID       *uuid.UUID `gorm:"type:uuid"`
 	VideoAssetID     *uuid.UUID `gorm:"type:uuid"`
 	VideoAttempt     int
-	FailureCode      *string
-	FailureMessage   *string
-	LeaseToken       *uuid.UUID `gorm:"type:uuid"`
-	LeaseUntil       *time.Time
+	// Voice is the dubbing state (pipelineVoiceState JSON) of a pipeline with a chosen voice.
+	Voice          []byte `gorm:"type:jsonb"`
+	FailureCode    *string
+	FailureMessage *string
+	LeaseToken     *uuid.UUID `gorm:"type:uuid"`
+	LeaseUntil     *time.Time
 }
 
 func (StudioPipeline) TableName() string { return "studio_pipelines" }

@@ -85,6 +85,10 @@ type CreateJobInput struct {
 	// firstFrameKey is a storage key (or legacy provider URL) of a frame produced by an
 	// earlier job. Unexported so only ContinueScene can set it, never request input.
 	firstFrameKey string
+	// dialogueAudioKey is the storage key of a dubbed dialogue track (studio pipeline voice):
+	// it is sent as reference audio 1 and the prompt asks the video to lip-sync to it.
+	// Unexported so only the pipeline can set it, never request input.
+	dialogueAudioKey string
 }
 
 // ContinueSceneInput carries per-scene overrides for a Continue Scene operation.
@@ -166,7 +170,8 @@ func (f *jobFacade) CreateJob(ctx context.Context, userID string, in CreateJobIn
 		FirstFrame               string
 		PipelineRenderingVersion string `json:",omitempty"`
 		DraftSourceJobID         string `json:",omitempty"`
-	}{in, in.firstFrameKey, in.pipelineRenderingVersion, in.draftSourceJobID})
+		DialogueAudioKey         string `json:",omitempty"`
+	}{in, in.firstFrameKey, in.pipelineRenderingVersion, in.draftSourceJobID, in.dialogueAudioKey})
 	requestSum := sha256.Sum256(requestBytes)
 	requestHash := hex.EncodeToString(requestSum[:])
 	var scene *models.Scene
@@ -346,6 +351,15 @@ func (f *jobFacade) CreateJob(ctx context.Context, userID string, in CreateJobIn
 				return nil, fmt.Errorf("sign reference media: %w", err)
 			}
 			item.URL = signed
+		}
+		if in.dialogueAudioKey != "" {
+			// Seedance lip-syncs to reference audio; it also needs the reference image above.
+			signed, _, err := f.resolveMediaURL(ctx, in.dialogueAudioKey)
+			if err != nil {
+				return nil, fmt.Errorf("sign dialogue audio: %w", err)
+			}
+			compiled.ContentItems = append(compiled.ContentItems, modelark.ContentItem{Type: modelark.ContentTypeAudioURL, URL: signed, Role: modelark.RoleReferenceAudio})
+			compiled.GenerateAudio = true
 		}
 
 		if in.Draft {
@@ -756,6 +770,7 @@ func (f *jobFacade) buildCompilerInputs(ctx context.Context, userID string, in C
 	inputs := promptcompiler.Inputs{
 		PipelineRenderingVersion: in.pipelineRenderingVersion,
 		Dialogue:                 in.Dialogue,
+		DialogueAudio:            in.dialogueAudioKey != "",
 		ModelID:                  in.ModelID,
 		Quality:                  in.Quality,
 	}

@@ -1,36 +1,38 @@
 package dto_open_api
 
 type PipelineDTO struct {
-	DraftExpiresAt             *string `json:"draftExpiresAt"`
-	FinalUnavailableReason     *string `json:"finalUnavailableReason"`
-	IsDraft                    bool    `json:"isDraft"`
-	ModelID                    string  `json:"modelId"`
-	ModelLabel                 string  `json:"modelLabel"`
-	AspectRatio                string  `json:"aspectRatio"`
-	DurationSeconds            int     `json:"durationSeconds"`
-	Quality                    string  `json:"quality"`
-	CanCreateFinal             bool    `json:"canCreateFinal"`
-	SourceDraftID              *string `json:"sourceDraftId"`
-	SourceMode                 string  `json:"sourceMode"`
-	CharacterPrompt            string  `json:"characterPrompt"`
-	ScenePrompt                string  `json:"scenePrompt"`
-	Dialogue                   string  `json:"dialogue"`
-	ID                         string  `json:"id"`
-	Status                     string  `json:"status"`
-	Stage                      string  `json:"stage"`
-	CanRetry                   bool    `json:"canRetry"`
-	FailureCode                *string `json:"failureCode"`
-	FailureMessage             *string `json:"failureMessage"`
-	CharacterJobID             *string `json:"characterJobId"`
-	CharacterAssetID           *string `json:"characterAssetId"`
-	VideoJobID                 *string `json:"videoJobId"`
-	VideoAssetID               *string `json:"videoAssetId"`
-	CharacterMediaURL          *string `json:"characterMediaUrl"`
-	CharacterMediaURLExpiresAt *string `json:"characterMediaUrlExpiresAt"`
-	VideoMediaURL              *string `json:"videoMediaUrl"`
-	VideoMediaURLExpiresAt     *string `json:"videoMediaUrlExpiresAt"`
-	CreatedAt                  string  `json:"createdAt"`
-	UpdatedAt                  string  `json:"updatedAt"`
+	DraftExpiresAt         *string `json:"draftExpiresAt"`
+	FinalUnavailableReason *string `json:"finalUnavailableReason"`
+	IsDraft                bool    `json:"isDraft"`
+	ModelID                string  `json:"modelId"`
+	ModelLabel             string  `json:"modelLabel"`
+	AspectRatio            string  `json:"aspectRatio"`
+	DurationSeconds        int     `json:"durationSeconds"`
+	Quality                string  `json:"quality"`
+	CanCreateFinal         bool    `json:"canCreateFinal"`
+	SourceDraftID          *string `json:"sourceDraftId"`
+	SourceMode             string  `json:"sourceMode"`
+	CharacterPrompt        string  `json:"characterPrompt"`
+	ScenePrompt            string  `json:"scenePrompt"`
+	Dialogue               string  `json:"dialogue"`
+	// Voice is the Voice-menu voice that dubs the dialogue; null when the video model speaks it.
+	Voice                      *CharacterVoiceDTO `json:"voice"`
+	ID                         string             `json:"id"`
+	Status                     string             `json:"status"`
+	Stage                      string             `json:"stage"`
+	CanRetry                   bool               `json:"canRetry"`
+	FailureCode                *string            `json:"failureCode"`
+	FailureMessage             *string            `json:"failureMessage"`
+	CharacterJobID             *string            `json:"characterJobId"`
+	CharacterAssetID           *string            `json:"characterAssetId"`
+	VideoJobID                 *string            `json:"videoJobId"`
+	VideoAssetID               *string            `json:"videoAssetId"`
+	CharacterMediaURL          *string            `json:"characterMediaUrl"`
+	CharacterMediaURLExpiresAt *string            `json:"characterMediaUrlExpiresAt"`
+	VideoMediaURL              *string            `json:"videoMediaUrl"`
+	VideoMediaURLExpiresAt     *string            `json:"videoMediaUrlExpiresAt"`
+	CreatedAt                  string             `json:"createdAt"`
+	UpdatedAt                  string             `json:"updatedAt"`
 }
 type PipelineListDTO struct {
 	Items []PipelineDTO `json:"items"`
@@ -53,9 +55,11 @@ type PipelineCapabilitiesDTO struct {
 	LibraryEnabled      bool                           `json:"libraryEnabled"`
 	Enabled             bool                           `json:"enabled"`
 	SupportsDialogue    bool                           `json:"supportsDialogue"`
-	UnavailableReason   *string                        `json:"unavailableReason"`
-	AspectRatios        []string                       `json:"aspectRatios"`
-	Durations           []int                          `json:"durations"`
+	// SupportsVoice: dialogue can be dubbed with a Voice-menu voice (seed-audio + lip-sync).
+	SupportsVoice     bool     `json:"supportsVoice"`
+	UnavailableReason *string  `json:"unavailableReason"`
+	AspectRatios      []string `json:"aspectRatios"`
+	Durations         []int    `json:"durations"`
 }
 
 // PipelinePreflightDTO checks a pipeline request without creating anything, so the studio can

@@ -54,6 +54,7 @@ type EffectiveInputsSnapshot struct {
 	FilmedLook               FilmedLook `json:"filmedLook,omitempty"`
 	PipelineRenderingVersion string     `json:"pipelineRenderingVersion,omitempty"`
 	Dialogue                 string     `json:"dialogue,omitempty"`
+	DialogueAudio            bool       `json:"dialogueAudio,omitempty"`
 	// CharacterProfileID/Version mirror Characters[0] for rows written before
 	// multi-character scenes.
 	CharacterProfileID      string              `json:"characterProfileId,omitempty"`
@@ -109,7 +110,7 @@ func Compile(in Inputs, model modelark.ModelConfig) (*Result, error) {
 
 	compiledPrompt := composePrompt(controls, sections)
 	if in.Dialogue != "" {
-		compiledPrompt = spokenDialogue(in.Dialogue, model.ProviderModelID) + ". " + compiledPrompt
+		compiledPrompt = dialogueInstruction(in, model.ProviderModelID) + ". " + compiledPrompt
 	}
 	if err := ValidateVideoPrompt(compiledPrompt); err != nil {
 		return nil, err
@@ -139,6 +140,7 @@ func Compile(in Inputs, model modelark.ModelConfig) (*Result, error) {
 		PipelineRenderingVersion: in.PipelineRenderingVersion,
 		FilmedLook:               activeFilmedLook(in),
 		Dialogue:                 in.Dialogue,
+		DialogueAudio:            in.DialogueAudio && in.Dialogue != "",
 		ModelID:                  in.ModelID,
 		Resolution:               resolution,
 	}
@@ -273,7 +275,7 @@ func PromptUsage(in Inputs, model modelark.ModelConfig) (used, limit int) {
 	controls, sections, _ := assemblePrompt(in)
 	used = utf8.RuneCountInString(composePrompt(controls, sections))
 	if in.Dialogue != "" {
-		used += utf8.RuneCountInString(spokenDialogue(in.Dialogue, model.ProviderModelID)) + 2
+		used += utf8.RuneCountInString(dialogueInstruction(in, model.ProviderModelID)) + 2
 	}
 	return used, VideoPromptRuneLimit
 }
@@ -283,6 +285,21 @@ func composePrompt(controls, sections []string) string {
 		return prompt
 	}
 	return strings.Join(append(controls, sections...), ". ")
+}
+
+// dialogueInstruction is the spoken-dialogue part of the prompt: the model speaks the line, or,
+// with DialogueAudio, performs the line already spoken in audio 1 (lip-sync, no other speech).
+func dialogueInstruction(in Inputs, providerModelID string) string {
+	if in.DialogueAudio {
+		return dubbedDialogue(in.Dialogue)
+	}
+	return spokenDialogue(in.Dialogue, providerModelID)
+}
+
+// dubbedDialogue matches the film voice-first prompt: audio 1 is the finished dialogue track.
+func dubbedDialogue(dialogue string) string {
+	quoted, _ := json.Marshal(dialogue)
+	return "Audio 1 is the finished dialogue track of this shot. The character lip-syncs to audio 1: lips move only while the line plays in audio 1 and rest closed in the silences; facial expression and body language match the emotion heard in audio 1. Do not add other speech, no subtitles. Line in audio 1: " + string(quoted)
 }
 
 func spokenDialogue(dialogue, providerModelID string) string {

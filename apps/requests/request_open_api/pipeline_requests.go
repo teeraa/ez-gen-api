@@ -13,6 +13,10 @@ type CreatePipelineRequest struct {
 	ModelID          string `json:"modelId" validate:"omitempty,oneof=violet-motion-2 violet-cinema violet-fast violet-realism violet-classic"`
 	Quality          string `json:"quality" validate:"omitempty,oneof=standard high"`
 	IdempotencyKey   string `json:"idempotencyKey" validate:"required,uuid4"`
+	// Voice dubs the dialogue with a Voice-menu voice (seed-audio), as films do: the line is
+	// generated first, the video lip-syncs to it and the clean voice is mixed over the clip.
+	// Omitted keeps the video model's own speech. Requires dialogue.
+	Voice *CharacterVoiceRequest `json:"voice,omitempty"`
 }
 
 type FinalizePipelineRequest struct {
