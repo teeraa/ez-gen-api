@@ -29,6 +29,13 @@ type MergeRequest struct {
 	AudioTracks []AudioTrack
 	// ImageLayers are still images overlaid on the merged video, under the text.
 	ImageLayers []ImageLayer
+	// Finish grades the merged picture before image and text layers ("" = untouched,
+	// FinishFilm = film-print look, halation and grain). When a long video is merged in
+	// batches, set it on the batches only, never again on the merge of the batches.
+	Finish string
+	// Subtitles is a SubRip file burned over the picture after the finish and image layers, on
+	// the merged timeline, in bundled Kanit with an outline, centred at the bottom ("" = none).
+	Subtitles string
 }
 
 // ImageLayer shows a still image from StartTime to EndTime (timeline seconds). X/Y are the

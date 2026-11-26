@@ -1,13 +1,15 @@
 package facade_open_api
 
-// Film export (ภาพยนตร์ phase 4): merges the episode's shot clips, in order, into one MP4 with
-// optional Thai dialogue subtitles. Uses the shared FFmpeg processor; Director code is not changed.
+// Film export (ภาพยนตร์ phase 4): merges the episode's shot clips, in order, into one MP4. The
+// dialogue becomes timed Thai subtitles: always stored as .srt and .vtt next to the film, and
+// burned into the picture on request. Uses the shared FFmpeg processor; Director code is not changed.
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +18,7 @@ import (
 	dto "github.com/ez-gen/ez-gen-api/apps/dto/dto_open_api"
 	"github.com/ez-gen/ez-gen-api/apps/models"
 	req "github.com/ez-gen/ez-gen-api/apps/requests/request_open_api"
+	"github.com/ez-gen/ez-gen-api/apps/services/subtitles"
 	"github.com/ez-gen/ez-gen-api/apps/services/videoprocessing"
 	"github.com/google/uuid"
 )
@@ -24,27 +27,46 @@ import (
 const filmMergeBatch = 20
 
 type filmExport struct {
-	Status         string  `json:"status"` // queued | processing | succeeded | failed
-	Progress       int     `json:"progress"`
-	JobID          string  `json:"jobId"`
-	Key            string  `json:"key,omitempty"`
-	Source         string  `json:"source"` // hash of the clip keys the export is built from
-	ClipCount      int     `json:"clipCount"`
-	Skipped        int     `json:"skipped"`
-	Subtitles      bool    `json:"subtitles"`
+	Status    string `json:"status"` // queued | processing | succeeded | failed
+	Progress  int    `json:"progress"`
+	JobID     string `json:"jobId"`
+	Key       string `json:"key,omitempty"`
+	Source    string `json:"source"` // hash of the clip keys the export is built from
+	ClipCount int    `json:"clipCount"`
+	Skipped   int    `json:"skipped"`
+	Subtitles bool   `json:"subtitles"`
+	// Captions: subtitle files were stored next to Key (same name, .srt and .vtt).
+	Captions       bool    `json:"captions,omitempty"`
 	FailureMessage *string `json:"failureMessage,omitempty"`
 }
 
 type filmExportJob struct {
-	ClipKeys   []string `json:"clipKeys"`
-	Subtitles  []string `json:"subtitles"`
-	Resolution string   `json:"resolution"`
-	Ratio      string   `json:"ratio"`
+	ClipKeys []string `json:"clipKeys"`
+	// Subtitles is the per-clip text of jobs queued before Captions (burned, untimed).
+	Subtitles []string `json:"subtitles,omitempty"`
+	// Captions match ClipKeys: each clip's dialogue, timed where the lines were generated.
+	Captions [][]filmCaption `json:"captions,omitempty"`
+	// Burn draws the subtitles into the picture; the subtitle files are stored either way.
+	Burn       bool   `json:"burn,omitempty"`
+	Resolution string `json:"resolution"`
+	Ratio      string `json:"ratio"`
 	// Trims match ClipKeys; Music is mixed under the whole film.
 	Trims []filmClipTrim `json:"trims,omitempty"`
 	Music *filmMusic     `json:"music,omitempty"`
 	// Dubs match ClipKeys: a clip whose dialogue lines were moved is mixed again from its raw clip.
 	Dubs []*filmExportDub `json:"dubs,omitempty"`
+	// Finish grades the merged film (videoprocessing.FinishFilm for live-action styles).
+	Finish string `json:"finish,omitempty"`
+}
+
+// filmFinish is the post grade an episode's export gets: live-action styles are finished like
+// film (print look, halation, grain) so generated clips stop looking generated; drawn styles
+// keep their own colours.
+func filmFinish(style string) string {
+	if filmFilmed(style) {
+		return videoprocessing.FinishFilm
+	}
+	return ""
 }
 
 // filmExportClips lists the succeeded clips in shot order and the matching subtitle text.
@@ -68,6 +90,78 @@ func filmExportClips(d *filmDocument, byID map[string]*models.FilmElement) ([]st
 
 func filmExportSource(keys []string) string { return storyHash(keys) }
 
+// filmCaption is one dialogue line of an exported clip. Timed lines were generated (dubbed) and
+// play at At for Seconds from the clip start; other lines (native speech, clips made before
+// lines were kept) only have their text.
+type filmCaption struct {
+	Text    string  `json:"text"`
+	At      float64 `json:"at,omitempty"`
+	Seconds float64 `json:"seconds,omitempty"`
+	Timed   bool    `json:"timed,omitempty"`
+}
+
+// filmExportCaptions lists the dialogue of the clips filmExportClips returns, in the same order.
+func filmExportCaptions(d *filmDocument) [][]filmCaption {
+	out := [][]filmCaption{}
+	for i := range d.Shots {
+		sh := &d.Shots[i]
+		v := sh.Video
+		if v == nil || v.Status != "succeeded" || v.ClipKey == "" {
+			continue
+		}
+		lines := []filmCaption{}
+		if !v.Native && len(v.Lines) > 0 {
+			for _, l := range filmLinePlaces(sh) {
+				lines = append(lines, filmCaption{Text: l.Text, At: l.At, Seconds: l.Seconds, Timed: true})
+			}
+		} else {
+			for _, l := range sh.Dialogue {
+				lines = append(lines, filmCaption{Text: l.Line})
+			}
+		}
+		out = append(out, lines)
+	}
+	return out
+}
+
+// filmClipSpan places a clip on the film: Offset is where it starts, TrimStart the source second
+// it starts from and Kept how long it plays.
+type filmClipSpan struct{ Offset, TrimStart, Kept float64 }
+
+// filmCues turns the captions into subtitle cues on the film timeline. A timed line shows while
+// it is spoken (cut by the clip's trims); lines without a time share their clip by length after a
+// short lead-in. Long lines become several cues of at most two lines (subtitles.Place).
+func filmCues(captions [][]filmCaption, spans []filmClipSpan, total float64) []subtitles.Cue {
+	cues := []subtitles.Cue{}
+	for i, lines := range captions {
+		if i >= len(spans) {
+			break
+		}
+		sp := spans[i]
+		end := sp.Offset + sp.Kept
+		untimed, weight := []filmCaption{}, 0
+		for _, l := range lines {
+			if strings.TrimSpace(l.Text) == "" {
+				continue
+			}
+			if !l.Timed {
+				untimed, weight = append(untimed, l), weight+subtitles.Width(l.Text)+1
+				continue
+			}
+			start := sp.Offset + l.At - sp.TrimStart
+			cues = append(cues, subtitles.Place(l.Text, math.Max(start, sp.Offset), math.Min(start+l.Seconds, end))...)
+		}
+		lead := math.Min(0.3, sp.Kept/10)
+		at, room := sp.Offset+lead, sp.Kept-2*lead
+		for _, l := range untimed {
+			next := at + room*float64(subtitles.Width(l.Text)+1)/float64(weight)
+			cues = append(cues, subtitles.Place(l.Text, at, next)...)
+			at = next
+		}
+	}
+	return subtitles.Tidy(cues, total)
+}
+
 func (f *FilmFacade) RequestExport(c context.Context, projectID, user string, in req.FilmExportRequest) (dto.FilmEpisode, error) {
 	if !filmUUID(projectID) {
 		return dto.FilmEpisode{}, ErrFilmNotFound
@@ -90,18 +184,15 @@ func (f *FilmFacade) RequestExport(c context.Context, projectID, user string, in
 		if d.Export != nil && (d.Export.Status == "queued" || d.Export.Status == "processing") {
 			return nil, &DirectorError{Status: 409, Code: "EXPORT_BUSY", Message: "กำลังรวมภาพยนตร์อยู่ กรุณารอสักครู่"}
 		}
-		keys, subs, skipped := filmExportClips(&d, filmElementMap(elements))
+		keys, _, skipped := filmExportClips(&d, filmElementMap(elements))
 		if len(keys) == 0 {
 			return nil, &DirectorError{Status: 409, Code: "VIDEO_INCOMPLETE", Message: "ยังไม่มีช็อตที่สร้างวิดีโอเสร็จ กรุณาสร้างวิดีโออย่างน้อย 1 ช็อตก่อน"}
-		}
-		if !in.Subtitles {
-			subs = nil
 		}
 		music := d.Music
 		if music != nil && f.options.MusicFetch == nil {
 			music = nil
 		}
-		raw, e := json.Marshal(filmExportJob{ClipKeys: keys, Subtitles: subs, Resolution: s.Resolution, Ratio: s.AspectRatio, Trims: filmExportTrims(&d), Music: music, Dubs: filmExportDubs(&d)})
+		raw, e := json.Marshal(filmExportJob{ClipKeys: keys, Captions: filmExportCaptions(&d), Burn: in.Subtitles, Resolution: s.Resolution, Ratio: s.AspectRatio, Trims: filmExportTrims(&d), Music: music, Dubs: filmExportDubs(&d), Finish: filmFinish(s.Style)})
 		if e != nil {
 			return nil, e
 		}
@@ -144,17 +235,6 @@ func (f *FilmFacade) exportFail(c context.Context, j *models.FilmJob, message st
 	return f.exportState(c, j, "failed", func(x *filmExport) { x.Status, x.Progress, x.FailureMessage = "failed", 0, &message })
 }
 
-// filmTextLayers turns per-clip subtitles into bottom text layers.
-func filmTextLayers(subs []string, offset int) []videoprocessing.TextLayer {
-	out := []videoprocessing.TextLayer{}
-	for i, s := range subs {
-		if s = strings.TrimSpace(s); s != "" {
-			out = append(out, videoprocessing.TextLayer{ClipIdx: i - offset, Text: s, Position: "bottom", FontSize: 40})
-		}
-	}
-	return out
-}
-
 func (f *FilmFacade) exportJob(c context.Context, j *models.FilmJob) error {
 	var in filmExportJob
 	if e := json.Unmarshal(j.Snapshot, &in); e != nil || j.ProjectID == nil || len(in.ClipKeys) == 0 {
@@ -174,7 +254,19 @@ func (f *FilmFacade) exportJob(c context.Context, j *models.FilmJob) error {
 		return e
 	}
 	defer os.RemoveAll(dir)
+	if in.Captions == nil && len(in.Subtitles) > 0 {
+		// Queued before captions: the per-clip text, burned and spread over each clip.
+		in.Burn = true
+		for _, text := range in.Subtitles {
+			in.Captions = append(in.Captions, []filmCaption{{Text: text}})
+		}
+	}
+	captioned := false
+	for _, lines := range in.Captions {
+		captioned = captioned || len(lines) > 0
+	}
 	clips := make([]videoprocessing.Clip, 0, len(in.ClipKeys))
+	spans := make([]filmClipSpan, 0, len(in.ClipKeys))
 	filmLength := 0.0
 	for i, key := range in.ClipKeys {
 		u, _, e := f.storage.SignedURL(c, key, 30*time.Minute)
@@ -191,7 +283,7 @@ func (f *FilmFacade) exportJob(c context.Context, j *models.FilmJob) error {
 		}
 		clip := videoprocessing.Clip{Path: path}
 		trimmed := i < len(in.Trims) && (in.Trims[i].In > 0 || in.Trims[i].Out > 0)
-		if e == nil && (trimmed || in.Music != nil) {
+		if e == nil && (trimmed || in.Music != nil || captioned) {
 			var length float64
 			if length, e = videoprocessing.MediaDuration(c, path); e == nil {
 				var t filmClipTrim
@@ -203,6 +295,7 @@ func (f *FilmFacade) exportJob(c context.Context, j *models.FilmJob) error {
 				if end == 0 {
 					end = length
 				}
+				spans = append(spans, filmClipSpan{Offset: filmLength, TrimStart: clip.TrimStart, Kept: end - clip.TrimStart})
 				filmLength += end - clip.TrimStart
 			}
 		}
@@ -218,19 +311,28 @@ func (f *FilmFacade) exportJob(c context.Context, j *models.FilmJob) error {
 	if e != nil {
 		return f.exportFail(c, j, "โหลดเพลงประกอบไม่ได้ กรุณาลองใหม่", e)
 	}
+	cues := filmCues(in.Captions, spans, filmLength)
+	burn := ""
+	if len(cues) > 0 && in.Burn {
+		burn = filepath.Join(dir, "film.srt")
+		if e = os.WriteFile(burn, subtitles.SRT(cues), 0o600); e != nil {
+			return e
+		}
+	}
+	// With mastering the music is mixed in the master pass, ducked under dialogue.
+	mergeMusic := music
+	if f.options.Master != nil {
+		mergeMusic = nil
+	}
 	var data []byte
 	if len(clips) <= filmMergeBatch {
-		data, e = f.options.Processor.Merge(c, videoprocessing.MergeRequest{Clips: clips, OutputResolution: in.Resolution, OutputAspectRatio: in.Ratio, AudioVolume: 1, TextLayers: filmTextLayers(in.Subtitles, 0), AudioTracks: music})
+		data, e = f.options.Processor.Merge(c, videoprocessing.MergeRequest{Clips: clips, OutputResolution: in.Resolution, OutputAspectRatio: in.Ratio, AudioVolume: 1, AudioTracks: mergeMusic, Finish: in.Finish, Subtitles: burn})
 	} else {
 		parts := []videoprocessing.Clip{}
 		for start := 0; start < len(clips) && e == nil; start += filmMergeBatch {
 			end := min(start+filmMergeBatch, len(clips))
-			var subs []string
-			if len(in.Subtitles) >= end {
-				subs = in.Subtitles[:end]
-			}
 			var part []byte
-			part, e = f.options.Processor.Merge(c, videoprocessing.MergeRequest{Clips: clips[start:end], OutputResolution: in.Resolution, OutputAspectRatio: in.Ratio, AudioVolume: 1, TextLayers: filmTextLayersRange(subs, start)})
+			part, e = f.options.Processor.Merge(c, videoprocessing.MergeRequest{Clips: clips[start:end], OutputResolution: in.Resolution, OutputAspectRatio: in.Ratio, AudioVolume: 1, Finish: in.Finish})
 			if e == nil {
 				path := filepath.Join(dir, fmt.Sprintf("part-%02d.mp4", start/filmMergeBatch))
 				if e = os.WriteFile(path, part, 0o600); e == nil {
@@ -239,11 +341,19 @@ func (f *FilmFacade) exportJob(c context.Context, j *models.FilmJob) error {
 			}
 		}
 		if e == nil {
-			data, e = f.options.Processor.Merge(c, videoprocessing.MergeRequest{Clips: parts, OutputResolution: in.Resolution, OutputAspectRatio: in.Ratio, AudioVolume: 1, AudioTracks: music})
+			data, e = f.options.Processor.Merge(c, videoprocessing.MergeRequest{Clips: parts, OutputResolution: in.Resolution, OutputAspectRatio: in.Ratio, AudioVolume: 1, AudioTracks: mergeMusic, Subtitles: burn})
 		}
 	}
 	if e != nil || len(data) == 0 {
 		return f.exportFail(c, j, "รวมภาพยนตร์ไม่สำเร็จ กรุณาลองใหม่", fmt.Errorf("merge %d clips: %v", len(clips), e))
+	}
+	if f.options.Master != nil {
+		if e = progress(80); e != nil {
+			return e
+		}
+		if data, e = f.masterExport(c, dir, data, music); e != nil {
+			return f.exportFail(c, j, "ปรับระดับเสียงภาพยนตร์ไม่สำเร็จ กรุณาลองใหม่", e)
+		}
 	}
 	if e = progress(90); e != nil {
 		return e
@@ -252,17 +362,34 @@ func (f *FilmFacade) exportJob(c context.Context, j *models.FilmJob) error {
 	if e = f.storage.Upload(c, key, data, "video/mp4"); e != nil {
 		return f.exportFail(c, j, "บันทึกไฟล์ภาพยนตร์ไม่ได้ กรุณาลองใหม่", e)
 	}
+	if len(cues) > 0 {
+		base := strings.TrimSuffix(key, ".mp4")
+		if e = f.storage.Upload(c, base+".srt", subtitles.SRT(cues), "application/x-subrip"); e == nil {
+			e = f.storage.Upload(c, base+".vtt", subtitles.VTT(cues), "text/vtt")
+		}
+		if e != nil {
+			return f.exportFail(c, j, "บันทึกไฟล์ซับไตเติลไม่ได้ กรุณาลองใหม่", e)
+		}
+	}
 	return f.exportState(c, j, "succeeded", func(x *filmExport) {
-		x.Status, x.Progress, x.Key, x.FailureMessage = "succeeded", 100, key, nil
+		x.Status, x.Progress, x.Key, x.FailureMessage, x.Captions = "succeeded", 100, key, nil, len(cues) > 0
 	})
 }
 
-// filmTextLayersRange keeps the subtitles of clips [start, len(subs)) re-indexed to the batch.
-func filmTextLayersRange(subs []string, start int) []videoprocessing.TextLayer {
-	if len(subs) <= start {
-		return nil
+// masterExport runs the audio master (Options.Master) over the merged film.
+func (f *FilmFacade) masterExport(c context.Context, dir string, merged []byte, music []videoprocessing.AudioTrack) ([]byte, error) {
+	src, dst := filepath.Join(dir, "merged.mp4"), filepath.Join(dir, "mastered.mp4")
+	if e := os.WriteFile(src, merged, 0o600); e != nil {
+		return nil, e
 	}
-	return filmTextLayers(subs[start:], 0)
+	var bed *videoprocessing.AudioTrack
+	if len(music) > 0 {
+		bed = &music[0]
+	}
+	if e := f.options.Master(c, src, dst, bed); e != nil {
+		return nil, fmt.Errorf("master: %w", e)
+	}
+	return os.ReadFile(dst)
 }
 
 // exportMusic downloads the music track and places it under the whole film with a short fade-out.

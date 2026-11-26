@@ -2,6 +2,7 @@ package facade_open_api
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"log"
 	"strings"
@@ -90,6 +91,19 @@ func characterVoiceView(raw []byte) *dto.CharacterVoiceDTO {
 // delivery is a short performance note (e.g. "low, gruff") added to the voice description.
 // Returns ErrValidation when the bound voice no longer exists (e.g. a deleted profile).
 func (f *VoiceFacade) SpeakLine(ctx context.Context, userID string, v models.CharacterVoice, text, delivery string) ([]byte, error) {
+	return f.speakLine(ctx, userID, v, text, delivery, nil)
+}
+
+// SpeakLineAs speaks a line as the speaker heard in anchor (@Audio1): same timbre, pitch and accent,
+// with this line's emotion and delivery. Used by films so a character keeps one voice.
+func (f *VoiceFacade) SpeakLineAs(ctx context.Context, userID string, v models.CharacterVoice, text, delivery string, anchor []byte) ([]byte, error) {
+	if len(anchor) == 0 || len(anchor) > seedaudio.MaxReferenceBytes {
+		return f.speakLine(ctx, userID, v, text, delivery, nil)
+	}
+	return f.speakLine(ctx, userID, v, text, delivery, anchor)
+}
+
+func (f *VoiceFacade) speakLine(ctx context.Context, userID string, v models.CharacterVoice, text, delivery string, anchor []byte) ([]byte, error) {
 	uid, e := uuid.Parse(userID)
 	if e != nil {
 		return nil, ErrUnauthorized
@@ -105,6 +119,11 @@ func (f *VoiceFacade) SpeakLine(ctx context.Context, userID string, v models.Cha
 	req, _, _, e := f.resolveVoice(ctx, uid, in)
 	if e != nil {
 		return nil, e
+	}
+	if anchor != nil {
+		req.TextPrompt = voiceReferencePrompt(in.Emotion, in.Text)
+		req.TextPrompt = "Same speaker as @Audio1: keep exactly its timbre, pitch, age and accent; only the emotion and pace change. This is dialogue in a live-action film, recorded on set: understated, naturalistic acting with real breaths, spoken to another person in the room, keeping pauses short and the pace of normal speech; never a narrator, announcer, audiobook or advertisement read.\n" + req.TextPrompt
+		req.References = []seedaudio.Reference{{AudioData: base64.StdEncoding.EncodeToString(anchor)}}
 	}
 	if d := strings.TrimSpace(delivery); d != "" {
 		// Stays in the instruction part of the prompt, which the model does not read aloud.

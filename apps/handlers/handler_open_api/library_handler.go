@@ -58,7 +58,7 @@ func libraryQuery(c *fiber.Ctx) (facade_open_api.LibraryQuery, []fieldError) {
 	if scope == "" {
 		scope = "all"
 	}
-	return facade_open_api.LibraryQuery{Scope: scope, Category: q.Category, Query: q.Q, Page: page, Limit: limit}, nil
+	return facade_open_api.LibraryQuery{Scope: scope, Category: q.Category, Query: q.Q, Output: q.Output, Page: page, Limit: limit}, nil
 }
 
 func userIDOf(c *fiber.Ctx) string {
@@ -165,7 +165,7 @@ func parseSkillBody(c *fiber.Ctx) (facade_open_api.SkillInput, bool, error) {
 	}
 	return facade_open_api.SkillInput{
 		Name: req.Name, Description: req.Description, Steps: req.Steps, Inputs: req.Inputs,
-		Output: req.Output, ForkedFromID: req.ForkedFromID,
+		Output: req.Output, Directive: req.Directive, ForkedFromID: req.ForkedFromID,
 	}, true, nil
 }
 

@@ -72,7 +72,9 @@ func (c *SupabaseClient) Upload(ctx context.Context, key string, data []byte, co
 // SignedURL caches URLs so frequent job polling does not hit Supabase on every request.
 // A cached URL is reused only while it still has at least half its lifetime left.
 func (c *SupabaseClient) SignedURL(ctx context.Context, key string, ttl time.Duration) (string, time.Time, error) {
-	now := time.Now()
+	// Wall-clock time only: the monotonic clock stops while a laptop sleeps (macOS), so a cached
+	// URL could look fresh hours after Supabase's token expired.
+	now := time.Now().Round(0)
 	c.mu.Lock()
 	if e, ok := c.cache[key]; ok && e.expiresAt.Sub(now) > ttl/2 {
 		c.mu.Unlock()

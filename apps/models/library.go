@@ -25,6 +25,8 @@ type Skill struct {
 	Steps        []byte     `gorm:"type:jsonb;not null"`
 	Inputs       []byte     `gorm:"type:jsonb;not null"`
 	Output       string     `gorm:"not null"`
+	// Directive is the English guidance a film skill (Output "film") gives the film planner.
+	Directive string `gorm:"not null;default:''"`
 	// Incremented on each update so a future skill run can snapshot the version it used.
 	Version   int `gorm:"not null;default:1"`
 	SortOrder int `gorm:"not null;default:0"`

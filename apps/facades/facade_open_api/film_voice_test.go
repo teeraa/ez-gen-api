@@ -90,4 +90,30 @@ func TestFilmLineEmotionAndSceneReachTheVoice(t *testing.T) {
 	if p := w.String(); !strings.Contains(p, "Lip-sync to audio 1") || !strings.Contains(p, "1. @มาร์คัส") || strings.Contains(p, "generate NO voice") {
 		t.Fatalf("voice-first prompt syncs lips to audio 1:\n%s", p)
 	}
+	// Dubbed speech is restrained, set from the first frame, and a hidden speaker stays hidden.
+	for _, audioRef := range []bool{true, false} {
+		b.AudioRef = audioRef
+		w.Reset()
+		filmPerformance(b, &w)
+		if p := w.String(); !strings.Contains(p, "no wide-open mouth") || !strings.Contains(p, "in frame in the first frame") || !strings.Contains(p, "never turn or move them to show their mouth") || strings.Contains(p, "every syllable") {
+			t.Fatalf("dubbed speech style (audioRef=%t):\n%s", audioRef, p)
+		}
+	}
+	// Native speech: audio 1 is only a voice sample and the provider speaks the Thai lines itself.
+	b.AudioRef, b.Native = true, true
+	w.Reset()
+	filmPerformance(b, &w)
+	if p := w.String(); !strings.Contains(p, "Audio 1 is only a voice sample of @มาร์คัส") || !strings.Contains(p, "1. @มาร์คัส says in Thai") || strings.Contains(p, "finished dialogue track") || strings.Contains(p, "generate NO voice") {
+		t.Fatalf("native speech prompt:\n%s", p)
+	}
+	if got := filmNativeSpeakers(sh, b.Dubbed); len(got) != 1 || got[0] != id {
+		t.Fatalf("one voice sample per speaker: %v", got)
+	}
+	b.Native = false
+	b.Dubbed = nil
+	w.Reset()
+	filmPerformance(b, &w)
+	if strings.Contains(w.String(), "no wide-open mouth") {
+		t.Fatal("provider-voiced shots keep the plain prompt")
+	}
 }

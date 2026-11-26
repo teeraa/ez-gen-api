@@ -136,6 +136,14 @@ func (h *FilmHandler) RegisterRoutes(r fiber.Router) {
 		v, e := h.facade.UpdateMusic(c.Context(), c.Params("id"), productionUser(c), in)
 		return respond(c, 200, v, e)
 	})
+	g.Put("/episodes/:id/skills", func(c *fiber.Ctx) error {
+		var in req.FilmSkillsRequest
+		if e := storyFlowBody(c, &in); e != nil {
+			return filmHTTPError(c, e)
+		}
+		v, e := h.facade.SetSkills(c.Context(), c.Params("id"), productionUser(c), in)
+		return respond(c, 200, v, e)
+	})
 	g.Post("/episodes/:id/redub", rate, func(c *fiber.Ctx) error {
 		var in req.FilmRedubRequest
 		if e := storyFlowBody(c, &in); e != nil {
@@ -151,6 +159,14 @@ func (h *FilmHandler) RegisterRoutes(r fiber.Router) {
 		}
 		v, e := h.facade.RequestPlan(c.Context(), c.Params("id"), productionUser(c), in)
 		return respond(c, 202, v, e)
+	})
+	g.Post("/episodes/:id/plan/confirm", rate, func(c *fiber.Ctx) error {
+		var in req.FilmPlanConfirmRequest
+		if e := storyFlowBody(c, &in); e != nil {
+			return filmHTTPError(c, e)
+		}
+		v, e := h.facade.ConfirmPlan(c.Context(), c.Params("id"), productionUser(c), in)
+		return respond(c, 200, v, e)
 	})
 	g.Post("/episodes/:id/shots/:shot/video", rate, func(c *fiber.Ctx) error {
 		var in req.FilmVideoRequest

@@ -25,11 +25,16 @@ const (
 	maxOwnPrompts    = 500
 	maxOwnSkills     = 200
 	defaultSkillIcon = "wand"
+	filmSkillIcon    = "camera"
+	// SkillOutputFilm marks a ภาพยนตร์ skill: its directive guides the film planner.
+	SkillOutputFilm      = "film"
+	skillDirectiveMinLen = 10
 )
 
 type LibraryQuery struct {
 	Scope    string
 	Category string
+	Output   string
 	Query    string
 	Page     int
 	Limit    int
@@ -47,6 +52,7 @@ type SkillInput struct {
 	Steps        []string
 	Inputs       []string
 	Output       string
+	Directive    string
 	ForkedFromID *string
 }
 
@@ -99,7 +105,7 @@ func libraryRepoErr(op string, err error) error {
 
 func libraryFilter(q LibraryQuery) repository_open_api.LibraryFilter {
 	return repository_open_api.LibraryFilter{
-		Scope: q.Scope, Category: q.Category, Query: strings.TrimSpace(q.Query),
+		Scope: q.Scope, Category: q.Category, Output: q.Output, Query: strings.TrimSpace(q.Query),
 		Limit: q.Limit, Offset: (q.Page - 1) * q.Limit,
 	}
 }
@@ -254,12 +260,19 @@ func normalizeSkill(in SkillInput) (SkillInput, error) {
 	if utf8.RuneCountInString(in.Name) < 2 || len(steps) == 0 {
 		return in, ErrValidation
 	}
+	// Only film skills carry a directive; it is what the film planner reads.
+	in.Directive = strings.TrimSpace(in.Directive)
+	if in.Output != SkillOutputFilm {
+		in.Directive = ""
+	} else if utf8.RuneCountInString(in.Directive) < skillDirectiveMinLen || utf8.RuneCountInString(in.Directive) > 1500 {
+		return in, ErrValidation
+	}
 	return in, nil
 }
 
 func skillDTO(s models.Skill) (dto_open_api.SkillDTO, error) {
 	dto := dto_open_api.SkillDTO{
-		ID: s.ID.String(), Name: s.Name, Description: s.Description, Icon: s.Icon, Output: s.Output,
+		ID: s.ID.String(), Name: s.Name, Description: s.Description, Icon: s.Icon, Output: s.Output, Directive: s.Directive,
 		BuiltIn: s.UserID == nil, Version: s.Version,
 		CreatedAt: libraryTime(s.CreatedAt), UpdatedAt: libraryTime(s.UpdatedAt),
 		Steps: []string{}, Inputs: []string{},
@@ -335,7 +348,11 @@ func (f *libraryFacade) CreateSkill(ctx context.Context, userID string, in Skill
 	if in, err = normalizeSkill(in); err != nil {
 		return nil, err
 	}
-	s := &models.Skill{UserID: &uid, Name: in.Name, Description: in.Description, Icon: defaultSkillIcon, Output: in.Output, Version: 1}
+	icon := defaultSkillIcon
+	if in.Output == SkillOutputFilm {
+		icon = filmSkillIcon
+	}
+	s := &models.Skill{UserID: &uid, Name: in.Name, Description: in.Description, Icon: icon, Output: in.Output, Directive: in.Directive, Version: 1}
 	if in.ForkedFromID != nil {
 		srcID, err := uuid.Parse(*in.ForkedFromID)
 		if err != nil {
@@ -393,7 +410,7 @@ func (f *libraryFacade) UpdateSkill(ctx context.Context, id, userID string, in S
 	if err != nil {
 		return nil, fmt.Errorf("encode skill: %w", err)
 	}
-	fields := repository_open_api.SkillFields{Name: in.Name, Description: in.Description, Steps: steps, Inputs: inputs, Output: in.Output}
+	fields := repository_open_api.SkillFields{Name: in.Name, Description: in.Description, Steps: steps, Inputs: inputs, Output: in.Output, Directive: in.Directive}
 	if err := f.repo.UpdateSkill(ctx, rid, uid, fields); err != nil {
 		return nil, libraryRepoErr("update skill", err)
 	}

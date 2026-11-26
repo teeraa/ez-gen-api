@@ -2,6 +2,7 @@ package crons
 
 import (
 	"context"
+	"log"
 	"math/rand"
 	"sync"
 	"time"
@@ -22,8 +23,28 @@ func NewFilmWorker(f *facade_open_api.FilmFacade, n int) *FilmWorker {
 	return &FilmWorker{f, n}
 }
 
+// filmCleanupEvery is how often old film receipts and job snapshots are cleaned up.
+const filmCleanupEvery = time.Hour
+
 func (w *FilmWorker) Start(c context.Context) {
 	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		// Start a little after boot, then hourly with jitter so instances do not run together.
+		wait := time.Minute + time.Duration(rand.Int63n(int64(time.Minute)))
+		for {
+			select {
+			case <-c.Done():
+				return
+			case <-time.After(wait):
+			}
+			if e := w.facade.Cleanup(c); e != nil {
+				log.Printf("film: cleanup: %v", e)
+			}
+			wait = filmCleanupEvery + time.Duration(rand.Int63n(int64(5*time.Minute)))
+		}
+	}()
 	for i := 0; i < w.n; i++ {
 		wg.Add(1)
 		go func(i int) {

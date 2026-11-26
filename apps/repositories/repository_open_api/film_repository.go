@@ -361,20 +361,56 @@ func filmWrap(op string, e error) error {
 
 // ---------- Worker ----------
 
-// Claim leases the oldest runnable film job. Status keeps its previous value in the returned
-// copy so the worker can tell a fresh job from an expired submission.
+// filmClaimWindow is how many of the oldest runnable jobs the claim ranks by owner. A user has at
+// most filmMaxActiveJob active jobs, so the window always spans several users.
+const filmClaimWindow = 256
+
+// filmClaimSQL picks, among the oldest runnable jobs, one whose owner has the fewest jobs being
+// worked right now (oldest first on a tie), so one user's long queue cannot hold every worker.
+// The outer WHERE repeats the runnable condition so a row another worker claimed meanwhile is
+// re-checked under the lock and skipped. Arguments: now, window, now, now.
+const filmClaimSQL = `
+WITH runnable AS (
+	SELECT id, user_id, created_at FROM film_jobs
+	WHERE status = 'queued' OR (status IN ('submitting', 'waiting') AND lease_until < ?)
+	ORDER BY created_at, id
+	LIMIT ?
+), busy AS (
+	SELECT user_id, count(*) AS n FROM film_jobs
+	WHERE status = 'submitting' AND lease_until >= ? AND user_id IN (SELECT user_id FROM runnable)
+	GROUP BY user_id
+)
+SELECT j.* FROM film_jobs j
+JOIN runnable r ON r.id = j.id
+LEFT JOIN busy b ON b.user_id = r.user_id
+WHERE j.status = 'queued' OR (j.status IN ('submitting', 'waiting') AND j.lease_until < ?)
+ORDER BY COALESCE(b.n, 0), r.created_at, r.id
+LIMIT 1
+FOR UPDATE OF j SKIP LOCKED`
+
+// Claim leases a runnable film job, fairly across users (filmClaimSQL). Status keeps its previous
+// value in the returned copy so the worker can tell a fresh job from an expired submission.
 func (r *FilmRepository) Claim(c context.Context) (*models.FilmJob, error) {
 	var j models.FilmJob
 	e := r.db.WithContext(c).Transaction(func(tx *gorm.DB) error {
 		now := time.Now()
-		if e := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
-			Where("status='queued' OR (status IN ('submitting','waiting') AND lease_until < ?)", now).
-			Order("created_at,id").First(&j).Error; e != nil {
-			return e
+		q := tx.Raw(filmClaimSQL, now, filmClaimWindow, now, now).Scan(&j)
+		if q.Error != nil {
+			return q.Error
+		}
+		if q.RowsAffected == 0 || j.ID == uuid.Nil {
+			return gorm.ErrRecordNotFound
 		}
 		token, until := uuid.New(), now.Add(filmLeaseTime)
 		previous := j.Status
-		if e := tx.Model(&models.FilmJob{}).Where("id=?", j.ID).Updates(map[string]any{"status": "submitting", "lease_token": token, "lease_until": until, "updated_at": now}).Error; e != nil {
+		updates := map[string]any{"status": "submitting", "lease_token": token, "lease_until": until, "updated_at": now}
+		if previous == "submitting" {
+			// The last worker neither finished nor parked the job before its lease ran out.
+			updates["attempts"] = gorm.Expr("attempts + 1")
+			updates["last_error"] = gorm.Expr("COALESCE(last_error, ?)", "lease expired before the worker finished")
+			j.Attempts++
+		}
+		if e := tx.Model(&models.FilmJob{}).Where("id=?", j.ID).Updates(updates).Error; e != nil {
 			return e
 		}
 		j.LeaseToken, j.LeaseUntil, j.Status = &token, &until, previous
@@ -398,9 +434,10 @@ func (r *FilmRepository) RecordOutput(c context.Context, j *models.FilmJob, data
 	return nil
 }
 
-// Wait releases the lease until the next poll; the stored output is the provider handle.
+// Wait releases the lease until the next poll; the stored output is the provider handle. A job
+// that parks itself made progress, so its crash count starts again.
 func (r *FilmRepository) Wait(c context.Context, j *models.FilmJob, output []byte, until time.Time) error {
-	q := r.leased(r.db.WithContext(c), j).Updates(map[string]any{"status": "waiting", "output": output, "lease_token": nil, "lease_until": until, "updated_at": time.Now()})
+	q := r.leased(r.db.WithContext(c), j).Updates(map[string]any{"status": "waiting", "output": output, "lease_token": nil, "lease_until": until, "attempts": 0, "updated_at": time.Now()})
 	if q.Error != nil {
 		return wrapErr("film wait", q.Error)
 	}
@@ -408,6 +445,27 @@ func (r *FilmRepository) Wait(c context.Context, j *models.FilmJob, output []byt
 		return ErrConflict
 	}
 	return nil
+}
+
+// Release gives the lease back after the worker crashed on the job: state and output stay, and
+// the job is claimed again after until, which counts one more attempt.
+func (r *FilmRepository) Release(c context.Context, j *models.FilmJob, cause string, until time.Time) error {
+	q := r.leased(r.db.WithContext(c), j).Updates(map[string]any{"lease_until": until, "last_error": filmErrorText(cause), "updated_at": time.Now()})
+	if q.Error != nil {
+		return wrapErr("film release", q.Error)
+	}
+	if q.RowsAffected != 1 {
+		return ErrConflict
+	}
+	return nil
+}
+
+// filmErrorText keeps last_error within its column limit.
+func filmErrorText(s string) string {
+	if r := []rune(s); len(r) > 2000 {
+		return string(r[:2000])
+	}
+	return s
 }
 
 func (r *FilmRepository) finish(tx *gorm.DB, j *models.FilmJob, status string, refund bool) error {
@@ -552,6 +610,34 @@ func (r *FilmRepository) CompletePlan(c context.Context, j *models.FilmJob, fn f
 }
 
 // Balance reads the shared point wallet.
+// filmCleanupBatch bounds each cleanup statement so it never holds many row locks at once.
+const filmCleanupBatch = 1000
+
+// Cleanup deletes idempotency receipts made before `before` and empties the snapshots of jobs that
+// finished before it (finished jobs are only read again for their cost on a refund, and their
+// output is already cleared). Point entries and the job rows stay for the ledger. It returns the
+// number of rows touched.
+func (r *FilmRepository) Cleanup(c context.Context, before time.Time) (int64, error) {
+	var total int64
+	for _, q := range []string{
+		`DELETE FROM film_receipts WHERE ctid IN (SELECT ctid FROM film_receipts WHERE created_at < ? LIMIT ?)`,
+		`UPDATE film_jobs SET snapshot = '{}'::jsonb WHERE id IN (SELECT id FROM film_jobs
+			WHERE status IN ('succeeded', 'failed', 'cancelled') AND snapshot <> '{}'::jsonb AND updated_at < ? LIMIT ?)`,
+	} {
+		for {
+			res := r.db.WithContext(c).Exec(q, before, filmCleanupBatch)
+			if res.Error != nil {
+				return total, wrapErr("film cleanup", res.Error)
+			}
+			total += res.RowsAffected
+			if res.RowsAffected < filmCleanupBatch {
+				break
+			}
+		}
+	}
+	return total, nil
+}
+
 func (r *FilmRepository) Balance(c context.Context, user string) (int64, error) {
 	var a models.DirectorAccount
 	e := r.db.WithContext(c).Where("user_id=?", user).First(&a).Error

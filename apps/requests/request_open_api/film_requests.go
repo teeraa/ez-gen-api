@@ -28,6 +28,12 @@ type FilmLineRequest struct {
 	Emotion string `json:"emotion,omitempty"`
 }
 
+// FilmCutRequest is one shot inside a multi-shot clip: its own camera and one clear action.
+type FilmCutRequest struct {
+	Camera string `json:"camera"`
+	Action string `json:"action"`
+}
+
 type FilmShotRequest struct {
 	ID           string            `json:"id,omitempty"`
 	Seconds      int               `json:"seconds"`
@@ -39,6 +45,11 @@ type FilmShotRequest struct {
 	Camera       string            `json:"camera"`
 	Dialogue     []FilmLineRequest `json:"dialogue"`
 	Audio        string            `json:"audio,omitempty"`
+	// Blocking: each visible character's frame side, posture and facing (English).
+	Blocking string `json:"blocking,omitempty"`
+	// Cuts make the clip a multi-shot sequence: the video model renders them with hard cuts
+	// inside the one clip (2-8 cuts; empty = one continuous shot).
+	Cuts []FilmCutRequest `json:"cuts,omitempty"`
 	// TrimIn/TrimOut cut seconds from the start/end of the shot's clip in the studio and the export.
 	TrimIn  float64 `json:"trimIn,omitempty"`
 	TrimOut float64 `json:"trimOut,omitempty"`
@@ -58,6 +69,9 @@ type FilmVideoRequest struct {
 	// Draft renders a cheap 480p preview; Finalize turns the shot's current draft into the full clip.
 	Draft    bool `json:"draft,omitempty"`
 	Finalize bool `json:"finalize,omitempty"`
+	// Speech "native" (experimental): the provider speaks the Thai lines itself with each speaker's
+	// voice as a timbre sample, so lips match; "" or "dub" overlays the generated lines (default).
+	Speech string `json:"speech,omitempty"`
 }
 
 // FilmPlanRequest asks the chat assistant to plan the whole episode, or to rewrite one shot when ShotID is set.
@@ -66,6 +80,15 @@ type FilmPlanRequest struct {
 	Prompt         string `json:"prompt"`
 	TargetSeconds  int    `json:"targetSeconds,omitempty"`
 	ShotID         string `json:"shotId,omitempty"`
+	// Scope is what ShotID selects: "shot" (default) or "scene" (the shot's whole scene).
+	Scope string `json:"scope,omitempty"`
+}
+
+// FilmPlanConfirmRequest accepts or drops the episode's pending assistant edit.
+type FilmPlanConfirmRequest struct {
+	IdempotencyKey string `json:"idempotencyKey,omitempty"`
+	PendingID      string `json:"pendingId"`
+	Accept         bool   `json:"accept"`
 }
 
 // FilmMusicRequest changes the episode's music track: its volume (0..1) or, with Remove, removes it.
@@ -87,4 +110,10 @@ type FilmRedubRequest struct {
 type FilmExportRequest struct {
 	IdempotencyKey string `json:"idempotencyKey,omitempty"`
 	Subtitles      bool   `json:"subtitles,omitempty"`
+}
+
+// FilmSkillsRequest replaces the episode's chosen film skills (Skills menu, output "film"); [] clears them.
+type FilmSkillsRequest struct {
+	IdempotencyKey string   `json:"idempotencyKey,omitempty"`
+	SkillIDs       []string `json:"skillIds"`
 }

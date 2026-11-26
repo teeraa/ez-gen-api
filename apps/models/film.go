@@ -52,8 +52,12 @@ type FilmJob struct {
 	Refunded   bool
 	LeaseToken *uuid.UUID `gorm:"type:uuid"`
 	LeaseUntil *time.Time
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	// Attempts counts consecutive claims after a lease ran out without the worker finishing or
+	// parking the job (a crash); LastError is the latest crash.
+	Attempts  int
+	LastError *string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 func (FilmJob) TableName() string { return "film_jobs" }

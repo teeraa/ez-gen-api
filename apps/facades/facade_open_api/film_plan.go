@@ -36,9 +36,11 @@ type filmStory struct {
 }
 
 type filmMessage struct {
-	Role   string    `json:"role"` // user | assistant
-	Text   string    `json:"text"`
-	ShotID string    `json:"shotId,omitempty"`
+	Role   string `json:"role"` // user | assistant
+	Text   string `json:"text"`
+	ShotID string `json:"shotId,omitempty"`
+	// Target is the position the message was about, as shown then ("ฉาก 2 · ช็อต 1").
+	Target string    `json:"target,omitempty"`
 	At     time.Time `json:"at"`
 }
 
@@ -46,6 +48,7 @@ type filmPlanState struct {
 	Status         string  `json:"status"` // queued | processing | failed
 	JobID          string  `json:"jobId"`
 	ShotID         string  `json:"shotId,omitempty"`
+	Target         string  `json:"target,omitempty"`
 	FailureMessage *string `json:"failureMessage,omitempty"`
 }
 
@@ -59,9 +62,11 @@ type filmPlanLine struct {
 type filmPlanShot struct {
 	// No is an existing shot's 1-based number (context only); Keep, in an answer, reuses that shot
 	// unchanged so its video survives; Scene groups shots: a new scene number means a cut.
-	No         int            `json:"no,omitempty"`
-	Keep       int            `json:"keep,omitempty"`
-	Scene      int            `json:"scene,omitempty"`
+	No    int `json:"no,omitempty"`
+	Keep  int `json:"keep,omitempty"`
+	Scene int `json:"scene,omitempty"`
+	// InScene is the shot's number inside its scene (operations mode context).
+	InScene    int            `json:"shot,omitempty"`
 	Seconds    int            `json:"seconds"`
 	Transition string         `json:"transition"`
 	Characters []string       `json:"characters"`
@@ -71,6 +76,15 @@ type filmPlanShot struct {
 	Camera     string         `json:"camera"`
 	Dialogue   []filmPlanLine `json:"dialogue"`
 	Audio      string         `json:"audio"`
+	Blocking   string         `json:"blocking,omitempty"`
+	// Cuts: 2-8 shots inside one multi-shot clip (trailers, fights, montages).
+	Cuts []filmPlanCut `json:"cuts,omitempty"`
+}
+
+// filmPlanCut is one shot of a multi-shot clip as the planner writes it.
+type filmPlanCut struct {
+	Camera string `json:"camera"`
+	Action string `json:"action"`
 }
 type filmPlanElement struct {
 	Kind string `json:"kind"`
@@ -88,6 +102,9 @@ type filmPlanOutput struct {
 	Elements []filmPlanElement `json:"elements"`
 	Shots    []filmPlanShot    `json:"shots"`
 	Shot     *filmPlanShot     `json:"shot"`
+	// Operations mode: a question instead of an edit, or the edit as operations.
+	Question string       `json:"question"`
+	Ops      []filmPlanOp `json:"ops"`
 }
 
 // filmPlanJob is the frozen input of a plan job.
@@ -106,6 +123,12 @@ type filmPlanJob struct {
 	// ShotIDs maps the context's shot numbers to stored shots, so "keep" survives later edits.
 	ShotIDs []string      `json:"shotIds,omitempty"`
 	History []filmMessage `json:"history"`
+	// Mode "ops": an edit of an episode with shots, answered as operations on positions.
+	Mode string `json:"mode,omitempty"`
+	// Target is the timeline selection, e.g. "ฉาก 2 · ช็อต 1" or "ฉาก 2".
+	Target string `json:"target,omitempty"`
+	// Skills are the episode's chosen film skills, frozen when the job was queued.
+	Skills []filmPlanSkill `json:"skills,omitempty"`
 }
 
 func filmAddMessage(d *filmDocument, m filmMessage) {
@@ -127,7 +150,10 @@ func filmPlanShotOf(sh *filmShot, byID map[string]*models.FilmElement) filmPlanS
 		}
 		return ""
 	}
-	out := filmPlanShot{Seconds: sh.Seconds, Transition: sh.Transition, Location: name(sh.LocationID), Action: sh.Action, Camera: sh.Camera, Audio: sh.Audio, Characters: []string{}, Props: []string{}, Dialogue: []filmPlanLine{}}
+	out := filmPlanShot{Seconds: sh.Seconds, Transition: sh.Transition, Location: name(sh.LocationID), Action: sh.Action, Camera: sh.Camera, Audio: sh.Audio, Blocking: sh.Blocking, Characters: []string{}, Props: []string{}, Dialogue: []filmPlanLine{}}
+	for _, c := range sh.Cuts {
+		out.Cuts = append(out.Cuts, filmPlanCut{Camera: c.Camera, Action: c.Action})
+	}
 	for _, id := range sh.CharacterIDs {
 		out.Characters = append(out.Characters, name(id))
 	}
@@ -145,7 +171,7 @@ func filmShotRequest(sh *filmShot) req.FilmShotRequest {
 	for _, l := range sh.Dialogue {
 		lines = append(lines, req.FilmLineRequest{SpeakerID: l.SpeakerID, Line: l.Line, Delivery: l.Delivery, Emotion: l.Emotion})
 	}
-	return req.FilmShotRequest{ID: sh.ID, Seconds: sh.Seconds, Transition: sh.Transition, CharacterIDs: append([]string{}, sh.CharacterIDs...), LocationID: sh.LocationID, PropIDs: append([]string{}, sh.PropIDs...), Action: sh.Action, Camera: sh.Camera, Dialogue: lines, Audio: sh.Audio, TrimIn: sh.TrimIn, TrimOut: sh.TrimOut, LineAt: append([]float64(nil), sh.LineAt...)}
+	return req.FilmShotRequest{ID: sh.ID, Seconds: sh.Seconds, Transition: sh.Transition, CharacterIDs: append([]string{}, sh.CharacterIDs...), LocationID: sh.LocationID, PropIDs: append([]string{}, sh.PropIDs...), Action: sh.Action, Camera: sh.Camera, Dialogue: lines, Audio: sh.Audio, Blocking: sh.Blocking, Cuts: filmCutRequests(sh.Cuts), TrimIn: sh.TrimIn, TrimOut: sh.TrimOut, LineAt: append([]float64(nil), sh.LineAt...)}
 }
 
 func (f *FilmFacade) RequestPlan(c context.Context, projectID, user string, in req.FilmPlanRequest) (dto.FilmEpisode, error) {
@@ -161,6 +187,9 @@ func (f *FilmFacade) RequestPlan(c context.Context, projectID, user string, in r
 	}
 	if in.TargetSeconds != 0 && (in.TargetSeconds < filmTargetMin || in.TargetSeconds > filmTargetMax) {
 		return dto.FilmEpisode{}, directorInvalid("targetSeconds")
+	}
+	if in.Scope != "" && in.Scope != "shot" && in.Scope != "scene" || in.Scope != "" && in.ShotID == "" {
+		return dto.FilmEpisode{}, directorInvalid("scope")
 	}
 	if f.options.Analyzer == nil || f.options.AnalysisModel == "" {
 		return dto.FilmEpisode{}, &DirectorError{Status: 503, Code: "PLAN_UNAVAILABLE", Message: "ระบบวางเรื่องยังไม่พร้อมใช้งาน"}
@@ -178,6 +207,10 @@ func (f *FilmFacade) RequestPlan(c context.Context, projectID, user string, in r
 			return nil, &DirectorError{Status: 409, Code: "PLAN_BUSY", Message: "ผู้ช่วยกำลังวางเรื่องอยู่ กรุณารอสักครู่"}
 		}
 		byID := filmElementMap(elements)
+		// With shots, every edit names a position (phase 6): ask back now, free, when it does not.
+		if len(d.Shots) > 0 {
+			return f.queueOpsPlan(&d, ep, s, elements, in, prompt)
+		}
 		index := -1
 		if in.ShotID != "" {
 			i, sh := filmFindShot(&d, in.ShotID)
@@ -202,7 +235,7 @@ func (f *FilmFacade) RequestPlan(c context.Context, projectID, user string, in r
 		if target == 0 {
 			target = filmTargetDefault
 		}
-		snap := filmPlanJob{Prompt: prompt, ShotID: in.ShotID, ShotIndex: index, TargetSeconds: target, Style: s.Style, Filmed: filmFilmed(s.Style), Ratio: s.AspectRatio, Model: f.options.AnalysisModel, Story: d.Story, Elements: []filmPlanElement{}, Shots: []filmPlanShot{}}
+		snap := filmPlanJob{Prompt: prompt, ShotID: in.ShotID, ShotIndex: index, TargetSeconds: target, Style: s.Style, Filmed: filmFilmed(s.Style), Ratio: s.AspectRatio, Model: f.options.AnalysisModel, Story: d.Story, Skills: filmPlanSkills(&d), Elements: []filmPlanElement{}, Shots: []filmPlanShot{}}
 		for i := range elements {
 			snap.Elements = append(snap.Elements, filmPlanElement{Kind: elements[i].Kind, Name: elements[i].Name, Spec: elements[i].Spec})
 		}
@@ -258,16 +291,44 @@ const filmPlanRules = `Rules:
 - Props: an object a character holds stays in the same hands for the rest of the scene and is listed in every shot where it is visible; a boat sits in water, a ladder leans on a wall, and every object obeys real physics.
 - Action: at most two clear beats per shot that a real stunt performer could do in its seconds; no superhuman leaps or acrobatics.
 ` + filmCameraRules + `
+- Blocking ("blocking" field, English, every shot with characters): for each visible character "@name: frame side (screen-left / screen-right / center, foreground or background), posture (seated at ..., standing by ..., leaning on ...), facing (toward screen-right, toward @other, toward the window)". Inside a scene keep one camera side of the action (180-degree rule): a character who is screen-left stays screen-left in every shot of the scene, also in over-the-shoulder reverses, and nobody changes posture (sits, stands, walks) unless that shot's action shows it; the next shot's blocking starts from where the last one ended. A new scene states the new blocking in full.
+- Multi-shot clips ("cuts"): one generated clip can hold several shots joined by hard cuts. For a trailer, a fight, a chase or a montage, write such shots with "cuts": 3-6 cuts of about 1.5-3 seconds each (the shot's seconds is their total, 6-15), each with its own "camera" (shot size, angle, lens, static or one move) and "action" (ONE clear image or move, its body mechanics, and its sound in <angle brackets>, e.g. <dry steel ring>). Then the shot's own "camera" is a one-line style note and its "action" a one-sentence summary. Cuts of one clip share its location and characters and keep the 180-degree line. Vary the size between neighbouring cuts (wide, close-up, insert) so every cut shows something new; never two cuts of the same framing. A multi-shot clip carries no dialogue.
+- Fights: tell a fight as exchanges cut from several angles, never one long take of two fighters. Each cut is one move at real speed: wind-up, strike, contact or block, reaction, with weight (feet planted, hips turn, recoil, cloth and hair following through). Cut in the middle of a move, never after a held pose. Show the strike, then the reaction from a new angle in the next cut; add inserts of the blade, hands and feet. Never write a held sword-lock, a slow-motion swing, two fighters gliding or sliding toward each other, or a standoff longer than 2 seconds.
+- Story order: shots and cuts follow story time; a jump back is a flashback only when its action says "flashback". A character who dies, faints, is taken or leaves never speaks or acts in a later shot of the present: last words come before the death, in the same or an earlier shot. Every cut must make sense right after the one before it: the viewer always knows who is where and why.
+- Every attack has its target: in the same cut or the very next one the attacked character is on the side the attacker faces and reacts (blocks, dodges, is hit, falls back). Never cut from a strike or a leap to a target who stands still somewhere else, and never end a fight on an attack with no visible result.
+- Spoken lines must be understood: the speaker's face is seen in a medium close-up or closer, three-quarter, head up, saying the line in a clear, firm voice at normal or strong volume; never whispered, breathy, mumbled, through clenched teeth or with the head bowed. Keep each line short and give it its own single shot.
+- Sound is real: weapons and impacts are dry, physical foley (steel ring, a blade cutting air, cloth whoosh, footsteps on wood or stone); never synthetic, electronic, laser-like, metallic-echo or cartoon clangs.
 - Every shot is 4 to 15 seconds.
 - You only write the plan. You cannot render images or video: if the user asks for a video or draft, plan or edit the shots and say in the reply that they can press the draft button for those shots.`
 
-// filmPlanRulesText is filmPlanRules with the preset voice list filled in.
-func filmPlanRulesText() string {
+// filmCinemaRules make filmed (realistic/cinematic) plans read like a real movie: lens, focus,
+// composition, eyeline, motivated light and coverage in every shot, and none of the generated clichés.
+const filmCinemaRules = `
+- Cinematography (this is a live-action movie): every "camera" names shot size, lens (24, 35, 50 or 85 mm), what is in sharp focus with a shallow depth of field, and ONE movement. Every "action" starts with the composition: where the subject sits in frame (left or right third, never dead centre), what soft foreground element partly frames it (a shoulder, door frame, glass, plant, screen edge), where each person looks (at another person or an object off-camera; never into the lens), and the single motivated light source and its direction (window daylight, a desk lamp, overcast sky, fluorescent office light). Then one small, restrained physical task (typing, sipping, rubbing eyes, turning a cup) instead of posing. A live-action "action" may run to 160 words to hold all this.
+- Close-ups are filmed, not posed: never a centred, frontal head-and-shoulders portrait in front of a scenic backdrop. The face sits on a third in three-quarter or profile, the eyes are on someone or something off-frame, a soft foreground (a shoulder, rain, smoke, a branch, a door edge) crosses the frame, the background is mostly out of focus, and the scene's own light falls on the face from the side. Prefer catching the character in the middle of a small action (wiping rain, tightening a grip, breathing out) over a still stare or a smirk at the lens.
+- Camera angle: never square-on. Place the camera 30-60 degrees off the subject's face line (three-quarter or profile), as if standing beside the other person or object they face; a person looking at a screen is seen from beside or behind the screen's edge, not from inside it. Vary height a little (slightly above or below eye level). Two people at once: one in three-quarter profile, the other in profile or over the shoulder, never both facing the lens. No frontal, centered, eye-level "portrait" framing.
+- Faces stay the same actor: every character spec opens with nationality/ethnicity that fits the story's place (an ancient Chinese wuxia story: Chinese; a story in Thailand: Thai; never default to Thai), apparent age, then a precise face (face shape, eyes, eyebrows, nose, lips, skin tone, hair cut and colour, facial hair) and one distinctive mark (a mole, scar, ear piercing, glasses). Write age-appropriate detail so a 30-year-old never reads as a teenager.
+- Dialogue must fit its shot: Thai is spoken at about 8 characters a second, so all lines of a shot together hold at most (seconds - 1) x 8 Thai characters (a 6 s shot: 40 characters). Leave out "..." pauses in short shots; give a long speech its own longer shot. "delivery" never asks for slow speech or long pauses in a shot under 8 seconds.
+- Dialogue on screen like a real film: a line is most convincing when the speaker's mouth is not the subject. Prefer the listener's reaction, the speaker seen from behind or in profile, an over-the-shoulder shot from behind the speaker, or the speaker small in frame; keep at most one line per shot in a close, frontal view of the speaker's mouth.
+- Speakers are set before they speak: the dub starts about half a second into the shot, so a speaking character is already in frame and in position at the start of the shot. Never write an entrance, a walk-in, a turn toward camera, eating, drinking, laughing or kissing for a character while their line plays; put such business after the line or in another shot. A speaker who is the out-of-focus foreground shoulder or seen from behind keeps their back to camera for the whole shot (say so in "action"). "delivery" stays conversational (low or medium volume) unless the moment truly needs a shout.
+- An over-the-shoulder shot needs the foreground person: list that character in "characters" and say whose shoulder fills the foreground.
+- Coverage: tell a conversation in singles and over-the-shoulder reverses, and add inserts (hands, a screen, an object) between them; avoid one wide shot holding a whole exchange. Wide shots are for openings and isolation beats.
+- Real world, not a render: locations and wardrobe are ordinary, specific and lived-in (t-shirts, hoodies, lanyards, cluttered desks, worn furniture). Avoid generated clichés unless the user asks: exposed brick with Edison bulbs, wet neon streets, glass skyscraper panoramas at sunset, floating holograms or formulas, everyone in tailored suits, symmetrical one-point-perspective rooms, a tiny figure alone in an empty city.
+- Trailers: when the user asks for a trailer or teaser, cut like a theatrical trailer (shots of 1-3 s): build it from multi-shot clips with cuts, give each short line its own single close-up shot, follow three acts (the world and the wound, rising conflict, the fastest climax) and end on a slower beat after the climax.
+- Sound: every "audio" names the room tone or ambience of the place (HVAC hum, distant traffic, restaurant murmur) besides any effects.`
+
+// filmPlanRulesText is filmPlanRules with the preset voice list filled in; filmed plans add the
+// cinematography rules.
+func filmPlanRulesText(filmed ...bool) string {
 	labels := make([]string, 0, len(voiceEmotions))
 	for _, e := range voiceEmotions {
 		labels = append(labels, e.Label)
 	}
-	return strings.NewReplacer("%VOICES%", filmPlanVoiceGuide(), "%EMOTIONS%", strings.Join(labels, ", ")).Replace(filmPlanRules)
+	rules := strings.NewReplacer("%VOICES%", filmPlanVoiceGuide(), "%EMOTIONS%", strings.Join(labels, ", ")).Replace(filmPlanRules)
+	if len(filmed) > 0 && filmed[0] {
+		rules += filmCinemaRules
+	}
+	return rules
 }
 
 func filmPlanPrompt(in *filmPlanJob) string {
@@ -284,7 +345,7 @@ func filmPlanPrompt(in *filmPlanJob) string {
 	var b strings.Builder
 	b.WriteString("You are a film director and screenwriter. The episode is generated shot by shot by a reference-to-video AI model that receives each element's reference image, so every shot must be self-contained and consistent.\n")
 	fmt.Fprintf(&b, "Visual style: %s. Aspect ratio %s.\n", style, in.Ratio)
-	shotJSON := `{"scene":1,"seconds":5,"characters":["names"],"location":"name","props":["names"],"action":"English","camera":"English","dialogue":[{"speaker":"name","line":"Thai","emotion":"one listed emotion","delivery":"English, short"}],"audio":"English"}`
+	shotJSON := `{"scene":1,"seconds":5,"characters":["names"],"location":"name","props":["names"],"action":"English","blocking":"English","camera":"English","cuts":[{"camera":"English","action":"English"}],"dialogue":[{"speaker":"name","line":"Thai","emotion":"one listed emotion","delivery":"English, short"}],"audio":"English"}`
 	if in.ShotID == "" && len(in.Shots) > 0 {
 		b.WriteString("Task: edit the existing episode following the user's request (add, remove, reorder, split or change shots or scenes). Return the complete new ordered shot list. For every existing shot that stays exactly as it is, return only {\"keep\": its no, \"scene\": n} so its finished video is kept; write a full shot only for new or changed shots. Change only what the request needs. Keep shot seconds unless asked; the total length may change. Only if the user clearly asks to start over, return all new shots. If the user names a total length, the sum of all shot seconds (kept shots included) must equal it exactly: add the seconds up before answering.\n")
 		total := 0
@@ -292,20 +353,37 @@ func filmPlanPrompt(in *filmPlanJob) string {
 			total += sh.Seconds
 		}
 		fmt.Fprintf(&b, "The episode is currently %d seconds long in %d shots.\n", total, len(in.Shots))
-		b.WriteString(filmPlanRulesText() + "\n")
+		b.WriteString(filmPlanRulesText(in.Filmed) + "\n" + filmSkillsText(in.Skills))
 		b.WriteString(`Return exactly JSON: {"reply":"Thai, 1-3 sentences telling the user what you changed","title":"Thai, only if the story changed","logline":"","synopsis":"","theme":"","elements":[{"kind":"character|location|prop","name":"Thai","spec":"English, <=600 chars","voice":"preset id, characters only"}],"shots":[{"keep":1,"scene":1},` + shotJSON + `]}` + "\n")
 	} else if in.ShotID == "" {
-		fmt.Fprintf(&b, "Task: plan the whole episode from the user's request. Total length must be exactly %d seconds (the sum of all shot seconds), so plan about %d shots of 5-12 seconds each; never pad with long static shots.\n", in.TargetSeconds, filmPlanShotCount(in.TargetSeconds))
-		b.WriteString(filmPlanRulesText() + "\n")
+		fmt.Fprintf(&b, "Task: plan the whole episode from the user's request. Total length must be exactly %d seconds (the sum of all shot seconds), so plan about %d shots of 4-15 seconds each, or fewer, longer multi-shot clips with \"cuts\" when the request is a trailer, a fight or a montage; never pad with long static shots.\n", in.TargetSeconds, filmPlanShotCount(in.TargetSeconds))
+		b.WriteString(filmPlanRulesText(in.Filmed) + "\n" + filmSkillsText(in.Skills))
 		b.WriteString(`Return exactly JSON: {"reply":"Thai, 1-3 sentences telling the user what you made","title":"Thai","logline":"Thai","synopsis":"Thai, <=800 chars","theme":"Thai","elements":[{"kind":"character|location|prop","name":"Thai","spec":"English, <=600 chars","voice":"preset id, characters only"}],"shots":[` + shotJSON + `]}` + "\n")
 	} else {
 		fmt.Fprintf(&b, "Task: rewrite only shot number %d (1-based) following the user's instruction. Keep its seconds unless asked. Use only existing elements, plus new ones in \"elements\" if the instruction needs them. Keep continuity with the neighboring shots.\n", in.ShotIndex+1)
-		b.WriteString(filmPlanRulesText() + "\n")
-		b.WriteString(`Return exactly JSON: {"reply":"Thai, 1-2 sentences","elements":[],"shot":{"transition":"cut|continue","seconds":5,"characters":["names"],"location":"name","props":["names"],"action":"English","camera":"English","dialogue":[{"speaker":"name","line":"Thai","emotion":"one listed emotion","delivery":"English"}],"audio":"English"}}` + "\n")
+		b.WriteString(filmPlanRulesText(in.Filmed) + "\n" + filmSkillsText(in.Skills))
+		b.WriteString(`Return exactly JSON: {"reply":"Thai, 1-2 sentences","elements":[],"shot":{"transition":"cut|continue","seconds":5,"characters":["names"],"location":"name","props":["names"],"blocking":"English","action":"English","camera":"English","cuts":[{"camera":"English","action":"English"}],"dialogue":[{"speaker":"name","line":"Thai","emotion":"one listed emotion","delivery":"English"}],"audio":"English"}}` + "\n")
 	}
 	fmt.Fprintf(&b, "Current episode data: %s\n", ctx)
 	fmt.Fprintf(&b, "User request: %s\n", in.Prompt)
 	return b.String()
+}
+
+// filmPlanCuts keeps the planner's cuts that have an action, clipped to the limits; a single cut
+// is just a shot, so it is dropped.
+func filmPlanCuts(in []filmPlanCut) []req.FilmCutRequest {
+	out := []req.FilmCutRequest{}
+	for _, c := range in {
+		action := directorClipRunes(strings.TrimSpace(c.Action), filmCutActionMax)
+		if action == "" || len(out) == filmMaxCuts {
+			continue
+		}
+		out = append(out, req.FilmCutRequest{Camera: directorClipRunes(strings.TrimSpace(c.Camera), filmCutCameraMax), Action: action})
+	}
+	if len(out) < 2 {
+		return nil
+	}
+	return out
 }
 
 // filmPlanShotCount suggests how many shots fill a target length at about 8 seconds per shot.
@@ -371,6 +449,8 @@ func filmResolveShot(p filmPlanShot, prevLocation string, first bool, resolve fu
 	}
 	out.Camera = directorClipRunes(strings.TrimSpace(p.Camera), filmCameraMax)
 	out.Audio = directorClipRunes(strings.TrimSpace(p.Audio), filmAudioMax)
+	out.Blocking = directorClipRunes(strings.TrimSpace(p.Blocking), filmBlockingMax)
+	out.Cuts = filmPlanCuts(p.Cuts)
 	for _, l := range p.Dialogue {
 		id := resolve("character", l.Speaker)
 		line := directorClipRunes(strings.TrimSpace(l.Line), filmLineMax)
@@ -392,7 +472,7 @@ func filmResolveShot(p filmPlanShot, prevLocation string, first bool, resolve fu
 func filmPlanShots(plan []filmPlanShot, ids []string, d *filmDocument, resolve func(kind, name string) string) ([]req.FilmShotRequest, int) {
 	shots := []req.FilmShotRequest{}
 	used := map[string]bool{}
-	changed, prevLocation, prevScene := 0, "", 0
+	changed, prevLocation, prevScene, prevBlocking := 0, "", 0, ""
 	for _, p := range plan {
 		if len(shots) >= filmMaxShots {
 			break
@@ -414,7 +494,7 @@ func filmPlanShots(plan []filmPlanShot, ids []string, d *filmDocument, resolve f
 				r.Transition = "cut"
 			}
 			shots = append(shots, r)
-			prevLocation, prevScene = r.LocationID, p.Scene
+			prevLocation, prevScene, prevBlocking = r.LocationID, p.Scene, r.Blocking
 			continue
 		}
 		if p.Scene != 0 {
@@ -424,9 +504,13 @@ func filmPlanShots(plan []filmPlanShot, ids []string, d *filmDocument, resolve f
 			}
 		}
 		r := filmResolveShot(p, prevLocation, first, resolve)
+		if r.Blocking == "" && !first && p.Scene == prevScene && r.LocationID == prevLocation {
+			// Same scene, no new blocking: everyone stays where the previous shot put them.
+			r.Blocking = prevBlocking
+		}
 		shots = append(shots, r)
 		changed++
-		prevLocation, prevScene = r.LocationID, p.Scene
+		prevLocation, prevScene, prevBlocking = r.LocationID, p.Scene, r.Blocking
 	}
 	return shots, changed
 }
@@ -469,13 +553,29 @@ func (f *FilmFacade) planJob(c context.Context, j *models.FilmJob) error {
 	}); e != nil {
 		return e
 	}
-	text, e := f.options.Analyzer.Analyze(c, in.Model, filmPlanPrompt(&in))
+	prompt := filmPlanPrompt(&in)
+	if in.Mode == filmPlanModeOps {
+		prompt = filmOpsPrompt(&in)
+	}
+	text, e := f.options.Analyzer.Analyze(c, in.Model, prompt)
 	if e != nil {
 		return f.planFail(c, j, "ผู้ช่วยวางเรื่องไม่สำเร็จ กรุณาลองใหม่", e)
 	}
 	var out filmPlanOutput
 	if e = directorDecodeJSON(text, &out); e != nil {
-		return f.planFail(c, j, "ผู้ช่วยตอบกลับในรูปแบบที่อ่านไม่ได้ กรุณาลองใหม่", e)
+		// One more try: models sometimes leave quotes unescaped or answer a number as a string.
+		log.Printf("film: plan job=%s unreadable answer (%v): %.1500s", j.ID, e, text)
+		retry := prompt + "\nYour previous answer was not valid JSON (" + directorTruncate(e.Error(), 200) + "). Answer again with valid JSON only: numbers as numbers, every double quote inside a string escaped, no comments, no trailing commas."
+		if text, e = f.options.Analyzer.Analyze(c, in.Model, retry); e == nil {
+			out = filmPlanOutput{}
+			e = directorDecodeJSON(text, &out)
+		}
+		if e != nil {
+			return f.planFail(c, j, "ผู้ช่วยตอบกลับในรูปแบบที่อ่านไม่ได้ กรุณาลองใหม่", e)
+		}
+	}
+	if in.Mode == filmPlanModeOps {
+		return f.planOpsJob(c, j, &in, &out)
 	}
 	if in.ShotID == "" && len(out.Shots) == 0 || in.ShotID != "" && out.Shot == nil {
 		return f.planFail(c, j, "ผู้ช่วยไม่ได้ส่งช็อตกลับมา กรุณาลองใหม่หรือเล่ารายละเอียดเพิ่ม", nil)
@@ -488,32 +588,8 @@ func (f *FilmFacade) planJob(c context.Context, j *models.FilmJob) error {
 		if d.Plan == nil || d.Plan.JobID != j.ID.String() {
 			return nil, nil
 		}
-		names := map[string]string{}
-		for i := range elements {
-			names[elements[i].Kind+":"+strings.ToLower(elements[i].Name)] = elements[i].ID.String()
-		}
-		created := []models.FilmElement{}
-		for _, pe := range out.Elements {
-			name := directorClipRunes(filmElementName(pe.Name), filmNameMax)
-			key := pe.Kind + ":" + strings.ToLower(name)
-			if filmAssetKinds[pe.Kind] == "" || name == "" || names[key] != "" || len(elements)+len(created) >= filmPlanMaxElements {
-				continue
-			}
-			now := time.Now().UTC()
-			el := models.FilmElement{Base: models.Base{ID: uuid.New(), CreatedAt: now, UpdatedAt: now}, UserID: j.UserID, SeriesID: j.SeriesID, Kind: pe.Kind, Name: name, Spec: directorClipRunes(strings.TrimSpace(pe.Spec), filmSpecMax), ImageStatus: "idle", Revision: 1}
-			if pe.Kind == "character" {
-				el.Voice = filmPlanVoice(pe.Voice)
-			}
-			created = append(created, el)
-			names[key] = el.ID.String()
-		}
+		created, resolve := filmPlanElements(j, out.Elements, elements)
 		all := append(append([]models.FilmElement{}, elements...), created...)
-		resolve := func(kind, name string) string {
-			if id := names[kind+":"+strings.ToLower(strings.TrimSpace(name))]; id != "" {
-				return id
-			}
-			return names[kind+":"+strings.ToLower(filmElementName(name))]
-		}
 		var shots []req.FilmShotRequest
 		summary := ""
 		if in.ShotID == "" {
@@ -603,4 +679,101 @@ func (f *FilmFacade) planJob(c context.Context, j *models.FilmJob) error {
 		return f.planFail(c, j, "จัดช็อตจากคำตอบของผู้ช่วยไม่สำเร็จ กรุณาลองใหม่", e)
 	}
 	return nil
+}
+
+// filmPlanElements makes the new elements of an answer (existing names are reused) and returns
+// them with a name→id resolver over old and new elements.
+func filmPlanElements(j *models.FilmJob, planned []filmPlanElement, elements []models.FilmElement) ([]models.FilmElement, func(kind, name string) string) {
+	names := map[string]string{}
+	for i := range elements {
+		names[elements[i].Kind+":"+strings.ToLower(elements[i].Name)] = elements[i].ID.String()
+	}
+	created := []models.FilmElement{}
+	for _, pe := range planned {
+		name := directorClipRunes(filmElementName(pe.Name), filmNameMax)
+		key := pe.Kind + ":" + strings.ToLower(name)
+		if filmAssetKinds[pe.Kind] == "" || name == "" || names[key] != "" || len(elements)+len(created) >= filmPlanMaxElements {
+			continue
+		}
+		now := time.Now().UTC()
+		el := models.FilmElement{Base: models.Base{ID: uuid.New(), CreatedAt: now, UpdatedAt: now}, UserID: j.UserID, SeriesID: j.SeriesID, Kind: pe.Kind, Name: name, Spec: directorClipRunes(strings.TrimSpace(pe.Spec), filmSpecMax), ImageStatus: "idle", Revision: 1}
+		if pe.Kind == "character" {
+			el.Voice = filmPlanVoice(pe.Voice)
+		}
+		created = append(created, el)
+		names[key] = el.ID.String()
+	}
+	resolve := func(kind, name string) string {
+		if id := names[kind+":"+strings.ToLower(strings.TrimSpace(name))]; id != "" {
+			return id
+		}
+		return names[kind+":"+strings.ToLower(filmElementName(name))]
+	}
+	return created, resolve
+}
+
+// queueOpsPlan queues an operations edit of an episode with shots, or answers at once (free)
+// when the message does not say where to edit or names a position that does not exist.
+func (f *FilmFacade) queueOpsPlan(d *filmDocument, ep *models.FilmEpisode, s *models.DirectorSeries, elements []models.FilmElement, in req.FilmPlanRequest, prompt string) ([]models.FilmJob, error) {
+	scenes := filmScenes(d.Shots)
+	var target *filmPos
+	label := ""
+	if in.ShotID != "" {
+		i, sh := filmFindShot(d, in.ShotID)
+		if sh == nil {
+			return nil, ErrFilmNotFound
+		}
+		pos := filmPosOf(scenes, i)
+		if in.Scope == "scene" {
+			pos.Shot = 0
+		}
+		target, label = &pos, filmPosLabel(pos.Scene, pos.Shot)
+	}
+	now := time.Now().UTC()
+	// A new message replaces an edit still waiting for confirmation.
+	d.Pending = nil
+	if q := filmPromptCheck(prompt, scenes, target); q != "" {
+		filmAddMessage(d, filmMessage{Role: "user", Text: prompt, ShotID: in.ShotID, Target: label, At: now})
+		filmAddMessage(d, filmMessage{Role: "assistant", Text: q, Target: label, At: now})
+		return nil, filmEncode(ep, d)
+	}
+	for i := range d.Shots {
+		if filmActive(d.Shots[i].Video) {
+			return nil, &DirectorError{Status: 409, Code: "SHOT_BUSY", Message: "มีช็อตกำลังสร้างวิดีโอ กรุณารอให้เสร็จก่อนแก้"}
+		}
+	}
+	byID := filmElementMap(elements)
+	snap := filmPlanJob{Mode: filmPlanModeOps, Target: label, Prompt: prompt, ShotIndex: -1, TargetSeconds: d.TargetSeconds, Style: s.Style, Filmed: filmFilmed(s.Style), Ratio: s.AspectRatio, Model: f.options.AnalysisModel, Story: d.Story, Skills: filmPlanSkills(d), Elements: []filmPlanElement{}, Shots: []filmPlanShot{}}
+	for i := range elements {
+		snap.Elements = append(snap.Elements, filmPlanElement{Kind: elements[i].Kind, Name: elements[i].Name, Spec: elements[i].Spec})
+	}
+	for i := range d.Shots {
+		p := filmPlanShotOf(&d.Shots[i], byID)
+		pos := filmPosOf(scenes, i)
+		p.Scene, p.InScene, p.Transition = pos.Scene, pos.Shot, ""
+		snap.Shots = append(snap.Shots, p)
+		snap.ShotIDs = append(snap.ShotIDs, d.Shots[i].ID)
+	}
+	history := d.Messages
+	if len(history) > filmPlanHistoryTurns {
+		history = history[len(history)-filmPlanHistoryTurns:]
+	}
+	snap.History = append([]filmMessage{}, history...)
+	raw, e := json.Marshal(snap)
+	if e != nil {
+		return nil, e
+	}
+	// One selected shot costs a quarter; everything else the full plan price.
+	cost := f.options.PlanPoints
+	if target != nil && target.Shot > 0 && len(filmPositionMentions(prompt)) == 0 {
+		cost = max(1, (f.options.PlanPoints+3)/4)
+	}
+	jobID := uuid.New()
+	filmAddMessage(d, filmMessage{Role: "user", Text: prompt, ShotID: in.ShotID, Target: label, At: now})
+	d.Plan = &filmPlanState{Status: "queued", JobID: jobID.String(), ShotID: in.ShotID, Target: label}
+	if e = filmEncode(ep, d); e != nil {
+		return nil, e
+	}
+	project := ep.ProjectID
+	return []models.FilmJob{{ID: jobID, SeriesID: s.ID, ProjectID: &project, Kind: "plan", TargetID: "plan:" + ep.ProjectID.String(), Snapshot: raw, Cost: cost}}, nil
 }

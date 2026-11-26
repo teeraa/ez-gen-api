@@ -35,11 +35,14 @@ Users copy a built-in skill by creating a skill with `forkedFromId`. Another use
 
 - `steps`: 1–8 strings, each ≤ 200 characters. Blank steps are dropped.
 - `inputs`: `character | product | style | voice | music | script`. Duplicates are removed.
-- `output`: `video_9_16 | video_16_9 | storyboard | image_set`.
+- `output`: `video_9_16 | video_16_9 | storyboard | image_set | film`.
+- `directive` (≤ 1500 chars): required (≥ 10 chars) when `output` is `film`, dropped otherwise. It is the
+  English guidance the ภาพยนตร์ planner applies when an episode chooses the skill (`migrations/042_film_skills.sql`).
+- `GET /skills?output=film` lists only film skills (the film menu's skill picker).
 - `icon` is copied from the fork source, otherwise `wand`.
 
 ```json
-{ "id": "…", "name": "…", "description": "…", "icon": "megaphone", "steps": ["…"], "inputs": ["product"], "output": "video_9_16", "builtIn": false, "forkedFromId": "…|null", "version": 2, "createdAt": "…", "updatedAt": "…" }
+{ "id": "…", "name": "…", "description": "…", "icon": "megaphone", "steps": ["…"], "inputs": ["product"], "output": "video_9_16", "directive": "", "builtIn": false, "forkedFromId": "…|null", "version": 2, "createdAt": "…", "updatedAt": "…" }
 ```
 
 ## Errors

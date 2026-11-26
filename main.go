@@ -228,10 +228,13 @@ func main() {
 	directorFacade := facade_open_api.NewDirectorFacade(repository_open_api.NewDirectorRepository(database, cfg.MaxConcurrentJobsPerUser).SetMaxParallel(cfg.DirectorProjectParallel), studioRepo, storageClient, directorAnalyzer, modelark.NewImageClient(cfg.ArkImageAPIKey, cfg.ArkImageBaseURL, cfg.ArkImageModel), modelRegistry, modelark.NewClient(cfg.ArkAPIKey, cfg.ArkBaseURL), mediaFetcher, facade_open_api.DirectorOptions{Enabled: imageEnabled && directorStoryReady, AnalysisModel: directorAnalysisModel, ImageModel: imageModel, StoryPoints: cfg.DirectorStoryPoints, ImagePoints: cfg.DirectorImagePoints, VideoPoints: cfg.DirectorVideoPoints, DraftPoints: cfg.DirectorDraftPoints, MaxImageReferences: cfg.DirectorImageRefs, VideoHumanFaceMode: cfg.DirectorFaceMode, SampleBaseURL: cfg.DirectorSampleBaseURL, VideoEnabled: cfg.ArkAPIKey != "", ReferenceCheck: storage.Reachable, LookDescriber: directorLookDescriber(directorAnalyzer), Processor: videoProcessor, VideoFetch: func(c context.Context, u string) ([]byte, string, error) { return storage.FetchVideo(c, u, 300<<20) }, ImageFetch: func(c context.Context, u string) ([]byte, string, error) { return storage.FetchImage(c, u, 7<<20) }})
 	handler_open_api.NewDirectorHandler(directorFacade, cfg.RateLimitJobsPerMinute).RegisterRoutes(apiV1)
 	// ภาพยนตร์ (film menu): separate tables, routes and worker; shares the point wallet and prices.
-	filmFacade := facade_open_api.NewFilmFacade(repository_open_api.NewFilmRepository(database), storageClient, modelark.NewImageClient(cfg.ArkImageAPIKey, cfg.ArkImageBaseURL, cfg.ArkImageModel), modelark.NewClient(cfg.ArkAPIKey, cfg.ArkBaseURL), mediaFetcher, facade_open_api.FilmOptions{Enabled: imageEnabled, ImageModel: imageModel, ImagePoints: cfg.DirectorImagePoints, VideoPoints: cfg.DirectorVideoPoints, DraftPoints: cfg.DirectorDraftPoints, VideoEnabled: cfg.ArkAPIKey != "", ReferenceCheck: storage.Reachable, Processor: videoProcessor, Analyzer: directorAnalyzer, AnalysisModel: directorAnalysisModel, PlanPoints: cfg.DirectorStoryPoints, VoiceFirst: true, VideoFetch: func(c context.Context, u string) ([]byte, string, error) { return storage.FetchVideo(c, u, 300<<20) }, MusicFetch: func(c context.Context, u string) ([]byte, string, error) {
+	filmFacade := facade_open_api.NewFilmFacade(repository_open_api.NewFilmRepository(database), storageClient, modelark.NewImageClient(cfg.ArkImageAPIKey, cfg.ArkImageBaseURL, cfg.ArkImageModel), modelark.NewClient(cfg.ArkAPIKey, cfg.ArkBaseURL), mediaFetcher, facade_open_api.FilmOptions{Enabled: imageEnabled, ImageModel: imageModel, ImagePoints: cfg.DirectorImagePoints, VideoPoints: cfg.DirectorVideoPoints, DraftPoints: cfg.DirectorDraftPoints, VideoEnabled: cfg.ArkAPIKey != "", ReferenceCheck: storage.Reachable, Processor: videoProcessor, Analyzer: directorAnalyzer, AnalysisModel: directorAnalysisModel, PlanPoints: cfg.DirectorStoryPoints, VoiceFirst: true, Master: videoprocessing.MasterAudio, VideoFetch: func(c context.Context, u string) ([]byte, string, error) { return storage.FetchVideo(c, u, 300<<20) }, MusicFetch: func(c context.Context, u string) ([]byte, string, error) {
 		return storage.FetchAudio(c, u, facade_open_api.FilmMusicMaxBytes)
 	}})
 	filmFacade.WithCharacterVoices(voiceFacade)
+	// Film skills: an episode applies the Skills-menu film skills it chose to every plan.
+	libraryRepo := repository_open_api.NewLibraryRepository(database)
+	filmFacade.WithSkills(libraryRepo.FindSkill)
 	handler_open_api.NewFilmHandler(filmFacade, cfg.RateLimitJobsPerMinute).RegisterRoutes(apiV1)
 
 	// Jobs
@@ -254,7 +257,7 @@ func main() {
 	jobHandler.RegisterSceneRoutes(dnaGroup)
 
 	// Prompt library (/api/v1/prompts) and Skills (/api/v1/skills) menus
-	handler_open_api.NewLibraryHandler(facade_open_api.NewLibraryFacade(repository_open_api.NewLibraryRepository(database))).RegisterRoutes(apiV1)
+	handler_open_api.NewLibraryHandler(facade_open_api.NewLibraryFacade(libraryRepo)).RegisterRoutes(apiV1)
 
 	// Marketplace menu (/api/v1/marketplace). Manual phase: posts and sales are logged by the user,
 	// no platform API is called. AI suggestions reuse the Director story planner's text model.

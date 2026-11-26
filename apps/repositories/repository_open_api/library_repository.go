@@ -21,6 +21,7 @@ const (
 type LibraryFilter struct {
 	Scope    string
 	Category string // prompts only; empty means any
+	Output   string // skills only; empty means any
 	Query    string
 	Limit    int
 	Offset   int
@@ -43,6 +44,7 @@ type SkillFields struct {
 	Steps       []byte
 	Inputs      []byte
 	Output      string
+	Directive   string
 }
 
 type LibraryRepository interface {
@@ -177,6 +179,10 @@ func (r *libraryRepository) SetBookmark(ctx context.Context, userID, promptID uu
 
 func (r *libraryRepository) ListSkills(ctx context.Context, userID uuid.UUID, f LibraryFilter) ([]models.Skill, int64, error) {
 	where, args := scopeClause("s", f.Scope, userID, []string{"s.deleted_at IS NULL"}, nil)
+	if f.Output != "" {
+		where = append(where, "s.output = ?")
+		args = append(args, f.Output)
+	}
 	if f.Query != "" {
 		where = append(where, `(s.name ILIKE ? OR s.description ILIKE ?)`)
 		pat := likePattern(f.Query)
@@ -223,7 +229,7 @@ func (r *libraryRepository) UpdateSkill(ctx context.Context, id, userID uuid.UUI
 		Where("id = ? AND user_id = ?", id, userID).
 		Updates(map[string]any{
 			"name": f.Name, "description": f.Description, "steps": f.Steps, "inputs": f.Inputs,
-			"output": f.Output, "version": gorm.Expr("version + 1"), "updated_at": time.Now(),
+			"output": f.Output, "directive": f.Directive, "version": gorm.Expr("version + 1"), "updated_at": time.Now(),
 		})
 	if res.Error != nil {
 		return wrapErr("update skill", res.Error)

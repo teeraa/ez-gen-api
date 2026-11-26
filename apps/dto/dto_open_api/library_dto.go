@@ -26,6 +26,7 @@ type SkillDTO struct {
 	Steps        []string `json:"steps"`
 	Inputs       []string `json:"inputs"`
 	Output       string   `json:"output"`
+	Directive    string   `json:"directive"`
 	BuiltIn      bool     `json:"builtIn"`
 	ForkedFromID *string  `json:"forkedFromId"`
 	Version      int      `json:"version"`

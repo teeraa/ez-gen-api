@@ -64,6 +64,9 @@ func (p *FFmpegProcessor) Merge(ctx context.Context, req MergeRequest) ([]byte, 
 	if !finite(req.AudioVolume) || req.AudioVolume < 0 || req.AudioVolume > 2 {
 		return nil, fmt.Errorf("invalid background audio volume")
 	}
+	if !validFinish(req.Finish) {
+		return nil, fmt.Errorf("invalid finish")
+	}
 	dir, err := os.MkdirTemp("", "violet-export-*")
 	if err != nil {
 		return nil, err
@@ -174,6 +177,14 @@ func (p *FFmpegProcessor) Merge(ctx context.Context, req MergeRequest) ([]byte, 
 	}
 	parts = append(parts, joinClips(req.Clips, durations)...)
 	video := "[cv]"
+	if req.Finish != "" {
+		finish, e := finishParts(req.Finish, video, "[fv]", dir, w, h)
+		if e != nil {
+			return nil, e
+		}
+		parts = append(parts, finish...)
+		video = "[fv]"
+	}
 	if len(req.ImageLayers) > 20 {
 		return nil, fmt.Errorf("too many image layers")
 	}
@@ -192,6 +203,14 @@ func (p *FFmpegProcessor) Merge(ctx context.Context, req MergeRequest) ([]byte, 
 			fmt.Sprintf("%s[im%d]overlay=x='W*%.6f-w/2':y='H*%.6f-h/2':enable='between(t,%f,%f)':eof_action=repeat[iv%d]", video, i, im.X, im.Y, im.StartTime, math.Min(im.EndTime, total), i))
 		video = fmt.Sprintf("[iv%d]", i)
 		next++
+	}
+	if req.Subtitles != "" {
+		burn, e := subtitleParts(ctx, req.Subtitles, video, "[sv]", dir)
+		if e != nil {
+			return nil, e
+		}
+		parts = append(parts, burn)
+		video = "[sv]"
 	}
 	if len(req.TextLayers) > 0 && !p.SupportsTextOverlays(ctx) {
 		return nil, fmt.Errorf("text overlays unavailable: install FFmpeg drawtext and configure a readable font")

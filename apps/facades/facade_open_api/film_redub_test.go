@@ -125,10 +125,14 @@ func (m *filmFakeMedia) SignedURL(_ context.Context, key string, _ time.Duration
 	return "https://media/" + key, time.Now().Add(time.Hour), nil
 }
 
-type filmFakeVoices struct{ spoken []string }
+type filmFakeVoices struct{ spoken, anchored []string }
 
 func (v *filmFakeVoices) ResolveCharacterVoice(context.Context, string, req.CharacterVoiceRequest) (*models.CharacterVoice, error) {
 	return nil, nil
+}
+func (v *filmFakeVoices) SpeakLineAs(c context.Context, u string, cv models.CharacterVoice, text, d string, anchor []byte) ([]byte, error) {
+	v.anchored = append(v.anchored, string(anchor))
+	return v.SpeakLine(c, u, cv, text, d)
 }
 func (v *filmFakeVoices) SpeakLine(_ context.Context, _ string, cv models.CharacterVoice, text, _ string) ([]byte, error) {
 	v.spoken = append(v.spoken, cv.VoiceID+":"+text)

@@ -40,3 +40,37 @@ func MixAudio(ctx context.Context, tracks []AudioTrack, seconds float64) ([]byte
 	}
 	return os.ReadFile(out)
 }
+
+// dialogueTreatment makes a clean TTS line sit like production sound recorded on set: leading and
+// trailing silence removed and long pauses shortened (TTS pads and drags lines), low-cut and high-cut
+// like a boom microphone, gentle compression, a short early-reflection room, and a steady loudness
+// so every line of a film plays at the same level. %s is the tempo stage.
+const dialogueTreatment = "silenceremove=start_periods=1:start_threshold=-50dB:start_silence=0.05:stop_periods=-1:stop_threshold=-50dB:stop_duration=0.3:stop_silence=0.3,%s" +
+	"highpass=f=90,lowpass=f=9500," +
+	"acompressor=threshold=-22dB:ratio=2.5:attack=8:release=180:makeup=2," +
+	"aecho=0.9:0.55:17|31|53:0.16|0.10|0.06," +
+	"loudnorm=I=-20:TP=-2:LRA=9"
+
+// TreatDialogue rewrites the audio file at path (any format ffmpeg reads) as an MP3 with the
+// dialogue treatment applied.
+func TreatDialogue(ctx context.Context, path string) error {
+	out := path + ".treated.mp3"
+	if e := TreatDialogueFile(ctx, path, out, 1); e != nil {
+		return e
+	}
+	return os.Rename(out, path)
+}
+
+// TreatDialogueFile writes src treated (and sped up by tempo, 1-1.5, pitch kept) to dst as MP3.
+func TreatDialogueFile(ctx context.Context, src, dst string, tempo float64) error {
+	stage := ""
+	if finite(tempo) && tempo > 1.001 {
+		stage = fmt.Sprintf("atempo=%.3f,", math.Min(tempo, 1.5))
+	}
+	args := []string{"-v", "error", "-y", "-i", src, "-af", fmt.Sprintf(dialogueTreatment, stage), "-ar", "44100", "-ac", "1", "-c:a", "libmp3lame", "-q:a", "3", dst}
+	if b, e := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput(); e != nil {
+		os.Remove(dst)
+		return fmt.Errorf("ffmpeg dialogue treatment: %v: %s", e, lastLines(string(b), 6))
+	}
+	return nil
+}

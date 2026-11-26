@@ -25,10 +25,15 @@ import (
 )
 
 const (
-	filmNameMax       = 80
-	filmSpecMax       = 1200
-	filmActionMax     = 2000
-	filmCameraMax     = 300
+	filmNameMax     = 80
+	filmSpecMax     = 1200
+	filmActionMax   = 2000
+	filmCameraMax   = 300
+	filmBlockingMax = 600
+	// A multi-shot clip holds 2..filmMaxCuts cuts, each with its own camera and action.
+	filmMaxCuts       = 8
+	filmCutCameraMax  = 200
+	filmCutActionMax  = 500
 	filmAudioMax      = 600
 	filmLineMax       = 300
 	filmDeliveryMax   = 120
@@ -62,6 +67,8 @@ type filmStore interface {
 	Claim(context.Context) (*models.FilmJob, error)
 	RecordOutput(context.Context, *models.FilmJob, []byte) error
 	Wait(context.Context, *models.FilmJob, []byte, time.Time) error
+	Release(context.Context, *models.FilmJob, string, time.Time) error
+	Cleanup(context.Context, time.Time) (int64, error)
 	CompleteElement(context.Context, *models.FilmJob, string, string, bool, func(*models.FilmElement) error) error
 	CompleteEpisode(context.Context, *models.FilmJob, string, bool, func(*models.FilmEpisode) error) error
 	ProgressEpisode(context.Context, *models.FilmJob, func(*models.FilmEpisode) error) error
@@ -92,6 +99,10 @@ type FilmOptions struct {
 	VoiceFirst bool
 	// MusicFetch downloads the stored music track for export.
 	MusicFetch func(context.Context, string) ([]byte, string, error)
+	// Master finishes the exported film's audio: the music bed ducked under dialogue and the
+	// mix normalized to delivery loudness (videoprocessing.MasterAudio). Nil keeps the old
+	// export: music mixed flat by the merge and no loudness normalization.
+	Master func(ctx context.Context, src, dst string, music *videoprocessing.AudioTrack) error
 }
 
 type FilmFacade struct {
@@ -102,6 +113,7 @@ type FilmFacade struct {
 	fetcher mediaFetcher
 	options FilmOptions
 	voices  filmVoiceService
+	skills  filmSkillFinder
 }
 
 // WithCharacterVoices enables binding Voice-menu voices to character elements and dubbing
@@ -175,6 +187,14 @@ type filmVideo struct {
 	Lines []filmDubLine `json:"lines,omitempty"`
 	// Mix is the filmMixVersion ClipKey was mixed with; older mixes are redone from RawKey on export.
 	Mix int `json:"mix,omitempty"`
+	// Native: the clip's dialogue was spoken by the video model itself (lips and voice from one model).
+	Native bool `json:"native,omitempty"`
+}
+
+// filmCut is one shot inside a multi-shot clip (English camera and one clear action).
+type filmCut struct {
+	Camera string `json:"camera"`
+	Action string `json:"action"`
 }
 
 type filmShot struct {
@@ -188,6 +208,12 @@ type filmShot struct {
 	Camera       string     `json:"camera"`
 	Dialogue     []filmLine `json:"dialogue"`
 	Audio        string     `json:"audio,omitempty"`
+	// Blocking is where every visible character is and how (frame side, sitting/standing, facing),
+	// in English; it is written into the video prompt so positions and posture hold across cuts.
+	Blocking string `json:"blocking,omitempty"`
+	// Cuts make the clip a multi-shot sequence rendered with hard cuts inside one generation, so a
+	// trailer, fight or montage cuts every 1-3 s although every generated clip is at least 4 s.
+	Cuts []filmCut `json:"cuts,omitempty"`
 	// TrimIn/TrimOut are studio cuts at the clip's start/end; they never make the video stale.
 	TrimIn  float64 `json:"trimIn,omitempty"`
 	TrimOut float64 `json:"trimOut,omitempty"`
@@ -208,6 +234,10 @@ type filmDocument struct {
 	// Drafts holds each shot's latest successful draft task, kept apart from the shot's video so a
 	// failed finalize can be retried. Provider task ids stay server-side.
 	Drafts map[string]filmDraft `json:"drafts,omitempty"`
+	// Pending is an assistant edit waiting for the user's confirmation (phase 6).
+	Pending *filmPendingEdit `json:"pending,omitempty"`
+	// Skills are the film skills chosen for this episode (film_skills.go); every plan applies them.
+	Skills []filmSkill `json:"skills,omitempty"`
 }
 
 type filmDraft struct {
@@ -224,6 +254,8 @@ type filmDraft struct {
 	Silent bool `json:"silent,omitempty"`
 	// Lines are the draft's dubbed lines; its full clip keeps them, so the lips stay in sync.
 	Lines []filmDubLine `json:"lines,omitempty"`
+	// Native drafts carry the provider's own speech; the full clip inherits it.
+	Native bool `json:"native,omitempty"`
 }
 
 // filmSourceChanged reports whether a continuation clip started on a frame that is no longer the
@@ -297,13 +329,62 @@ func filmShotHash(sh *filmShot, elements map[string]*models.FilmElement, style s
 			refs = append(refs, ref{el.ID.String(), el.Name, el.Spec, filmString(el.ImageKey), filmString(el.SyntheticKey)})
 		}
 	}
-	return storyHash(struct {
+	base := storyHash(struct {
 		Seconds                    int
 		Transition, Action, Camera string
 		Audio, Style               string
 		Dialogue                   []filmLine
 		Refs                       []ref
 	}{sh.Seconds, sh.Transition, sh.Action, sh.Camera, sh.Audio, style, sh.Dialogue, refs})
+	// Shots without blocking or cuts keep the hash they had before those fields existed.
+	if sh.Blocking != "" {
+		base = storyHash(struct{ Base, Blocking string }{base, sh.Blocking})
+	}
+	if len(sh.Cuts) > 0 {
+		base = storyHash(struct {
+			Base string
+			Cuts []filmCut
+		}{base, sh.Cuts})
+	}
+	return base
+}
+
+// filmCutsFrom validates a shot's cuts: none, or 2..filmMaxCuts with an action each.
+func filmCutsFrom(in []req.FilmCutRequest) ([]filmCut, bool) {
+	if len(in) == 0 {
+		return nil, true
+	}
+	if len(in) < 2 || len(in) > filmMaxCuts {
+		return nil, false
+	}
+	out := make([]filmCut, 0, len(in))
+	for _, c := range in {
+		cut := filmCut{Camera: strings.TrimSpace(c.Camera), Action: strings.TrimSpace(c.Action)}
+		if !filmBound(cut.Camera, 0, filmCutCameraMax) || !filmBound(cut.Action, 1, filmCutActionMax) {
+			return nil, false
+		}
+		out = append(out, cut)
+	}
+	return out, true
+}
+
+func filmCutsDTO(cuts []filmCut) []dto.FilmCut {
+	out := make([]dto.FilmCut, 0, len(cuts))
+	for _, c := range cuts {
+		out = append(out, dto.FilmCut{Camera: c.Camera, Action: c.Action})
+	}
+	return out
+}
+
+func filmCutRequests(cuts []filmCut) []req.FilmCutRequest {
+	if len(cuts) == 0 {
+		return nil
+	}
+	out := make([]req.FilmCutRequest, 0, len(cuts))
+	for _, c := range cuts {
+		out = append(out, req.FilmCutRequest{Camera: c.Camera, Action: c.Action})
+	}
+	return out
 }
 
 func filmString(p *string) string {
@@ -652,11 +733,14 @@ func (f *FilmFacade) presentEpisode(c context.Context, p *models.DirectorProject
 		out.Story = &dto.FilmStory{Title: d.Story.Title, Logline: d.Story.Logline, Synopsis: d.Story.Synopsis, Theme: d.Story.Theme}
 	}
 	for _, m := range d.Messages {
-		out.Messages = append(out.Messages, dto.FilmMessage{Role: m.Role, Text: m.Text, ShotID: m.ShotID, At: m.At})
+		out.Messages = append(out.Messages, dto.FilmMessage{Role: m.Role, Text: m.Text, ShotID: m.ShotID, Target: m.Target, At: m.At})
 	}
 	if d.Plan != nil {
-		out.Plan = &dto.FilmPlan{Status: d.Plan.Status, ShotID: d.Plan.ShotID, FailureMessage: d.Plan.FailureMessage}
+		out.Plan = &dto.FilmPlan{Status: d.Plan.Status, ShotID: d.Plan.ShotID, Target: d.Plan.Target, FailureMessage: d.Plan.FailureMessage}
 	}
+	out.Pending = filmPendingDTO(d.Pending)
+	out.Skills = filmSkillsDTO(&d)
+	out.SkillsAvailable = f.skills != nil
 	out.ExportAvailable = f.options.Processor != nil && f.options.VideoFetch != nil
 	out.RedubAvailable = f.redubAvailable()
 	if m := d.Music; m != nil {
@@ -677,6 +761,18 @@ func (f *FilmFacade) presentEpisode(c context.Context, p *models.DirectorProject
 				return out, e
 			}
 			ex.URL, ex.ExpiresAt = &u, &t
+			if x.Captions {
+				base := strings.TrimSuffix(x.Key, ".mp4")
+				srt, _, e := f.storage.SignedURL(c, base+".srt", time.Hour)
+				if e != nil {
+					return out, e
+				}
+				vtt, _, e := f.storage.SignedURL(c, base+".vtt", time.Hour)
+				if e != nil {
+					return out, e
+				}
+				ex.SrtURL, ex.VttURL = &srt, &vtt
+			}
 		}
 		out.Export = ex
 	}
@@ -695,14 +791,14 @@ func (f *FilmFacade) presentEpisode(c context.Context, p *models.DirectorProject
 		for _, l := range sh.Dialogue {
 			lines = append(lines, dto.FilmLine{SpeakerID: l.SpeakerID, Line: l.Line, Delivery: l.Delivery, Emotion: l.Emotion})
 		}
-		item := dto.FilmShot{ID: sh.ID, Index: i, Seconds: sh.Seconds, Start: start, Transition: sh.Transition, CharacterIDs: filmNonNil(sh.CharacterIDs), LocationID: sh.LocationID, PropIDs: filmNonNil(sh.PropIDs), Action: sh.Action, Camera: sh.Camera, Dialogue: lines, Audio: sh.Audio, TrimIn: sh.TrimIn, TrimOut: sh.TrimOut, LineAt: sh.LineAt}
+		item := dto.FilmShot{ID: sh.ID, Index: i, Seconds: sh.Seconds, Start: start, Transition: sh.Transition, CharacterIDs: filmNonNil(sh.CharacterIDs), LocationID: sh.LocationID, PropIDs: filmNonNil(sh.PropIDs), Action: sh.Action, Camera: sh.Camera, Dialogue: lines, Audio: sh.Audio, Blocking: sh.Blocking, Cuts: filmCutsDTO(sh.Cuts), TrimIn: sh.TrimIn, TrimOut: sh.TrimOut, LineAt: sh.LineAt}
 		start += sh.Seconds
 		if v := sh.Video; v != nil {
 			hash := filmShotHash(sh, byID, s.Style)
 			fresh := filmVideoFresh(v, sh, byID, s.Style)
 			// A clip whose dubbed lines play over the provider's own speech needs a new (silent) video.
 			overlap := v.Status == "succeeded" && filmVoiceOverlap(v, sh, byID, s.Style)
-			video := &dto.FilmShotVideo{Status: v.Status, Progress: v.Progress, ModelID: v.ModelID, Seconds: v.Seconds, Mode: v.Mode, PointsCharged: v.PointsCharged, PointsRefunded: v.PointsRefunded, Stale: v.Status == "succeeded" && (!fresh || overlap || filmSourceChanged(d.Shots, i)), Draft: v.Draft}
+			video := &dto.FilmShotVideo{Status: v.Status, Progress: v.Progress, ModelID: v.ModelID, Seconds: v.Seconds, Mode: v.Mode, PointsCharged: v.PointsCharged, PointsRefunded: v.PointsRefunded, Stale: v.Status == "succeeded" && (!fresh || overlap || filmSourceChanged(d.Shots, i)), Draft: v.Draft, Speech: filmSpeechLabel(v)}
 			video.Voice = filmVoiceStatus(v, sh, byID, s.Style)
 			if video.Voice == "failed" && v.Redub != nil {
 				video.VoiceMessage = v.Redub.FailureMessage
@@ -765,7 +861,7 @@ func filmValidateShots(in []req.FilmShotRequest, current []filmShot, elements ma
 	kind := func(id, want string) bool { el, ok := elements[id]; return ok && el.Kind == want }
 	seen, out, total := map[string]bool{}, make([]filmShot, 0, len(in)), 0
 	for i, r := range in {
-		sh := filmShot{ID: r.ID, Seconds: r.Seconds, Transition: r.Transition, CharacterIDs: filmNonNil(r.CharacterIDs), LocationID: strings.TrimSpace(r.LocationID), PropIDs: filmNonNil(r.PropIDs), Action: strings.TrimSpace(r.Action), Camera: strings.TrimSpace(r.Camera), Audio: strings.TrimSpace(r.Audio), Dialogue: []filmLine{}}
+		sh := filmShot{ID: r.ID, Seconds: r.Seconds, Transition: r.Transition, CharacterIDs: filmNonNil(r.CharacterIDs), LocationID: strings.TrimSpace(r.LocationID), PropIDs: filmNonNil(r.PropIDs), Action: strings.TrimSpace(r.Action), Camera: strings.TrimSpace(r.Camera), Audio: strings.TrimSpace(r.Audio), Blocking: strings.TrimSpace(r.Blocking), Dialogue: []filmLine{}}
 		if sh.ID == "" {
 			sh.ID = uuid.NewString()
 		} else if old[sh.ID] == nil || seen[sh.ID] {
@@ -811,8 +907,11 @@ func filmValidateShots(in []req.FilmShotRequest, current []filmShot, elements ma
 		if !filmBound(sh.Action, 1, filmActionMax) {
 			return nil, directorInvalid("shots.action")
 		}
-		if !filmBound(sh.Camera, 0, filmCameraMax) || !filmBound(sh.Audio, 0, filmAudioMax) {
+		if !filmBound(sh.Camera, 0, filmCameraMax) || !filmBound(sh.Audio, 0, filmAudioMax) || !filmBound(sh.Blocking, 0, filmBlockingMax) {
 			return nil, directorInvalid("shots.camera")
+		}
+		if sh.Cuts, ok = filmCutsFrom(r.Cuts); !ok {
+			return nil, directorInvalid("shots.cuts")
 		}
 		if len(r.Dialogue) > filmMaxLines {
 			return nil, directorInvalid("shots.dialogue")
@@ -873,6 +972,8 @@ func (f *FilmFacade) SaveShots(c context.Context, projectID, user string, in req
 			return nil, e
 		}
 		d.Shots = shots
+		// Hand edits move positions: an assistant edit waiting for confirmation no longer applies.
+		d.Pending = nil
 		return nil, filmEncode(ep, &d)
 	})
 	if e != nil {
@@ -916,6 +1017,9 @@ type filmVideoJob struct {
 	PlainContinuePrompt  string `json:"plainContinuePrompt,omitempty"`
 	// Lines are already generated lines to reuse (a finalize keeps its draft's lines and timing).
 	Lines []filmDubLine `json:"lines,omitempty"`
+	// Native (experimental): the provider speaks the lines itself, with each speaker's generated
+	// line as a voice-timbre sample, and its own audio is kept (no dub over it).
+	Native bool `json:"native,omitempty"`
 }
 
 func filmVideoCost(points, seconds int) int {
@@ -939,6 +1043,9 @@ func (f *FilmFacade) RequestVideo(c context.Context, projectID, shotID, user str
 	model, ok := directorVideoModel(modelID)
 	if !ok || !model.SupportsRefImage {
 		return dto.FilmEpisode{}, directorInvalid("modelId")
+	}
+	if in.Speech != "" && in.Speech != "dub" && in.Speech != "native" {
+		return dto.FilmEpisode{}, directorInvalid("speech")
 	}
 	if in.Draft && in.Finalize {
 		return dto.FilmEpisode{}, directorInvalid("draft")
@@ -975,6 +1082,10 @@ func (f *FilmFacade) RequestVideo(c context.Context, projectID, shotID, user str
 				return nil, &DirectorError{Status: 409, Code: "DRAFT_NOT_AVAILABLE", Message: "ไม่มี draft ล่าสุดของช็อตนี้ให้ทำเป็นตัวเต็ม กรุณาสร้าง draft ใหม่"}
 			}
 			snap := filmVideoJob{ShotID: sh.ID, Hash: draft.Hash, ModelID: draft.ModelID, ProviderModel: draft.Provider, Ratio: s.AspectRatio, Resolution: directorVideoResolution(s.Resolution, model), Seconds: sh.Seconds, Filmed: filmed, Transition: sh.Transition, DraftTaskID: draft.TaskID, Audio: !draft.Silent, QueuedAt: time.Now().UTC(), Voices: f.filmDubLines(sh, byID), Lines: draft.Lines}
+			if draft.Native {
+				// The draft's own speech is the dialogue: nothing is dubbed or charged for voices.
+				snap.Native, snap.Voices, snap.Lines, snap.Audio = true, nil, nil, true
+			}
 			raw, e := json.Marshal(snap)
 			if e != nil {
 				return nil, e
@@ -1063,11 +1174,15 @@ func (f *FilmFacade) RequestVideo(c context.Context, projectID, shotID, user str
 		if f.options.VoiceFirst && len(dub) > 0 {
 			// Voice first: the lines are generated before the video and sent as audio 1.
 			snap.PlainReferencePrompt, snap.PlainContinuePrompt = snap.ReferencePrompt, snap.ContinuePrompt
-			brief.AudioRef = true
-			snap.VoiceFirst, snap.ReferencePrompt = true, filmReferencePrompt(&brief)
+			brief.AudioRef, brief.Native = true, in.Speech == "native"
+			snap.VoiceFirst, snap.Native, snap.ReferencePrompt = true, brief.Native, filmReferencePrompt(&brief)
 			if snap.ContinuePrompt != "" {
 				snap.ContinuePrompt = filmContinuePrompt(&brief)
 			}
+		}
+		if in.Speech == "native" && len(dub) > 0 && !snap.Native {
+			// Never fall back to another speech method silently.
+			return nil, &DirectorError{Status: 409, Code: "NATIVE_SPEECH_UNAVAILABLE", Message: "ระบบยังไม่เปิดโหมดเสียงในตัว กรุณาเลือกเสียงแบบพากย์ทับ"}
 		}
 		for _, p := range []string{snap.ReferencePrompt, snap.ContinuePrompt} {
 			if p != "" && filmValidatePrompt(p) != nil {
@@ -1099,4 +1214,16 @@ func (f *FilmFacade) RequestVideo(c context.Context, projectID, shotID, user str
 		return dto.FilmEpisode{}, e
 	}
 	return f.GetEpisode(c, projectID, user)
+}
+
+// filmSpeechLabel says how a finished clip's dialogue was made: "native" (spoken by the video
+// model), "dub" (generated lines mixed over the clip) or "" (no dubbed dialogue).
+func filmSpeechLabel(v *filmVideo) string {
+	switch {
+	case v.Native:
+		return "native"
+	case len(v.Lines) > 0:
+		return "dub"
+	}
+	return ""
 }

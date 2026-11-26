@@ -4,6 +4,8 @@ type ListLibraryQuery struct {
 	Scope    string `query:"scope"    validate:"omitempty,oneof=all mine builtin saved"`
 	Category string `query:"category" validate:"omitempty,oneof=video image product character camera"`
 	Q        string `query:"q"        validate:"max=100"`
+	// Output filters skills by output (skills only), e.g. "film" for the ภาพยนตร์ skill picker.
+	Output string `query:"output" validate:"omitempty,oneof=video_9_16 video_16_9 storyboard image_set film"`
 }
 
 // PromptRequest is used for both create and full-replace update.
@@ -14,11 +16,13 @@ type PromptRequest struct {
 }
 
 // SkillRequest is used for both create and full-replace update; ForkedFromID is honoured on create only.
+// Directive is required for output "film" (English guidance for the film planner) and dropped otherwise.
 type SkillRequest struct {
 	Name         string   `json:"name"         validate:"required,max=60"`
 	Description  string   `json:"description"  validate:"max=300"`
 	Steps        []string `json:"steps"        validate:"required,min=1,max=8,dive,max=200"`
 	Inputs       []string `json:"inputs"       validate:"max=6,dive,oneof=character product style voice music script"`
-	Output       string   `json:"output"       validate:"required,oneof=video_9_16 video_16_9 storyboard image_set"`
+	Output       string   `json:"output"       validate:"required,oneof=video_9_16 video_16_9 storyboard image_set film"`
+	Directive    string   `json:"directive"    validate:"max=1500"`
 	ForkedFromID *string  `json:"forkedFromId" validate:"omitempty,uuid"`
 }

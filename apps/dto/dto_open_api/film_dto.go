@@ -47,7 +47,9 @@ type FilmShotVideo struct {
 	ExpiresAt *time.Time `json:"expiresAt"`
 	Stale     bool       `json:"stale"`
 	ModelID   string     `json:"modelId"`
-	Seconds   int        `json:"seconds"`
+	// Speech: "native" (the video model spoke the lines), "dub" (lines mixed over it) or "".
+	Speech  string `json:"speech,omitempty"`
+	Seconds int    `json:"seconds"`
 	// Mode is "reference" (built from element images), "continue" (from the previous clip's last
 	// frame) or "finalize" (the full clip rendered from this shot's draft).
 	Mode string `json:"mode"`
@@ -78,6 +80,12 @@ type FilmDubLine struct {
 	At        float64 `json:"at"`
 }
 
+// FilmCut is one shot inside a multi-shot clip.
+type FilmCut struct {
+	Camera string `json:"camera"`
+	Action string `json:"action"`
+}
+
 type FilmShot struct {
 	ID           string         `json:"id"`
 	Index        int            `json:"index"`
@@ -91,6 +99,8 @@ type FilmShot struct {
 	Camera       string         `json:"camera"`
 	Dialogue     []FilmLine     `json:"dialogue"`
 	Audio        string         `json:"audio"`
+	Blocking     string         `json:"blocking"`
+	Cuts         []FilmCut      `json:"cuts"`
 	TrimIn       float64        `json:"trimIn"`
 	TrimOut      float64        `json:"trimOut"`
 	LineAt       []float64      `json:"lineAt"`
@@ -151,19 +161,61 @@ type FilmEpisode struct {
 	RedubShots     int  `json:"redubShots"`
 	RedubPoints    int  `json:"redubPoints"`
 	RedubAvailable bool `json:"redubAvailable"`
+	// Pending is an assistant edit waiting for confirmation; nil when none.
+	Pending *FilmPending `json:"pending"`
+	// Skills are the episode's chosen film skills (PUT /film/episodes/:id/skills); the planner applies them.
+	Skills          []FilmSkill `json:"skills"`
+	SkillsAvailable bool        `json:"skillsAvailable"`
+}
+
+// FilmSkill is a Skills-menu film skill chosen for an episode.
+type FilmSkill struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Icon        string `json:"icon"`
+	Description string `json:"description"`
+}
+
+// FilmPending is an assistant edit that deletes a paid clip or changes a voice: it waits for
+// POST /film/episodes/:id/plan/confirm.
+type FilmPending struct {
+	ID      string `json:"id"`
+	Reply   string `json:"reply"`
+	Summary string `json:"summary"`
+	// Deletes lists the positions ("ฉาก N · ช็อต M") whose paid clip or draft would be lost.
+	Deletes []string `json:"deletes"`
+	// Outdated lists positions whose paid clip the edit makes out of date (not deleted, not asked).
+	Outdated []string           `json:"outdated"`
+	Voices   []FilmPendingVoice `json:"voices"`
+	// RedubPoints re-dub clips; VideoPoints re-make clips whose voice is part of the video.
+	RedubPoints int `json:"redubPoints"`
+	VideoPoints int `json:"videoPoints"`
+	// Stale continuation clips start on a re-made clip's last frame and become out of date.
+	Stale     int       `json:"stale"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+type FilmPendingVoice struct {
+	Name        string `json:"name"`
+	Voice       string `json:"voice"`
+	RedubClips  int    `json:"redubClips"`
+	RemakeClips int    `json:"remakeClips"`
 }
 
 // FilmExport is the merged film of an episode; Stale means a clip changed after it was made.
 type FilmExport struct {
-	Status         string     `json:"status"`
-	Progress       int        `json:"progress"`
-	URL            *string    `json:"url"`
-	ExpiresAt      *time.Time `json:"expiresAt"`
-	Stale          bool       `json:"stale"`
-	ClipCount      int        `json:"clipCount"`
-	Skipped        int        `json:"skipped"`
-	Subtitles      bool       `json:"subtitles"`
-	FailureMessage *string    `json:"failureMessage"`
+	Status    string     `json:"status"`
+	Progress  int        `json:"progress"`
+	URL       *string    `json:"url"`
+	ExpiresAt *time.Time `json:"expiresAt"`
+	Stale     bool       `json:"stale"`
+	ClipCount int        `json:"clipCount"`
+	Skipped   int        `json:"skipped"`
+	Subtitles bool       `json:"subtitles"`
+	// SrtURL/VttURL download the film's dialogue subtitles (null when it has no dialogue).
+	SrtURL         *string `json:"srtUrl"`
+	VttURL         *string `json:"vttUrl"`
+	FailureMessage *string `json:"failureMessage"`
 }
 
 type FilmStory struct {
@@ -177,6 +229,7 @@ type FilmMessage struct {
 	Role   string    `json:"role"`
 	Text   string    `json:"text"`
 	ShotID string    `json:"shotId"`
+	Target string    `json:"target"`
 	At     time.Time `json:"at"`
 }
 
@@ -184,5 +237,6 @@ type FilmMessage struct {
 type FilmPlan struct {
 	Status         string  `json:"status"`
 	ShotID         string  `json:"shotId"`
+	Target         string  `json:"target"`
 	FailureMessage *string `json:"failureMessage"`
 }
