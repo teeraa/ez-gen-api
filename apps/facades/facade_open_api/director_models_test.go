@@ -15,6 +15,8 @@ func TestDirectorModelLabel(t *testing.T) {
 		"seedream-5-0-260128":   "Seedream 5.0",
 		"gemini-3.5-flash":      "Gemini 3.5 Flash",
 		"gemini-3.5-flash-lite": "Gemini 3.5 Flash Lite",
+		"claude-sonnet-5-5":     "Claude Sonnet 5.5",
+		"claude-haiku-5-5":      "Claude Haiku 5.5",
 		"":                      "มาตรฐาน",
 		"custom-endpoint":       "custom-endpoint",
 	}

@@ -71,3 +71,20 @@ func TestFilmFinishByStyle(t *testing.T) {
 		}
 	}
 }
+
+func TestFilmMusicTrackTrimsAndCuts(t *testing.T) {
+	// Whole song under a shorter film: cut at the film's end, no fade-in.
+	tr, ok := filmMusicTrack(&filmMusic{Volume: 0.4}, 120, 30)
+	if !ok || tr.TrimStart != 0 || tr.TrimEnd != 30 || tr.FadeIn != 0 || tr.FadeOut != 2 {
+		t.Fatalf("whole song = %+v %v", tr, ok)
+	}
+	// Trimmed head and a chosen length, placed 5 s in.
+	tr, ok = filmMusicTrack(&filmMusic{Volume: 0.4, Start: 5, TrimIn: 10, Length: 8}, 120, 30)
+	if !ok || tr.TrimStart != 10 || tr.TrimEnd != 18 || tr.At != 5 || tr.FadeIn != 0.5 || tr.FadeOut != 2 {
+		t.Fatalf("trimmed = %+v %v", tr, ok)
+	}
+	// Starts after the film ends: nothing to mix.
+	if _, ok = filmMusicTrack(&filmMusic{Start: 40}, 120, 30); ok {
+		t.Fatal("music after the film should be dropped")
+	}
+}

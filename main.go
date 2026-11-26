@@ -15,6 +15,7 @@ import (
 	"github.com/ez-gen/ez-gen-api/apps/facades/facade_open_api"
 	"github.com/ez-gen/ez-gen-api/apps/handlers/handler_open_api"
 	"github.com/ez-gen/ez-gen-api/apps/repositories/repository_open_api"
+	"github.com/ez-gen/ez-gen-api/apps/services/claude"
 	"github.com/ez-gen/ez-gen-api/apps/services/editorai"
 	"github.com/ez-gen/ez-gen-api/apps/services/gemini"
 	"github.com/ez-gen/ez-gen-api/apps/services/modelark"
@@ -215,7 +216,7 @@ func main() {
 	// Characters (library assets, film elements) can be bound to a Voice-menu voice.
 	studioFacade.WithCharacterVoices(voiceFacade)
 	editorTranscriber := editorai.SelectTranscriber(cfg.EditorASRProvider, &editorai.LocalASR{Python: cfg.WhisperPython, Runner: cfg.WhisperRunner, Model: cfg.WhisperModelPath, Version: cfg.WhisperModelVersion, Device: cfg.WhisperDevice, Compute: cfg.WhisperComputeType, Language: cfg.WhisperLanguage}, &editorai.TyphoonASR{Python: cfg.TyphoonPython, Runner: cfg.TyphoonRunner, Model: cfg.TyphoonModelPath, Version: cfg.TyphoonModelVersion})
-	editorAIFacade := facade_open_api.NewVideoEditorAIFacade(repository_open_api.NewVideoEditorAIRepository(database), videoEditorFacade, editorai.NewGemini(cfg.GeminiAPIKey, cfg.GeminiModel, cfg.GeminiModelVersion), editorTranscriber, facade_open_api.EditorAIOptions{Enabled: cfg.EditorAIEnabled})
+	editorAIFacade := facade_open_api.NewVideoEditorAIFacade(repository_open_api.NewVideoEditorAIRepository(database), videoEditorFacade, editorAIProvider(cfg), editorTranscriber, facade_open_api.EditorAIOptions{Enabled: cfg.EditorAIEnabled})
 	handler_open_api.NewVideoEditorAIHandler(editorAIFacade).RegisterRoutes(apiV1)
 	chatCaller := editorai.SelectToolCaller(cfg.EditorAIChatProvider, editorai.NewGemini(cfg.GeminiAPIKey, cfg.GeminiModel, cfg.GeminiModelVersion), editorai.NewClaude(cfg.AnthropicAPIKey, cfg.ClaudeModel))
 	// EDITOR_AI_CHAT_MODELS lets the user pick a model per message; without it the single
@@ -317,12 +318,17 @@ func main() {
 	}
 }
 
-// Gemini is used when explicitly selected, or when no ModelArk text model is configured
+// The story planner (Director, Film, Marketplace) is DIRECTOR_STORY_PROVIDER: claude (CLAUDE_MODEL),
+// gemini (GEMINI_MODEL) or modelark. Blank picks gemini when no ModelArk text model is configured
 // but a Gemini key is, so a development environment can plan stories without an Ark text endpoint.
 func directorStoryPlanner(cfg *configs.Config) (modelark.StoryFlowAnalyzer, string, bool) {
 	provider := cfg.DirectorStoryProvider
 	if provider == "" && cfg.ArkStoryAnalysisModel == "" && cfg.GeminiAPIKey != "" {
 		provider = "gemini"
+	}
+	if provider == "claude" {
+		log.Printf("director: story planner provider=claude model=%s", cfg.ClaudeModel)
+		return claude.NewStoryAnalyzer(cfg.AnthropicAPIKey), cfg.ClaudeModel, cfg.AnthropicAPIKey != "" && cfg.ClaudeModel != ""
 	}
 	if provider == "gemini" {
 		log.Printf("director: story planner provider=gemini model=%s", cfg.GeminiModel)
@@ -332,10 +338,19 @@ func directorStoryPlanner(cfg *configs.Config) (modelark.StoryFlowAnalyzer, stri
 	return modelark.NewStoryFlowAnalyzer(cfg.ArkStoryAnalysisAPIKey, cfg.ArkStoryAnalysisBaseURL), cfg.ArkStoryAnalysisModel, cfg.ArkStoryAnalysisAPIKey != "" && cfg.ArkStoryAnalysisModel != ""
 }
 
-// Only the Gemini planner can read images; with the ModelArk text planner, looks fall back to library text.
+// The Claude and Gemini planners can read images; with the ModelArk text planner, looks fall back to library text.
 func directorLookDescriber(a modelark.StoryFlowAnalyzer) facade_open_api.DirectorLookDescriber {
-	if g, ok := a.(*gemini.StoryAnalyzer); ok {
-		return g
+	if d, ok := a.(facade_open_api.DirectorLookDescriber); ok {
+		return d
 	}
 	return nil
+}
+
+// editorAIProvider runs the AI editor's analysis and auto-edit with EDITOR_AI_PROVIDER.
+func editorAIProvider(cfg *configs.Config) editorai.Provider {
+	if cfg.EditorAIProvider == "claude" {
+		log.Printf("editor ai: provider=claude model=%s", cfg.ClaudeModel)
+		return editorai.NewClaude(cfg.AnthropicAPIKey, cfg.ClaudeModel)
+	}
+	return editorai.NewGemini(cfg.GeminiAPIKey, cfg.GeminiModel, cfg.GeminiModelVersion)
 }

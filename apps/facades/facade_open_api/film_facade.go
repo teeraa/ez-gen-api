@@ -744,7 +744,7 @@ func (f *FilmFacade) presentEpisode(c context.Context, p *models.DirectorProject
 	out.ExportAvailable = f.options.Processor != nil && f.options.VideoFetch != nil
 	out.RedubAvailable = f.redubAvailable()
 	if m := d.Music; m != nil {
-		out.Music = &dto.FilmMusic{Name: m.Name, Seconds: m.Seconds, Volume: m.Volume, Start: m.Start}
+		out.Music = &dto.FilmMusic{Name: m.Name, Seconds: m.Seconds, Volume: m.Volume, Start: m.Start, TrimIn: m.TrimIn, Length: m.Length}
 		if f.storage != nil {
 			u, t, e := f.storage.SignedURL(c, m.Key, time.Hour)
 			if e != nil {

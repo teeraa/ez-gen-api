@@ -36,6 +36,9 @@ type filmMusic struct {
 	Volume  float64 `json:"volume"`
 	// Start places the music on the film timeline (seconds after trims).
 	Start float64 `json:"start,omitempty"`
+	// TrimIn skips the first seconds of the song; Length cuts how long it plays (0 = to the song's end).
+	TrimIn float64 `json:"trimIn,omitempty"`
+	Length float64 `json:"length,omitempty"`
 }
 
 type filmClipTrim struct {
@@ -243,7 +246,7 @@ func (f *FilmFacade) UpdateMusic(c context.Context, projectID, user string, in r
 	if !filmUUID(in.IdempotencyKey) {
 		return dto.FilmEpisode{}, directorInvalid("idempotencyKey")
 	}
-	if !in.Remove && in.Volume == nil && in.Start == nil {
+	if !in.Remove && in.Volume == nil && in.Start == nil && in.TrimIn == nil && in.Length == nil {
 		return dto.FilmEpisode{}, directorInvalid("volume")
 	}
 	if in.Volume != nil && (math.IsNaN(*in.Volume) || *in.Volume < 0 || *in.Volume > 1) {
@@ -251,6 +254,12 @@ func (f *FilmFacade) UpdateMusic(c context.Context, projectID, user string, in r
 	}
 	if in.Start != nil && (math.IsNaN(*in.Start) || *in.Start < 0 || *in.Start > float64(filmTotalMax)) {
 		return dto.FilmEpisode{}, directorInvalid("start")
+	}
+	if in.TrimIn != nil && (math.IsNaN(*in.TrimIn) || *in.TrimIn < 0 || *in.TrimIn > filmMusicMaxSeconds) {
+		return dto.FilmEpisode{}, directorInvalid("trimIn")
+	}
+	if in.Length != nil && (math.IsNaN(*in.Length) || *in.Length < 0 || *in.Length > filmMusicMaxSeconds) {
+		return dto.FilmEpisode{}, directorInvalid("length")
 	}
 	hash := storyHash(struct {
 		Action, Project string
@@ -273,6 +282,19 @@ func (f *FilmFacade) UpdateMusic(c context.Context, projectID, user string, in r
 			}
 			if in.Start != nil {
 				d.Music.Start = math.Round(*in.Start*10) / 10
+			}
+			if in.TrimIn != nil {
+				d.Music.TrimIn = math.Round(*in.TrimIn*10) / 10
+			}
+			if in.Length != nil {
+				d.Music.Length = math.Round(*in.Length*10) / 10
+			}
+			// At least half a second of the song stays audible.
+			if d.Music.Seconds > 0 && d.Music.TrimIn > d.Music.Seconds-0.5 {
+				return nil, directorInvalid("trimIn")
+			}
+			if d.Music.Length > 0 && d.Music.Length < 0.5 {
+				return nil, directorInvalid("length")
 			}
 		}
 		return nil, filmEncode(ep, &d)

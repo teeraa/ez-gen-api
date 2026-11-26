@@ -413,11 +413,12 @@ func (f *FilmFacade) exportMusic(c context.Context, m *filmMusic, dir string, le
 	if e != nil {
 		return nil, e
 	}
-	end := min(seconds, length-m.Start)
-	if end < 0.1 {
+	track, ok := filmMusicTrack(m, seconds, length)
+	if !ok {
 		return nil, nil
 	}
-	return []videoprocessing.AudioTrack{{Path: path, TrimEnd: end, At: m.Start, Volume: m.Volume, FadeOut: min(2, end/4)}}, nil
+	track.Path = path
+	return []videoprocessing.AudioTrack{track}, nil
 }
 
 // exportRedub mixes a clip's dialogue lines at their moved places over its raw clip.
@@ -466,4 +467,23 @@ func (f *FilmFacade) exportRedub(c context.Context, x *filmExportDub, dir string
 		return raw, nil
 	}
 	return f.mixLines(c, rawPath, lines, in.Resolution, in.Ratio, false)
+}
+
+// filmMusicTrack cuts the song to its trimmed span and to the film: a short fade-in when the
+// song starts part-way, and a fade-out at its end.
+func filmMusicTrack(m *filmMusic, seconds, film float64) (videoprocessing.AudioTrack, bool) {
+	from := min(max(0, m.TrimIn), seconds)
+	play := seconds - from
+	if m.Length > 0 {
+		play = min(play, m.Length)
+	}
+	play = min(play, film-m.Start)
+	if play < 0.1 {
+		return videoprocessing.AudioTrack{}, false
+	}
+	t := videoprocessing.AudioTrack{TrimStart: from, TrimEnd: from + play, At: m.Start, Volume: m.Volume, FadeOut: min(2, play/4)}
+	if from > 0 {
+		t.FadeIn = min(0.5, play/4)
+	}
+	return t, true
 }

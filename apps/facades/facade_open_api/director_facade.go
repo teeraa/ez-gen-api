@@ -168,6 +168,23 @@ func directorModelLabel(model string) string {
 			words = append(words, strings.ToUpper(w[:1])+w[1:])
 		}
 		return strings.Join(words, " ")
+	case "claude":
+		// claude-sonnet-5-5 → Claude Sonnet 5.5
+		words := []string{"Claude"}
+		var version []string
+		for _, w := range parts[1:] {
+			switch {
+			case w == "" || len(w) >= 6 && isNumber(w[:2]):
+			case isNumber(w):
+				version = append(version, w)
+			default:
+				words = append(words, strings.ToUpper(w[:1])+w[1:])
+			}
+		}
+		if len(version) > 0 {
+			words = append(words, strings.Join(version, "."))
+		}
+		return strings.Join(words, " ")
 	}
 	return model
 }

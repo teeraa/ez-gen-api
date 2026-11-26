@@ -97,7 +97,10 @@ type FilmMusicRequest struct {
 	IdempotencyKey string   `json:"idempotencyKey,omitempty"`
 	Volume         *float64 `json:"volume,omitempty"`
 	// Start places the music on the film timeline, in seconds.
-	Start  *float64 `json:"start,omitempty"`
+	Start *float64 `json:"start,omitempty"`
+	// TrimIn skips the song's first seconds; Length cuts how long it plays (0 = to the song's end).
+	TrimIn *float64 `json:"trimIn,omitempty"`
+	Length *float64 `json:"length,omitempty"`
 	Remove bool     `json:"remove,omitempty"`
 }
 

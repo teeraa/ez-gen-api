@@ -379,3 +379,16 @@ go test ./apps/facades/facade_open_api/ -run 'Film|DirectorSeries'
 go test -race ./...            # full gate
 go run ./migrate               # applies pending migrations up to 043 (or psql -f each file)
 ```
+
+## Music head trim and length (2026-11-26)
+
+- `music` now also carries `trimIn` (seconds skipped at the start of the song) and `length`
+  (seconds it plays; `0` = until the song or the film ends).
+- `PATCH /film/episodes/:id/music` accepts `trimIn` and `length` (0 … 1200 s, rounded to 0.1 s), alone
+  or with `start`/`volume`. At least 0.5 s of the song must stay audible, else 422 `VALIDATION_ERROR`.
+- Export cuts the song to `[trimIn, trimIn + length]`, places it at `start`, ends it at the film's end,
+  fades in 0.5 s when the head was trimmed and fades out up to 2 s (`filmMusicTrack`).
+- Stored with `omitempty`: episodes that never set them keep their export hash.
+- Web studio: the music block's edges drag the head trim and the length, the body drags `start`; a
+  music row under the toolbar edits the same values as numbers. Music edits no longer wait for shot
+  edits to be saved.

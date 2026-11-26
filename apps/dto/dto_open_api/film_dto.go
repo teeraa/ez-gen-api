@@ -113,6 +113,8 @@ type FilmMusic struct {
 	Seconds   float64    `json:"seconds"`
 	Volume    float64    `json:"volume"`
 	Start     float64    `json:"start"`
+	TrimIn    float64    `json:"trimIn"`
+	Length    float64    `json:"length"`
 	URL       *string    `json:"url"`
 	ExpiresAt *time.Time `json:"expiresAt"`
 }

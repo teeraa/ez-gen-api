@@ -53,7 +53,9 @@ type Config struct {
 	// AI chat editor (experimental). Provider: gemini (default) or claude.
 	EditorAIChatEnabled  bool
 	EditorAIChatProvider string
-	EditorAIChatModels   string
+	// EditorAIProvider runs the AI editor's analysis and auto-edit: gemini (default) or claude.
+	EditorAIProvider   string
+	EditorAIChatModels string
 	// EDITOR_MAX_SOURCE_MB: largest video/audio accepted by chunked upload (default 500);
 	// files above storage's 50 MB are compressed to fit before storing.
 	EditorMaxSourceMB int64
@@ -142,6 +144,7 @@ func Load() *Config {
 		EditorAIChatEnabled:  strings.EqualFold(os.Getenv("EDITOR_AI_CHAT_ENABLED"), "true"),
 		EditorAIChatProvider: strings.ToLower(strings.TrimSpace(getEnv("EDITOR_AI_CHAT_PROVIDER", "gemini"))),
 		EditorAIChatModels:   os.Getenv("EDITOR_AI_CHAT_MODELS"),
+		EditorAIProvider:     strings.ToLower(strings.TrimSpace(getEnv("EDITOR_AI_PROVIDER", "gemini"))),
 		EditorMaxSourceMB:    int64(getEnvInt("EDITOR_MAX_SOURCE_MB", 500)),
 		AnthropicAPIKey:      os.Getenv("ANTHROPIC_API_KEY"),
 		ClaudeModel:          os.Getenv("CLAUDE_MODEL"),
